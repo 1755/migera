@@ -1,0 +1,1956 @@
+# Procedural Character Animation — Progress Log
+
+Tracks the build-out of `src/character/anim`, the rotation-space
+procedural animation plugin. Append new entries at the top, newest first.
+
+Kept separate from [PROGRESS.md](./PROGRESS.md) deliberately: that file is
+the `src/hybrid` renderer rewrite's own log, and interleaving two unrelated
+subsystems in one chronological list makes both harder to read.
+
+## How to use this file
+
+- **One entry per proven-correct phase/step.** "Proven correct" means
+  passing `cargo test --release --lib` cases *and* visual verification per
+  [AGENTS.md](./AGENTS.md)'s mandatory pose-verification rules — Front and
+  Left, `--gizmos on --show-real-mesh off`, with the specific yes/no claim
+  stated before looking at the image.
+- **Record real measured numbers**, via `examples/anim_bench.rs`, not
+  impressions and not `character_gallery`'s frame time (which is
+  vsync-capped at the display refresh and therefore says nothing about
+  animation cost).
+- **Note dead ends and null results too.** A measured "this did not help"
+  is worth as much as a success and is far more easily forgotten.
+
+## Baseline
+
+`cargo run --release --example anim_bench`, measured on this machine
+(Linux 6.18, release profile). One frame = advance gait phase, compose the
+phase-oscillator layer, integrate all 22 bones' quaternion springs, run
+forward kinematics:
+
+| Characters | Frames | p50 | p99 | per-character p50 |
+|---:|---:|---:|---:|---:|
+| 1 | 2000 | 0.003 ms | 0.003 ms | 0.0029 ms |
+| 100 | 600 | 0.183 ms | 0.197 ms | 0.0018 ms |
+| 1000 | 300 | 1.838 ms | 1.869 ms | 0.0018 ms |
+
+Cost is **linear in character count** at ~1.8 µs each, with no spikes
+(p99/p50 ≈ 1.02). A 1000-character crowd costs ~11% of a 60 Hz frame
+budget on the CPU. The single-character number is higher per-character
+purely because fixed overhead is not amortized.
+
+## Log
+
+
+### A first step that plants and lifts; a walk that no longer drops onto each leg
+
+Closes the open first-step problem from the entry below, and a jerk seen
+in the steady walk. Four causes, each measured:
+
+- **Foot locks rode along with the body.** A lock pins a toe in the
+  pose's frame and was never told the entity moved, so a foot locked while
+  standing was carried by the first step's root motion. Its speed test
+  read pose-frame speed, so it could never lock a planted foot during a
+  walk. `footlock::Turn` gained `travel` (world axes, rotated into the
+  pose's by the IK stage; set by `ride_rendered_feet` and by
+  `Authoritative` root motion). The anchor is shifted back by it and the
+  speed is judged in the world. Live stance slide at the start: 17.6 → 2.7 mm.
+- **Root motion missed the hips moving.** Contacts are measured from the
+  hips, and the release moves the hips through `root_translation` (4.5 cm
+  sideways, 4 cm forward). Fading that out walked the planted foot 47 mm
+  headless and ~13 cm live, and left the whole walk 5 cm off to one side.
+  `root_displacement_between` now adds the horizontal hips motion.
+- **Fading through double support.** With both feet down the walk holds
+  their spacing, and a blend whose weight is changing scales it: the
+  unloading foot slipped up to 12.5 mm a frame. Both fades now run through
+  single support only (`TransitionConfig::fade`): the first step from
+  mid-swing to heel contact, the last from the other foot's toe-off to its
+  mid-swing.
+- **The first swing skimmed the floor.** Mid-swing is where a walking
+  foot is lowest (1.5 cm, Winter), and blended with a standing foot it slid
+  94 mm before rising 2 mm. Reweighting joints could not fix it (a leading
+  knee pointed the toe 2 cm into the floor). `Transition::blend` holds the
+  swinging toe ≥ 5 cm up early in the fade, via leg IK.
+
+Headless first step (`transition::tests`): stance slip is no more than the
+steady walk's over the same stretch of stride. The test fails at 73 mm
+without the hips term and 32 mm fading into double support. The swing ball
+never travels more than 2 cm below 1 cm of lift.
+
+**The walk dropped onto each leg.** The pelvis height the planted feet ask
+for is lumpy on this rig: it fell 14 mm through late single support and was
+caught at heel contact, 9.5 m per cycle² (headless). Live it was worse,
+because floating feet made the foot IK drop the pelvis. The walk now rides
+one sinusoid per step (`walk::BOB_HARMONICS`), fitted under the raw path
+through single support: highest at midstance (0.22), lowest just before
+heel contact (0.47), Winter's shape. Planted feet press up to 15/11/7 mm
+into the floor in the plain pose (0.7/1.2/1.6 m/s), and the foot IK lifts
+them by bending the stance knee (to ~22° at the slow walk; Winter's
+midstance knee is 15–20°). Keeping the 4th harmonic too measured 2.6 per
+cycle², with the lowest point still late in single support. Re-solving the
+legs in the gait to keep feet exactly on the floor was tried and dropped:
+the IK re-planes the leg (thigh 2.8° off Winter's, mirror broken, 0.11 m/s
+velocity jump).
+
+Live, 1.2 m/s, steady walk, same schedule:
+
+| Pelvis | Before | After |
+|---|---|---|
+| Vertical range | 31.8 mm | 11.2 mm |
+| Fastest fall | 0.525 m/s | 0.070 m/s |
+| Vertical acceleration p95 / max | 21 / 44 m/s² | 0.86 / 1.3 m/s² |
+
+Start/stop windows, worst planted slide: 1.5/2.2 mm (start), 2.9/1.1 mm
+(stop). Also: the swing guard's ankle turn is clamped to 20° a step. On the
+synthetic rig a foot 18.6 cm under the floor asked it for ~3 rad, which
+broke the mirror test. 1000 tests pass. `anim_bench`: 2.2 µs per character
+per frame (was 2.0).
+
+
+### Weight shifts, a prepared start, a half-length last step, Winter's limb masses
+
+Three items from Winter, plus two real bugs they exposed.
+
+**Occasional weight shifts (§11.2.1).** `QuietSway::weight_shift` puts a
+deliberate shift onto one leg now and then. Time runs in 14 s slots, the
+first always square, and a fixed hash picks square, left or right per slot,
+eased over 1.6 s. `stance::shift_weight` poses it: pelvis 4.5 cm over the
+loaded foot, rolled 4° down on the resting side, spine rolled back level,
+both legs re-solved to where the feet stood. On the rendered rig: COM
+3.4 cm over, loaded knee 14.1°, resting 25.9°, shoulders level. Live over
+BRP, the pelvis spans 57 mm and the feet move 0.1 mm.
+
+**Starting (§11.3.2).** `Transition` gained a release. For 0.5 s, before any
+foot moves, the weight goes onto the stance leg, which is the one the idle
+already loaded, if any. The body also tips 4 cm forward about the ankles,
+scaled by speed. The gait then joins at the swinging leg's mid-swing, where
+the walk is closest to standing, and fades in over the rest of that swing.
+Live: pelvis 4.5 cm onto the stance foot and 2.9 cm forward with the feet
+still, then ~23 cm forward by the first heel contact (Winter: ~25 cm).
+**Was open, fixed in the entry above:** the first swing foot lifted only
+5 cm and the stance foot slid ~14 cm in the first step. The cause was not
+the single weight but the foot locks, root motion and fade timing.
+
+**Stopping (§11.3.3).** From a footfall, the gait fades over the time to the
+other leg's mid-swing (half the duty factor). The legs keep the walk's
+cadence (`stride_speed`) through it. The old stop dropped the clock to the
+idle's 1/7 Hz and froze the step half-way. Live A/B on one schedule:
+
+| | Before (HEAD) | After |
+|---|---|---|
+| Body still after the stop command | 2.4 s | 0.16 s |
+| Planted-foot slide in the stop | 73 / 77 mm | 31 / 0 mm |
+| Last swing | — | 41 cm (≈ half a walking swing), lands 4 mm beside the planted foot |
+
+Winter's last foot lands half a step ahead; ours lands beside, so the
+character ends in its standing pose. The standing sway eases back in over
+1.5 s after a stop. Switched on at once, it ticked the pelvis 6 mm in one
+frame. The phase layer is now `PhaseLayer::between(standing, locomotion,
+weight)`, so the walk's 0.09 rad spinal twist no longer switches on or off
+at a threshold. `--anim-speed-schedule T:SPEED,...` makes these runs
+reproducible.
+
+**Ragdoll limb masses (Table 4.1).** Arm, forearm-and-hand, thigh, shank
+and foot bodies take Winter's mass, COM fraction and transverse inertia
+m(ρL)² (`ragdoll_plugin::limb_mass_properties`, avian's auto properties
+off). Real-rig thigh: COM within 5 mm of 43.3% hip→knee, inertia within
+1%. With the properties disabled the test fails at 2.9 cm.
+
+**Bugs found on the way:**
+- *The pelvis rotation lagged the legs.* The hips were on the spine's
+  0.16 s spring. The weight-shift roll then swung the rendered feet 4.2 cm
+  about the hips, hidden by the standing foot lock until the first step
+  released it as a slide. `Bone::Hips` now springs with the legs (0.015 s):
+  ≤ 5 mm. See [a lagging pelvis rotation slides planted feet](docs/knowledge/character-animation/ik-and-locomotion/a-lagging-pelvis-rotation-slides-planted-feet.md).
+- *`sway_over_feet` lifted the feet under a big lean.* It turned each leg
+  rigidly but kept the pelvis level. With the hips ~5 cm ahead of the
+  ankles, a 4 cm lean lifted the feet 3.3 mm. The pelvis now drops by what
+  keeps each hip-to-ankle distance, an inverted pendulum about the ankles.
+
+996 tests pass. `anim_bench`: 2.0 µs per character per frame (100 × 600).
+
+
+### The relaxed stance looks ahead, and stands still the way a person does
+
+Measured against Winter before changing anything, with a new whole-body
+centre-of-mass model (`anthropometry.rs`: Table 4.1 Dempster segments on
+the rig's joints; the ragdoll's masses now read the same table).
+
+**First, a measurement trap.** On `gltf_rig::puppet_base()` the relaxed
+stance's hands came out a metre ABOVE the hips, and the body looked
+slouched 11° over its toes. The live character (BRP) hangs them at its
+sides: the fixture faces +Z while the renderer turns the character to −Z,
+and a pose authored in fixed world axes means different things on the two.
+`gltf_rig::puppet_base_as_rendered()` reproduces the live arm heights to
+5 mm (`the_rendered_rig_matches_the_live_character`). The gait, feet and
+stance are written against the rig's own forward and were never affected.
+
+**On the rendered rig:**
+
+| | Before | After | Reference |
+|---|---|---|---|
+| Gaze | 30.5° down at the floor | level (0.0°) | head level |
+| Centre of mass ahead of the ankles | 4.8 cm | 4.8 cm | ~4 cm, Winter Example 5.1 static stance |
+| Trunk vs the bind | −0.5° | −0.5° | upright |
+| Standing sway | spine bent over a fixed pelvis: shoulders 3.2 cm, COM 1.3 cm side / 0.16 cm fore-aft | pelvis carries the trunk over planted feet: live, pelvis 12 mm side to side and 8 mm fore-aft, head 11.5 mm with it | Winter §11.2.1: side-to-side COP within ~2 cm, hip load/unload, ankle pivot |
+| Feet while standing, live | — (then 12 mm, see below) | 0.1 mm | planted |
+
+- **The neck**: the Mixamo clip bows it 41.3°, which is the whole slouch.
+  Re-solved to 10.64° about the same axis for a level gaze, over the clip's
+  own spine curve, which is kept because it is what holds the COM at
+  Winter's 4 cm. Removing the spine curve too levelled the gaze but pushed
+  the COM to 6.5 cm.
+- **The sway**: `PhaseLayer` gained `QuietSway`, applied with the rig by
+  `apply_on` through `stance::sway_over_feet` (each leg turns about its
+  ankle, each foot turns back, the pelvis shifts). Breathing trimmed 0.022
+  → 0.012 rad: it had moved the head as far as the whole-body sway.
+- **Root motion while standing**: the gallery's new rendered-contact root
+  motion read the standing sway as travel and walked the whole character —
+  feet wandered 12 mm live, the pelvis twice its sway. Root motion now only
+  runs while the gait has weight, and the phase layer follows whether the
+  character is standing or walking rather than how it spawned.
+
+Tests passing **984 → 989**. The walk is unchanged live (ball of the foot
+≤ 1.2 mm a planted run).
+
+
+### The walk replays Winter's measured stride
+
+The walk's legs are now driven by a real recorded stride — Winter,
+*Biomechanics and Motor Control of Human Movement*, Appendix A (one adult,
+1.43 m/s, 61% stance) — instead of hand-shaped curves. The run keeps the
+authored curves (`LegCurves::Authored`); there is no measured run.
+
+**Why.** Measured against the recording on `puppet_base`, the authored walk
+was a crouch: the knee never straightened below 20.6° (recorded: ~0° at
+contact, 5° mid-stance), the ankle never pushed off (+1…+41° dorsiflexion
+against a recorded −20.5° push-off), and the hip swung twice the recorded
+range to make up for the short, bent-knee step. RMS gaps: hip 20°, knee 17°,
+ankle 23°.
+
+**What was built.**
+- `reference.rs`: the stride as 7-harmonic curves (Winter §2.2.4; fitted
+  within 0.23°/0.41°/0.67° of every hip/knee/ankle sample). The data is
+  `assets/anim/reference/winter_walking_stride.csv`, extracted by
+  `tools/extract_winter_stride.py` from the (gitignored) PDF, and pinned
+  against the digest's page-checked rows.
+- `walk.rs`: the measured walk on a rig. The thigh is driven by its angle
+  from vertical and the foot by its pitch on the ground, knee from the
+  table; see the knowledge note *Replay a recorded gait by segment
+  attitudes* for the four mappings that failed first. A per-rig thigh
+  correction (≤1.4°, 3 passes, memoized) keeps double support planted; a
+  clearance guard holds the swinging toe 1.5 cm up (Winter's measured toe
+  clearance).
+- `foot.rs`: feet touch the ground at heel, ball and toe tip, not the
+  ankle, and ONE set of support weights decides pelvis height (a soft
+  maximum), root motion and drift.
+- `GaitParams::walking_on(speed, rig)`: Froude scaling onto the rig's leg;
+  the duty factor grows toward 65% for slow walks.
+- Root motion is the planted contact's displacement between poses
+  (`locomotion::root_displacement_between`), in the gallery measured on the
+  poses the springs actually render (`ride_rendered_feet`).
+
+**Measured.**
+
+| | Before | After |
+|---|---|---|
+| Thigh / knee / planted-foot attitude vs recording | 20° / 17° / 23° RMS | ≤2° / 2.5-3° RMS / ≤1° |
+| Planted-foot slide, live, ball bone, 0.7-1.6 m/s | 4-15 mm (ankle) | ≤1.2 mm |
+| Planted-foot slide per stance, headless | — | 5.9 mm (hand-overs only) |
+| Speed within a stride (user chose the real rhythm) | ±0.1% (constant) | 0.77-1.48× at 1.2 m/s, 0.78-1.47× at 1.6 (Winter's pelvis: 0.73-1.36×); fastest in double support, slowest over the foot |
+| Pelvis bob | 33 mm | 14 mm headless; 15-38 mm live |
+| Gait cost per frame (pose + root motion) | 18.9 µs | 15.2 µs, plus 0.5 ms once per rig/speed |
+
+Tests passing **973 → 984**.
+
+**Dead ends, recorded.** Imposing Winter's pelvis bob on the rig (0.25-1.0×,
+three anchorings) cost 7-10° of thigh and 9-13° of knee and floated feet
+16 mm; the legs lead instead (knowledge note *Recorded pelvis path and
+recorded leg angles cannot both be kept*). A fully converged double-support
+correction held feet to 0.03 mm but bent the thigh 4.4° and inverted the
+bob. A two-sided "landing" swing guard jumped the ankle at footfall.
+
+**Not done here.** The relaxed stance bowed the head; fixed in the entry
+above. (Its "6° forward lean" was a measurement on the wrong-facing
+fixture.)
+
+
+### A stutter every ~12.5 s: the spring rendered its substep, not the frame
+
+Reported live as "sometimes jerky for a moment, or with a period". The
+spring steps in whole 1/120 s substeps while root motion and hip height
+follow real frame time, and the rendered pose was the last substep's —
+trailing each frame by a varying 0–8.3 ms. With the legs near-instant
+(0.015 s), that slack is a foot pop. The display is 59.96 Hz: a frame is
+0.011 ms longer than two substeps, so the slack crosses a substep boundary
+every ~750 frames (~12.5 s), and near each crossing vsync jitter picks 1,
+2 or 3 substeps per frame.
+
+Replayed headless (`a_walking_foot_moves_smoothly_at_any_frame_rate`), the
+worst frame-to-frame change in a walking foot's velocity:
+
+| | exact 60 Hz | 59.96 Hz ±0.25 ms | 144 Hz |
+|---|---:|---:|---:|
+| substep state rendered | 0.68 (the footfall) | **3.5** at t≈12 s | 4.3 |
+| + state carried to frame time | | 1.27 | 0.67 |
+| + substeps see the target at their own moment | | **0.71** | 0.31 |
+
+Two changes in `DhoState::advance`, both leaving the simulation
+deterministic: the rendered pose is the state stepped on by the leftover
+time (derived, never fed back), and each substep chases the target
+slerped to its own moment between the previous frame's and this one's,
+instead of holding the frame-end target (which spread a footfall
+differently across a 1- vs 3-substep frame). The test fails with either
+disabled (3.5 / 1.27 against a 1.02 bound). Cost: `anim_bench` 100
+characters, 1.7 → 2.0 µs per character per frame.
+
+Not yet ruled out live: foot IK and its lock/unlock, which run after the
+spring. The replay covers the gait and springs only.
+
+
+### A walk that travels steadily, plants its feet, bobs, and swings its arms
+
+Four walk defects, each measured live over BRP on the real rig and pinned
+by a real-rig test. Test count **958 → 972**. Per-frame gait cost (target
+pose + root velocity) **27 → 18.9 µs**, after hoisting a
+`thigh_cycle_mean` that ran once per bone per call.
+
+**The speed surge was a clock mismatch.** Root motion read the target pose
+at one leg-clock rate while the pose played at another, and the speed
+coupling was a guessed `base + c·speed`. Now the cadence is derived from
+the walk's own `locomotion::distance_per_cycle`, measured on the same
+rendered (blended) pose the character shows, via `root_velocity_of` /
+`advance_turning_with`. Travel speed ±25% within a stride → **±0.1%**;
+`a_walking_body_travels_at_a_steady_speed` at 0.5/1.0/1.5 m/s, ±2%.
+
+**Speed now changes the stride, not just the cadence.** `GaitParams::walking_at`
+scales stride with speed^0.65 (cadence carries the rest, ≈ speed^0.35, as
+in real walkers). Live travel over the same window: 0.60 : 1 : 1.50 at
+0.6/1.0/1.5 m/s.
+
+**The planted foot slid 110–180 mm per stance, from three sources:**
+1. the stance thigh angle was authored, so the ankle's path was not a
+   line — `gait::stance_thigh` now solves the thigh (secant) so the ankle
+   travels linearly between its authored footfall and toe-off;
+2. the clock mismatch above;
+3. the leg springs. A 0.12 s spring low-passes the stride, so the
+   rendered foot swings less than the target the body is moved by. Sweep
+   at 1 stride/s: 0.12 s 302 mm, 0.06 s 99, 0.04 s 27, 0.03 s 7.6, 0.02 s
+   0.7 (9.4 at 1.6 strides/s) → legs **0.015 s**.
+Live now: worst slide per planted run **4–15 mm** at 0.6/1.0/1.5 m/s
+(BRP sampling-limited); `the_default_springs_keep_a_walking_foot_planted`
+< 5 mm at 1.0 and 1.6 strides/s.
+
+**The torso bobs, and the bob was going the wrong way.** `stance_hip_height`
+derives hip height from the stance ankle's depth (load-weighted through
+double support), so it is highest over the stance foot and lowest in
+double support: 33 mm at 1 m/s (13 at 0.5, 60 at 1.5). Live, the pelvis
+first moved **63.4 mm along the travel axis and 0 mm vertically** —
+`retarget::hips_world_position` rotated the root translation by
+`hips_root_rotation` a second time. Fixed; the tautological test that had
+blessed it (it computed the expectation with the same function) is gone,
+replaced by `a_root_translation_moves_the_rendered_hips_along_the_poses_own_axes`.
+
+**The arms swing with the opposite foot, and live.** Three bugs: the swing
+axis came from the synthetic rig; the timing was a quarter cycle off; and
+the delta was composed in the T-pose frame (fixed with the new
+`rig::delta_after_world_turn`, see *a pose delta names a world axis*).
+Swing is now timed off the opposite footfall with a small lag
+(`ARM_LAG` 0.02 cycle), biased forward (`ARM_FORWARD_BIAS` 0.3), with an
+elbow that never straightens past 60% of its bend and folds as the arm
+comes forward. Walk `arm_swing` 0.50 → 0.30, `elbow_bend` 0.35 → 0.45.
+Even then, live counter-swing was **42%** — chance. The arm springs (0.12 s)
+added ~88° of phase lag at walking cadence. Arms → **0.03 s** (~27° lag);
+live now **93% / 93% / 88%** of leg-split samples at 0.6/1.0/1.5 m/s
+have the opposite hand ahead (misses sit at the zero crossings).
+
+**A stiff spring never settled.** At the f32 floor the error read back from
+`goal⁻¹·current` is quantised, and the exact spring solution answered it
+with a velocity that could not decay (a 0.03 s arm: 7.9e-6 rad/s forever,
+flipping its last bit every frame). `dho::REST_SNAP_ERROR`/`_VELOCITY`
+place a bone exactly on target below 1e-6 rad and 1e-4 rad/s. The test
+that should have caught it could not: `1 − |dot|` of a quaternion with
+itself is 6e-8 for this value, so its 1e-9 bound failed on identical
+rotations and passed on the old spring only by rounding luck. It is now
+bit-exact, and fails with the snap disabled.
+
+The ragdoll arm test now asserts per-sample tracking (< 10° worst) rather
+than swing range, which the smaller authored swing had made too blunt.
+
+
+### Ragdoll known gaps: a root that walks, characters that collide, a head that is a head
+
+The three gaps the previous entry listed, plus the one closing them
+exposed. Test count **951 → 958**.
+
+**The pinned root walks and turns with the character** — two bugs no
+standing test could see. The kinematic hips body was never moved, and the
+targets were rooted at the hips' parent's BIND-time rotation, so a turning
+character's targets were off by the turn (sabotaged: exactly 90.0° after a
+quarter turn). Now `rig_geometry` reads the parent's rotation live via
+`TransformHelper`, and `follow_kinematic_roots` drives the root by velocity
+inside the physics step. Live: the hips body travels with the walking
+character (z −2.76 → −8.43 m over 6 s).
+
+**Characters' ragdolls collide with each other.** One shared layer, filtered
+by every ragdoll, also hid them from each other. Each now takes one bit of
+`RAGDOLL_LAYER_POOL` (top 16 bits, round-robin) and filters only its own;
+past 16 live ragdolls, bit-sharing pairs pass through each other — or set
+`RagdollSpawnConfig::collision_layer`.
+
+**The head is its own body.** A head-and-neck body owned by `Neck` rotated
+with the neck (41° from bind in the relaxed stance) while the head bows 29°.
+Now owned by `Head`, running up from the skull base along bind-pose
+vertical carried by the head — exactly vertical at rest on any rig. Its
+joint spans the neck, so its limit combines both (70° / ±80°). Two guesses
+were measured and discarded on the way: the head's own `+Y` (1.7° from
+bind vertical on this rig, but not in general) and the neck direction.
+
+#### What closing gap 1 exposed: the ceilings were too low to track
+
+With the root moving, the walking character's forearms, feet and head
+flailed **20–176°** off target while the torso tracked. Not frame rate
+(36–40° at 64, 60 and 144 Hz), not ground contact (the gallery has no world
+colliders). A sweep settled it: the authored ceilings could not produce the
+accelerations the character's own motion demands — a ball joint carries no
+torque, so a forearm holds its angle against a swinging elbow by its own
+controller alone, and at 40 rad/s² it saturated.
+
+| ceilings | walking root | 1 Hz arm swing |
+|---|---|---|
+| x1 | 39.8° (head) | 79.7° (forearm) |
+| x3 | 0.9° | 113.9° (forearm) |
+| x6 | 1.2° | 10.0° (the swung arm's own lag) |
+
+`CEILING_SCALE = 6` at first — raised to 12 by the real-rig measurement
+below. Joint damping, swept alongside, changed nothing once ceilings were
+adequate — so it was not added. Yielding to a blow no longer
+needs a low ceiling: that is the stun's job.
+
+**A test replaced, and why.** `the_shipped_joints_are_calm_at_their_own_ceilings`
+used a one-limb, immovable-parent proxy whose documented torque/constraint
+oscillation scales with authority (6.3 rad/s arm, 10.4 hip at x6). The real
+character at x6 rests within 0.1° with ~0 spin, live. The progress half is
+kept; the calmness claim moved to the whole rig,
+`a_ragdoll_settles_quietly_into_a_mid_range_pose`. Dead end: rotating each
+body about its joint (adding `α × d` at the centre of mass) DOUBLED the
+proxy's oscillation, and was reverted.
+
+#### The walking head and the post-turn ringing — both saturation, x6 was not enough
+
+**The walking head (47–51° live) was saturation too.** Sampled live, its
+TARGET moved 0–1° between samples while its BODY swung 4–51°, almost
+entirely as a bend (≤2% of the spin about its own axis) — not lag, a
+controller unable to hold a heavy head on a neck-length lever. A new
+headless fixture on the REAL rig (`spawn_real_rig_ragdoll`, the parsed
+`puppet_base` bind pose as a parented hierarchy) walking its own gait
+showed the arms overshooting at x6: body swing **71.7°** against a
+**57.3°** target swing. At `CEILING_SCALE = 12` it is 57.4 — pinned by
+`on_the_real_rig_a_walking_arm_swings_as_far_as_its_animation`, which
+fails at x6 — and live the head drops out of the worst six.
+
+**The post-turn ringing was measured at the ORIGINAL ceilings**, not at x6
+as the paragraph above first said: the walk-and-turn test with a 1 s hold
+fails at x1 (13.4°) and passes from x6 up. It now holds only 1 s.
+
+**Dead ends, each measured and reverted:** removing the head's limit (head
+still up to 39°); velocity feedforward in the PD — damping `ω − ω_target`
+from frame-differenced targets — made the feet worse (24° → 80°); frame
+timing, twice (60/64/144 Hz, then uneven frames): no effect; a kinematic
+root that follows the frame's measured pace instead of arriving in one
+step: no measurable change.
+
+**Still open, and it is not the ragdoll:** the walk's ROOT MOTION lurches.
+With the ragdoll OFF, the rendered pelvis's forward speed swings
+**0.3 ↔ 1.76 m/s** every step (~±70%; a human pelvis varies perhaps
+±10–20%). The kinematic render hides it because its arms follow the
+animation rigidly; the pinned ragdoll reproduces it faithfully, and arms
+hanging from a lurching torso swing like pendulums — live, **73–77°**
+against a 22° target swing. That is the physically right response to the
+input; the input is the defect, in the locomotion's root velocity (derived
+from the planted foot's hip-relative motion).
+
+### Hits, and a ragdoll that actually tracks on the real rig
+
+Item 6, ragdoll triggering. `RagdollHit::new(character, bone, velocity)`
+shoves a limb, slackens the joints around it, and lets them pull back as
+strength returns — no flinch clip, no state machine. Test count
+**928 → 951**. Gallery: `--hit-at-frame N` (reproducible screenshots) and
+`H` live.
+
+**The bigger finding: the ragdoll had never tracked the real character.**
+At full strength the read-back shows the animation by construction, so
+"a fully driven one stands correctly" (Stage 4 entry, below) was vacuous.
+Measured live over BRP on `puppet_base`: every body **35–178°** off its
+target, with and without gravity. Now: worst body **0.1°, ~0 rad/s**, in
+three independent runs. Seven defects, each bisected by measurement:
+
+| defect | measured | fix |
+|---|---|---|
+| private copy of the pre-fix rotation convention | 50.6° on the real rig's hand | `joint_targets` → `rig::accumulate_world_rotations`; `delta_from_world` inverts it |
+| jointed and nearby bodies collide | neck 8.8° off, spinning 3.6 rad/s from step 1 | `RAGDOLL_LAYER`: no self-collision |
+| limit cones in the frame bodies stopped using | thighs 121° off, identical with gravity off | limit frames centred on the bind pose |
+| shipped poses outside the limits | 49 violations (`relaxed_stand` neck 41° vs 35°) | anatomical ranges, pinned by a pose-vs-limit invariant |
+| PD cannot see load | torso folded to 178° under gravity | `GravityScale = 1 − strength` |
+| read-back wrote physics into the spring state | recovered forearm frozen 55.9° off | `Ragdoll::displayed` |
+| ragdoll on switched foot/arm IK off on screen | 34.4° in the regression test | blend from `AnimFootIk::corrected` |
+
+**avian 0.7's joint limits are not a cone and a twist.** Measured:
+`swing_limit` bounds the tilt of `twist_axis.any_orthonormal_vector()`,
+`twist_limit` the twist axes' roll about it. With the default
+`twist_axis = +Y` along the bone they become two unrelated bend stops
+(the live arm's 85° bend clamped at ~68.5° by its "twist" range).
+`twist_axis = +X` makes the reference `+Y`, the bone, and the two become a
+true cone and a true twist — verified empirically, pinned by two tests.
+
+**Fewer, chunkier bodies (17 → 14).** One body per non-leaf bone made the
+0.083 m neck and 0.106 m lower spine near-inertialess capsules: live, the
+neck spun at up to **1769 rad/s**. Now pelvis, two torso, head-and-neck,
+and upper arm/forearm/thigh/shin/foot per side, with anthropometric masses
+(Dempster/Winter) — volume-derived masses on the same layout spun the upper
+torso at 1047 rad/s — and torso-width (0.13 m) torso capsules.
+
+**Why a hit is a velocity:** bodies are grams at avian's default density;
+as an impulse, a 1.5 m/s request launched a body at 521 m/s.
+
+**Dead ends:** length-proportional mass (a stub still tumbled), raising the
+neck's ceiling 10× (saturation was not the cause), a spawn-pose-centred
+limit frame (depends on when the ragdoll attaches — arms moved 71° after).
+
+**Verified:** Front and Left, `--gizmos on --show-real-mesh off`, hit at
+frame 400 against a no-hit baseline: left arm knocked out at 410, matching
+the baseline at 640; cyan bodies on the white skeleton in every shot.
+
+**Known gaps:** the pinned root does not follow root motion (a walking
+ragdoll's hips stay where they spawned); ragdolls of different characters
+pass through each other (`RAGDOLL_LAYER`); the head-and-neck capsule
+extends along the forward-flexed neck, so its tip sits ahead of the real
+head. avian 0.8-dev has no spherical motor (issue #934) and still solves
+joints with XPBD (#440); bevy_rapier3d 0.36 supports Bevy 0.19 — see the
+session's migration assessment.
+
+### The knee bends forward, and the tests can finally see direction (ed176a3, 2128c5e, 18a5834, 4c7fbc9)
+
+Reported as "knees bend in opposite to natural human angle", three times
+across two sessions, while the whole suite stayed green. The defect was real
+and the reason it survived is the more useful half of this entry.
+
+**The bug.** Two-bone IK has two solutions, mirror images across the line to
+the target; only one puts the knee in front, and which one depends on which
+way the rig faces. `solve_leg_grounded` hardcoded the negative branch,
+reasoned out for "a target ahead at `-Z`" — the synthetic rig's facing. The
+rendered rig faces the other way, so the solver re-bent every knee backward,
+every frame. Measured through the live pipeline:
+
+```text
+  stance pose entering the IK stage   +0.061   knee forward, correct
+  pose the IK stage wrote back        -0.134   knee backward
+```
+
+Now both branches are constructed and the one whose knee lands forward wins.
+Two extra quaternion multiplies, no assumption about a rig it has not seen.
+
+**Why 30+ leg tests missed it.** Every one measured the *unsigned* angle
+between thigh and shin, which is identical whichever way the knee folds. The
+fix is two signed measurements on `RigGeometry`, and knowing which to use:
+
+- `knee_forward_offset` — which side of the hip-to-ankle line the knee sits
+  on. Intuitive, and right on a bent leg.
+- `knee_fold_direction` — how the shin turns relative to the thigh. The one
+  to trust near full extension, where the knee is *on* that line by
+  definition and the offset's residual is dominated by the hip's lateral
+  placement.
+
+That distinction cost a wrong diagnosis of its own: the synthetic rig reads
+`-0.017` at 99.2% extension, which was filed as a second backward-knee
+defect. The fold at those same phases reads `-0.34` — solidly human. There
+was no second defect.
+
+Both anatomical invariants now use the fold and cover **both rigs, every
+phase, walk and run, with no exemption and no tolerance**. Sabotage-verified:
+inverting the gait's facing sign fails at phase 0.000 on the synthetic rig,
+which the offset-based version could not detect at all.
+
+**Three supporting fixes.** `hip_dip`/`vertical_bob` became fractions of leg
+length (they were metres authored against a 0.49 m leg while the real one is
+0.888 m); the standing knee flex moved out of `relaxed_stand.pose.ron` and
+into `stance_on_rig`, because a stored rotation cannot know which rig it will
+drive; and `LegIkConfig::max_knee_deviation` now refuses a solve that wanders
+more than 1.75 rad from the animated bend — the ceiling measured from real
+adaptation (1.117 rad legitimate) against the degenerate end (3.141 rad).
+
+**A claimed fix that was not one.** A "5.3-degree toe drift" reported here as
+a real non-idempotence was an artefact of the tip-clamp tests' `aim_foot:
+false`. On the production default the drift is 0.14 mm. Caught by
+sabotage-verifying the test written for it — it passed with the fix disabled,
+so it was measuring nothing. The convergence pass was removed.
+
+928 tests pass; clippy unchanged at 20 warnings. Live: fold -0.57 to -0.70
+across the cycle, human on every sample.
+
+
+### Root motion no longer wipes the mesh's facing correction (6844c88)
+
+Reported as "when gait speed isn't zero the character moves, but moves
+backward, and knees bend in wrong angle (like grasshopper legs)". The first
+half was a real bug; the second half was not, and finding that out cost far
+more than the fix.
+
+**The bug.** `drive_walk_cycle` wrote `root.rotation = facing.rotation()` as
+a bare assignment. That was correct while the rendered mesh and the animated
+skeleton were separate entities — root motion drove the debug skeleton and
+left the mesh alone. When the debug-capsule skeleton was removed and
+`HumanoidSkeleton` moved onto the mesh root itself, the same line began
+overwriting the asset's 180-degree `--character-yaw-correction` every frame.
+The comment defending it went stale at that moment and kept reading as
+correct.
+
+A/B against the parent commit, same flags (`--anim-speed 1.2`), reading the
+mesh root's own `Transform`:
+
+```text
+  before   rotation = (0, 0.0, 0, 1.0)   <- correction wiped
+  after    rotation = (0, 1.0, 0, ~0)    <- correction kept
+```
+
+The character travels toward `-Z` in both. With the correction gone its
+geometry faces `+Z` while travelling `-Z` — it walks backward. Now composed
+via a `FacingCorrection` component recorded at spawn, heading first and
+correction second.
+
+**The knees were never broken.** Sampled across a full stride on both
+builds, the knee sits **0.140-0.154 m ahead** of the hip-to-ankle line,
+**zero backward samples**, identical before and after.
+
+Every contrary reading came from a **stale `character_gallery` process still
+holding BRP port 15702** — a second instance cannot take the port, so the
+queries silently answered from an older build. That fed a confident false
+diagnosis: the knee was "measured" backward, bisected across the gait
+curves, retargeting, foot IK and the phase layer, and used to justify a
+`RigGeometry::flexion_sign` mechanism (deriving each rig's facing from its
+own `ankle -> toe`, since `puppet_base.gltf` faces `+Z` where the synthetic
+T-pose faces `-Z`). All of it was reverted: in the gallery
+`build_real_mesh_skeleton` already folds the yaw correction into
+`hips_root_rotation`, so the live rig reports `flexion_sign = +1` and the
+mechanism was a no-op in production.
+
+Two signals that should have caught the staleness sooner, both present and
+both missed: values **bit-identical across many samples** while the
+character should have been animating, and a root translation stuck at `0.0`
+while travel should have been advancing. What finally settled it was
+building the unmodified parent commit in a `git worktree` and A/B-ing the
+two binaries on the same input.
+
+920 tests pass; clippy unchanged at 20 warnings (git-stash compared).
+
+
+### Arm IK works end to end, and the toes lie flat — three more frame bugs
+
+`hand_l` now lands at **(0.3200, 1.1500, -0.2500)** for a target at
+(0.32, 1.15, -0.25), with `hand_r` untouched. The previous entry fixed the
+pose-space convention and reported the feature still broken; two further
+frame bugs were sitting behind it, each masking the next.
+
+**Bug 2: the substitute hips offset.** `solve_foot_ik` cannot read `Hips`'
+live translation — that is the one value `write_pose_to_skeleton` overwrites
+every frame, so reading it back feeds the solve its own output. It
+substituted `Bone::t_pose_offset()`, the synthetic table's **Y-up**
+`(0, 0.94, 0)`, while the real rig's `root_rotation` is a **Z-up**
+correction that forward kinematics applies to the hips offset (the root has
+no parent to inherit one from). The Y-up value became `(0, 0, 0.94)` and laid
+the character on its back inside the solver: ankle y = **-0.856**, toe
+y = **-0.927**, a metre underground.
+
+The visible symptom was nowhere near the cause. The leg IK reacted
+*correctly* to that garbage — `lift_toe_end_out_of_the_ground` saw a tip
+1.006 m below the floor and rotated each toe **113 degrees** to rescue it —
+so what rendered was feet whose toes pointed at the sky. The user spotted
+that and flagged it; it is what led to the bug.
+
+**Bug 3: the world -> pose rotation.** Read from the character entity, which
+is not the top of the correction chain. `character_gallery` spawns its mesh
+under a node carrying a 180-degree yaw (`--character-yaw-correction`,
+default 180) so the model faces the camera, and that node sits *below* the
+character entity and *above* `pelvis`. The entity read identity while every
+live bone transform carried the yaw. Measured, with it unaccounted for:
+
+| bone | world x | pose x |
+|---|---:|---:|
+| `LeftArm` | +0.2106 | -0.2104 |
+| `RightArm` | -0.2237 | +0.2239 |
+| `LeftUpLeg` | +0.1143 | -0.1143 |
+| `Head` | -0.0140 | +0.0143 |
+
+Every bone's x negated — a 180-degree yaw exactly. Now derived from the live
+**hips**, which carry every correction between world and rig whatever the
+asset's nesting, with the rig's own root and hip binds divided back out.
+
+**The loader was innocent.** It was the prime suspect for two rounds, and the
+previous entry named it as the likely cause. Dumping the gallery's captured
+`rest_rotation` for every bone against the file's own parse: **bit-for-bit
+identical**, including the toe. Two independent bugs both produced
+mirror-shaped symptoms, and each looked like the whole story in turn.
+
+**Also corrected here:** "a left-hand target moves the RIGHT arm", reported
+in the previous entry, was a misreading of a front view — a front-facing
+character's left arm appears on the screen's *right*. The underlying bug was
+real; that particular description of it was not.
+
+**Bug 4: the estimated toe tip.** The toes still tilted up after the first
+three fixes, by much less — a tip 0.060 m above its joint, down from 0.073 —
+and the cause was separate. `RigGeometry::from_gltf` MEASURES the toe tip
+from the rig's own `ball_leaf_l` joint; `from_skeleton`, which the plugin
+uses, can only ESTIMATE it, because `HumanoidSkeleton` has no toe-end concept
+by design (a 23rd bone would invalidate every `[T; 22]`, `Bone::ALL`, and
+every RON asset, for a point that is never rendered):
+
+```text
+  measured   (0, 0.0789,  0.0000)
+  estimated  (0, 0.0711, -0.0356)    ~27 degrees apart
+```
+
+So `lift_toe_end_out_of_the_ground` rescued a tip that was never
+penetrating. Every in-crate path kept the tip level to within 0.8 mm; only
+the live plugin's estimate diverged.
+
+Fixed by reading the toe joint's own **child** from the ECS hierarchy, which
+needs no per-rig name table — whatever hangs off the toe joint is by
+construction the point the toe runs toward, and a rig without one keeps the
+estimate. Live, after: tip **0.5 mm below** its joint and 0.0789 m in front,
+matching the measured bone exactly, both feet symmetric. The gap itself
+stays pinned by `the_estimated_toe_tip_is_a_poor_stand_in_for_the_measured_one`
+so nobody simplifies the plugin back to the estimate.
+
+**Verification.** 920 lib tests pass; no new clippy warnings (15 before and
+after); `anim_bench` at 100 characters measures **0.0018 ms/character/frame**,
+exactly the standing baseline. Both frame fixes sabotage-verified — reverting
+the hips substitution fails with hips at `(0, 0, -0.94)`, reverting the yaw
+recovery fails "180.000 degrees off". Visual: Front and Left,
+`--gizmos on --show-real-mesh off`, claim stated first — the left arm reaches
+with a bent elbow, the right hangs, the skeleton stands upright with two
+distinct legs, and the foot gizmos run forward and level.
+
+**The through-line.** Four bugs, and not one of them looked like what it was.
+Toes pointing at the sky were a hips offset in the wrong coordinate
+convention; a hand missing its target was a yaw correction on a node nobody
+thought to read. Twice the glTF loader was the obvious suspect and twice it
+was innocent — settled by dumping its captured binds against the file's own
+parse and finding them bit-for-bit identical. What worked, every time, was
+measuring one link of the chain at a time rather than reasoning about which
+link was most likely.
+
+
+### The pose-space convention: forward kinematics disagreed with the renderer
+
+The blocker the previous entry reported, run to ground. Two real bugs, both
+in load-bearing shared code, both invisible to the entire existing suite for
+the same structural reason.
+
+**What was wrong.** A pose's rotations are authored against this crate's
+synthetic T-pose, whose bind rotations are all identity — so "turn 40 degrees
+about +Y" means the **world** +Y. `retarget::write_pose_to_skeleton` honours
+that, conjugating each delta into the bone's bind frame. `rig::
+accumulate_world_rotations` — which every IK solver reasons about — composed
+`parent * bind * delta` instead, applying the delta in the bone's *local*
+frame. Right angle, wrong axis.
+
+A comment at `rig.rs:392` asserted the two were "the same composition". They
+were not.
+
+**How it was settled.** The previous entry's probe measured 56–80 degrees of
+disagreement but built its retarget side from `rig.bind_rotations` rather
+than calling the real writer — evidence, not proof, and I flagged it as
+such. That caution was warranted: **the 56–80° figure was wrong**, an
+artifact of the model. The real measurement runs the same pose through
+`write_pose_to_skeleton` into a `World` and accumulates what it actually
+wrote.
+
+The discriminator is the residual `intent⁻¹ · actual`, where *intent* is the
+synthetic rig's own answer (unambiguous — every bind is identity there). A
+path that honours the contract has a residual depending only on the bone's
+bind pose, never on the pose. Two different poses, compared:
+
+| bone | retarget | forward kinematics |
+|---|---:|---:|
+| `LeftArm` | 0.000° | 32.816° |
+| `LeftForeArm` | 0.000° | 39.011° |
+| `LeftLeg` | 0.000° | 44.400° |
+
+Retarget was right; forward kinematics was wrong.
+
+**Why nobody noticed for months.** Conjugating a delta by a bind rotation is
+a no-op when the delta's axis is parallel to the bind's — parallel rotations
+commute. The leg chain is bound almost entirely about X, and every leg delta
+a walk cycle produces (hip pitch, knee bend) is *also* about X. Give
+`LeftLeg` a delta about Y instead and the same 34-degree error appears
+immediately. The legs were never immune; they were only ever asked the one
+question the bug cannot get wrong. The suite's leg coverage is extensive and
+none of it could have caught this.
+
+**A second bug, found by the first fix.** With forward kinematics corrected,
+`aim_bone` still missed. Deriving the frame properly rather than guessing it:
+forward kinematics composes `W(b) = W(parent) · bind_local(b) · [B(b)⁻¹ d
+B(b)]`, so a world-space correction `c` needs `d' = P⁻¹ c P d` with `P =
+W(parent) · bind_local(b) · B(b)⁻¹`. `P` is identity exactly when the
+ancestors are at rest — which is why an unconjugated pre-multiply looks right
+in isolation and degrades as ancestors move. Aiming the forearm right after
+swinging the shoulder is precisely that case:
+
+| approach | error |
+|---|---:|
+| unconjugated, 1 pass | 0.19922 m |
+| unconjugated, 3 passes | 0.14885 m |
+| the derived frame, 1 pass | **0.00000 m** |
+
+**A dead end worth recording.** I first read that residual as a
+linearisation artifact and made `aim_bone` iterate. Three passes did improve
+it — 0.199 → 0.168 → 0.149 — which is exactly the kind of partial
+convergence that invites declaring a broken solver fixed. It was converging
+to the wrong answer. Deriving the frame instead made a single pass exact, and
+the iteration was deleted.
+
+**A third thing the fix exposed: the wrong measurement.** `armik`'s module
+doc contained a measured table naming `+Y` as the arm's degenerate twist axis
+and `+X` as the hinge. Re-measured under the corrected convention, it is the
+exact opposite — the upper arm runs along world `(0.9995, 0, -0.030)`, so
+`+X` moves the wrist 0.0058 m (nowhere) and `+Y`/`+Z` move it 0.186 m. The
+old table was a real observation of a broken system. "Measured, not assumed"
+is necessary and not sufficient; what is measured also has to be correct.
+
+This also broke the `arms_bent` test helper, which bent both elbows about
+`+X` to escape the straight-arm singularity and had therefore been bending
+them 0.0058 m — i.e. not at all. Several tests were silently running in the
+singularity they existed to avoid.
+
+**And a fourth: the hinge must mirror.** A single world-axis hinge cannot
+serve both arms, since the left upper arm runs along `+X` and the right along
+`-X`. The wrist cannot detect this — the two-bone geometry lands it correctly
+either way — so the symptom is visible only at the elbow: with a shared
+hinge, elbows at `z = -0.291` and `z = +0.055`, both wrists exactly mirrored.
+Now `ArmChain::bend_sign`, and the mirror test checks elbow depth rather than
+only the wrist.
+
+**Tests, including the one whose absence let this through.** The old
+`accumulated_world_rotations_match_the_composition_at_write_back` hand-
+composed the same wrong convention it was checking — the "same function both
+sides" failure mode, in hand-written form. Replaced with:
+
+- `retarget::…::the_world_rotations_agree_with_what_retargeting_actually_writes`
+  — forward kinematics against the real writer, not a model of it.
+- `…::the_agreement_test_is_not_vacuous_on_the_axes_it_picks` — asserts each
+  chosen delta axis is one the bone's bind genuinely moves, so the test above
+  cannot go vacuous. It immediately caught that `Spine1` is bound only 1.29°
+  from identity and can never discriminate; `Spine1` is documented as
+  excluded rather than quietly contorted.
+- `…::the_forward_kinematics_positions_are_the_ones_bevy_renders` — the other
+  half, and the half whose absence mattered most: rotations agreeing does not
+  make positions agree, and positions are what an IK solver actually aims at.
+- `rig::…::a_world_axis_delta_turns_about_that_world_axis_on_a_bound_rig` —
+  the contract stated directly.
+
+**Sabotage-verified.** Reverting the forward-kinematics conjugation fails 12
+tests including all four new ones; reverting `world_correction_frame` fails
+5, among them the **leg's** own accuracy test. Neither fix is covered
+vacuously, and the second confirms the legs needed it too.
+
+**Simplification.** `rotation_frame_of` and `parent_frame_of` are deleted
+rather than fixed — two flavours of a change of basis that was never the
+right operation. `lookat` and the two foot-grounding corrections now share
+the one derived frame.
+
+**Measured result on the live rig.** `hand_l` with a target at world
+(0.32, 1.15, −0.25): X error went from wrong-on-every-axis to **0.34 mm**.
+916 lib tests pass, clippy adds no new warnings (15 before and after), and
+`anim_bench` measures **0.0020 ms/character/frame** at 100 characters
+against the 0.0018 baseline — the extra accumulation is in the noise.
+
+**What is still not right, and is NOT the convention.** Measured with
+`--anim-pose t_pose`, so nothing is animating and frame lag is excluded, the
+left thigh's direction is `(0, -0.9920, -0.1262)` live against
+`(0, -0.9920, +0.1262)` in forward kinematics — Z negated, 14.5° apart. Both
+frames report bit-identical root corrections, so it is not the mapping.
+
+Visual verification (Front and Left, `--gizmos on --show-real-mesh off`,
+`--anim-pose t_pose`) makes it plainer than the numbers did. Claim stated
+first: *"the left arm is visibly raised toward the target with a bent elbow,
+the right hangs at the side."* **It is not.** The base pose with no reach is
+clean and symmetric — both arms even, both legs distinct — and the moment the
+arm solve runs it is the character's **right** arm that lifts, from a target
+that only ever sets `arm_ik.left`.
+
+A left-hand target moving the right arm is a whole-rig mirror, not a
+mis-aimed solve. The remaining suspect is the one thing the unit tests
+explicitly say they do not cover: they build the hierarchy from `gltf_rig`'s
+own parse of the asset, while the live app gets it from `bevy_gltf`'s
+**loader**. A loader reproducing the bind pose with a different handedness
+would pass every test here and still mirror exactly like this.
+
+Worth recording as a shape of false progress: the 0.34 mm X figure above is
+real and still does not mean the feature works. The probe target sat near the
+centreline, where a mirror about X is nearly the identity — the measurement
+improved for a reason unrelated to the thing it appeared to confirm. Had I
+stopped at BRP numbers and skipped the screenshots, this would have shipped
+as "fixed". Recorded on `AnimArmIk` as a self-contained next step.
+
+
+### Arm IK: correct as a solver, not yet correct on screen
+
+Item 5 of six, and the first entry here that has to report a **partial**
+result. `src/character/anim/armik.rs` is a two-bone arm solver with 21 tests,
+exact on the real rig's geometry. It does not yet render correctly, and the
+reason is not in it.
+
+**Three real bugs found on the way, each measured rather than reasoned about.**
+
+*One was in shared code the legs have been using all along.* `aim_bone`
+conjugated its world-space delta by the ancestors' accumulated rotation alone,
+omitting the bone's own bind rotation — but forward kinematics composes
+`... * bind_rotations[bone] * pose.rotations[bone]`, so the pose rotation sits
+*inside* the bind. On the legs, bound within a few degrees of identity, the
+omission is nearly invisible. On `LeftArm`, bound at **92.6°**, asking the elbow
+to point straight DOWN swung the arm UP and landed **0.417 m** away on a
+0.251 m bone. Fixed with `legik::rotation_frame_of`, which the foot-grounding
+corrections and `lookat` now share — the ankle binds at −69.8°, so they were
+measurably wrong too, just inside the tolerances their own tests asserted.
+
+*The hinge axis has to be perpendicularized.*
+`Quat::from_axis_angle(hinge, θ) * direction` only yields a vector θ from
+`direction` when the hinge is perpendicular to it; otherwise it sweeps a cone.
+The leg gets away with the raw axis because a foot target is nearly straight
+down, already almost perpendicular to `+X`. An arm reaches in every direction,
+including straight out along `+X` where the construction degenerates entirely:
+the raw axis left the wrist **0.167 m** from a point well inside reach, and no
+choice of axis or sign got below 0.084 m.
+
+*The bend sign is the opposite of the leg's.* A knee leads with the joint and
+trails the shin; an elbow trails the joint and swings the forearm forward. With
+the leg's negation the elbow landed **0.213 m behind** the shoulder-to-target
+line. All three fixes were verified by sabotage — reverting each one fails
+exactly the tests that name it, and reverting the frame fix fails 8 including
+the leg's own accuracy test.
+
+**Measured facts about the real arm** (`puppet_base.gltf`), none of which the
+synthetic rig would have revealed:
+
+| bone | offset | what it actually spans |
+|---|---:|---|
+| `LeftArm` | 0.2097 m | clavicle to shoulder joint |
+| `LeftForeArm` | 0.2511 m | **the upper arm** |
+| `LeftHand` | 0.2436 m | **the forearm** |
+
+The names are shifted a joint, exactly like the legs. The rest arm is
+critically extended — 0.4947 m of reach carrying **0.2 mm** of slack, elbow at
+176.5° — which is why the axis must be supplied. And `+Y` is the arm's own long
+axis: rotating about it moves the wrist **0.000 m**, so picking it by analogy
+with "the arms lie along X so the hinge is Y" yields an elbow that silently
+does nothing.
+
+The default softening came down from 0.02 to the leg's 0.005 because the
+softening zone applies to targets *inside* reach too: at 0.02 a target at the
+arm's own wrist came back 0.0015 m short, which a per-frame grip would compound
+into visible inward creep.
+
+**What does not work, and why it is being left.** The solve is exact and the
+render is not. With a target at world (0.32, 1.15, −0.25):
+
+- the solved pose puts the wrist at **(0.32000005, 1.1500001, −0.24999999)**;
+- the live skeleton puts `hand_l` at **(0.075, 0.933, 0.053)** — 0.36 m off.
+
+So something between the pose and the skeleton discards a correct solve. The
+suspect is a convention mismatch: `accumulate_world_rotations` composes
+`parent * bind * pose` (post-multiply) while `write_pose_to_skeleton` writes
+`rest_rotation * bind⁻¹ * delta * bind`. `rig.rs` asserts in a comment that
+these are "the same composition"; a probe measured **56–80° of disagreement**
+on all four bones tried, legs included (`LeftArm` 56.1°, `LeftFoot` 67.9°,
+`LeftLeg` 80.1°).
+
+That probe is evidence, not proof — it built its retarget side from
+`rig.bind_rotations` where the real path uses
+`HumanoidSkeleton::rest_rotation`, so it compares against a *model* of the
+retarget, and the legs demonstrably render correctly today. Settling it means
+fixing the pose-space convention across FK, retarget and every IK consumer at
+once, which is a larger and riskier change than adding an arm solver.
+Recorded on `AnimArmIk` so the next reader meets the limitation before the
+API.
+
+### Look-at, distributed across the spine — and why there are no eyes
+
+Item 4 of six. Rotating only the head produces the owl: a head that swivels
+independently of a body that has not noticed. So a look is **distributed** —
+`Spine1`, `Spine2`, `Neck` and `Head` each take a share of the total,
+clamped to their own limits, with any share a clamped joint cannot absorb
+offered to the ones above it. The shares sum to 1.0, so a look inside every
+limit lands exactly on target.
+
+**Eyes were investigated and deliberately not built.** `puppet_base.gltf`
+has an `Eyes` node and it is a **skinned mesh, not a joint** — `mesh=1,
+skin=0`, no children, and no eye joint among the skin's 65. The eyes are
+geometry weighted to the head and physically cannot move independently.
+Adding them would mean rewriting `JOINTS_0`/`WEIGHTS_0` binary data in a
+720 KB `.bin`, which is asset surgery on a downloaded model; that was raised
+and dropped rather than attempted.
+
+**`Head` is a LEAF on both rigs** — 0.083 m above `neck_01` on the real one,
+with no children. Rotating it moves no joint, so a gizmo view shows nothing
+happening while the skinned head turns. That inverts this project's usual
+verification rule: this one needs `--show-real-mesh ON`, and the numbers
+came from BRP rather than from a picture.
+
+**A look now eases from forward rather than snapping.** The first version
+adopted a freshly-set target outright, which is right for a character that
+should BEGIN a scene looking somewhere and wrong for the common case of one
+noticing something mid-scene. `LookAt::settled_on` covers the former
+explicitly.
+
+Measured live, the y-component of each bone's rotation:
+
+| bone | no target | looking |
+|---|---:|---:|
+| `Head` | 0.000 | **0.208** |
+| `neck_01` | -0.000 | **0.163** |
+| `spine_03` | -0.004 | **0.086** |
+
+All three turn, the head most, and the whole thing is inert with no target.
+
+### The run, and the flight-phase path nothing had exercised
+
+Item 3 of six. `GaitParams::running()` is mostly parameters, but the
+structural difference is the **duty factor**: below 0.5 the two stance
+windows stop overlapping, so there is a moment with no foot down at all.
+That is what separates a run from a walk — a fast walk is still a walk.
+
+**The flight phase reached code no walk can.** `locomotion::stance_foot`
+returns `None` there, and the walk-only code returned a zero velocity: a
+dead stop twice per cycle. At a 0.4 duty factor flight is 20% of the cycle,
+so at 1.5 strides/s the body would stall for **67 ms, twice a second**. A
+body in flight is a projectile, so it now coasts at the velocity it left the
+ground with — evaluated rather than remembered, which keeps `root_velocity`
+a pure function of phase and preserves determinism.
+
+**A centred difference straddling toe-off halves the velocity.** The real
+find, and it took three wrong diagnoses. `root_velocity` differentiates
+across `[phase - STEP, phase + STEP]`; at the last grounded instant one side
+is in stance and the other airborne and barely moving, so the estimate comes
+out at **exactly 1.99x** too small — 2.746 m/s inside stance against 1.378
+at its edge. It reads as the body losing half its speed the moment a foot
+lifts.
+
+A walk never showed it because its stance windows overlap, so another foot
+always takes the reference. The fix is a one-sided difference near a
+boundary. Bisecting onto the boundary — the first attempt — made it *worse*,
+by landing deeper inside the straddling window.
+
+**A degenerate gait could publish 156 m/s.** `leg_phase` clamps a duty
+factor to a 0.01 minimum rather than rejecting it, so "no contact" is really
+a 1% stance sliver, and differentiating across it produced enough velocity
+to fling a character across a level in one frame. Now bounded against the
+leg's own reach and cadence, so the ceiling scales with the rig. A NaN duty
+factor slipped through the first version of that clamp, because `>` is false
+for NaN.
+
+**A result worth recording:** the run demands **96.8%** of the leg's
+straight length against the walk's 98.4% — *more* headroom despite a 1.7x
+longer stride, because its deeper stance knee (0.35 against 0.20) more than
+pays for it. Pinned as a comparison rather than an inequality.
+
+Live at `--anim-speed 3.0`: both feet off the ground at once (0.188 and
+0.183, against a standing 0.099), travelling **3.09 m/s** against the walk's
+0.62.
+
+### Turning, and stopping: the first two of six items toward a game-usable stack
+
+Six gaps were identified between "an impressive tech demo" and "something a
+player can control": turning, gait transitions, a run cycle, look-at, arm
+IK, and ragdoll triggering. The first two are done.
+
+#### Turning
+
+`facing.rs` owns the heading as a **scalar yaw**, not a `Quat`. A character
+on ground turns about one axis, and storing that as a quaternion makes two
+easy things hard: "shortest way round" becomes a neighbourhood problem (the
+`q`/`-q` hazard this project has paid for), and "how far is left" stops
+being a subtraction.
+
+`world_root_velocity` rotates the published velocity by the heading.
+`root_velocity` is derived from hip-relative foot motion, so it is a vector
+in the CHARACTER's frame — integrating it into a world position works only
+for a character that never turns.
+
+**The foot lock needed its own fix, and not the obvious one.** A lock pins a
+foot to a WORLD point, which is right under translation and wrong under
+rotation. Nor does it rescue itself: a 90-degree pivot sweeps a stance foot
+about **0.156 m** for this rig's hip width, INSIDE the 0.25 m break
+distance, so it stays locked and drags the whole way. `Turn` rotates the
+anchor about the body's own centre, which is what a real planted foot does.
+
+Two sign errors, both caught by tests. `yaw_of` had `atan2(x, -z)` on the
+intuition that positive-about-up turns toward `+X`; deriving it instead,
+`Ry(yaw) * (0,0,-1) = (-sin, 0, -cos)`, so the inverse is `atan2(-x, -z)`
+and **a positive yaw points toward `-X`**. And a direction test used a
+target of exactly `PI`, where both ways are equally short — a tie-break, not
+a property, now pinned as one.
+
+Live: at 1.2 m/s and 0.6 rad/s the character traces
+`(-1.79, 0.95) -> (-0.06, 0.38) -> (-1.08, -1.12)` holding `y = 0.95`,
+consistent with the 1.15 m circle those rates imply.
+
+#### Stopping — and a plan refuted by measurement
+
+This item was planned against two guesses, and **both were wrong**:
+
+- *"Stopping leaves a foot mid-swing."* It does not.
+  `GaitPhase::gait_frequency_hz` is `base + coefficient * speed`, and the
+  base term is `1/7` Hz — so a character told to stop **keeps stepping
+  forever** at 0.143 Hz. Measured: a foot creeping from `y = -0.093` to
+  `-0.035` over two seconds of standing still. Worse than freezing.
+- *"A speed change makes the pose jump."* The phase is continuous, so the
+  pose does not jump. What steps is the **cadence**: 1.2 m/s to a standstill
+  takes the clock from 1.223 Hz to 0.143 in one frame, an **8.6x**
+  deceleration in a single frame.
+
+So `transition.rs` is about rate, not about cross-fading poses — there was
+nothing to cross-fade, the gait already being one continuous function of
+phase. A smoothed cadence removes the 8.6x step; a weight that reaches zero
+removes the endless stepping.
+
+**A deadlock in the first design**, worth recording: the fade waited for a
+footfall while the cadence decayed toward zero, so the phase stopped
+advancing and the footfall never came. From phase 0.2 the cadence was near
+zero within half a second and the fade never began at all. The fix is also
+the better behaviour — the character walks its last step OUT rather than
+stalling mid-stride.
+
+**And a guarantee that hid its own mechanism.** `advance` snapped the
+cadence to exactly zero once the weight ran out. That made the stop
+untestable: reintroducing an idle-frequency floor in the decay left every
+test green, because the end state was ASSIGNED rather than reached. Removing
+the snap is what let `a_stopped_character_actually_stops` catch it, which it
+now does with the exact frequency in the message.
+
+Live: standing, `foot_l` holds `y = 0.099, z = -0.055` to three decimals
+over six seconds. Walking is unchanged at ~0.62 m/s.
+
+### Locomotion: a walk cycle, and root motion that does not fight a controller
+
+Four phases, commits 665fb14 / 7dba064 / e9b484e / fb8f554 plus this one.
+Everything in the leg stack — IK, foot locking, normal alignment, the
+toe-end clamp, the pelvis drop, the offline de-slider — previously only ran
+on a **standing** character. Foot locking exists for a moving one.
+
+**`gait.rs` is a phase-parameterised pose, deliberately not another
+`PhaseOscillator`.** That model is one sinusoid about one axis, and a leg is
+not a sinusoid in three ways: stance is ~60% of the cycle against swing's
+40%, the knee stays near-straight under load then folds ~50 degrees, and the
+knee LEADS the thigh. Adding leg oscillators is twenty lines that appear to
+work and produce the mirrored-pendulum walk.
+
+**`locomotion.rs` publishes a velocity; a controller owns the position.**
+That separation is what makes "no sliding by construction" and "does not
+fight a character controller" compatible — the naive foot-drives-the-root
+design conflates them. Nothing writes a `Transform`, so a controller may
+accept, clamp, project or ignore the request; when it refuses, the feet
+slide because the character IS being dragged, and the foot lock absorbs it.
+
+#### Measured
+
+| Quantity | Value |
+|---|---|
+| Travel per cycle | 1.04 m (0.52 m per step, ~1.04 m/s at 1 Hz) |
+| Tracked-foot residual over a cycle | **0.0074 m**, worst frame 0.17 mm |
+| Summed both-feet toe slide | 0.312 m, reduced to 0.042 m by the offline pass |
+| Reach headroom | 0.8% -> **1.6%** (2.9x the IK's softening band) |
+| Live knee flexion | 36.5 deg, leg at 95.0% of straight |
+| Slope following | sole on the surface within 0.01 m at a 0.3 grade |
+
+#### Five sign and frame errors, every one found by measurement
+
+1. **The walk ran BACKWARD.** `stance.rs` documented `KNEE_AXIS` as
+   "positive swings backward"; it swings forward. Thirty-odd tests passed
+   against a reversed gait because they asserted angles, symmetry,
+   continuity and ordering — all of which a backward walk satisfies. Nothing
+   asserted a DIRECTION.
+2. **The foot's sign is opposite to the leg's.** Every other bone hangs down
+   (`-Y`) where positive-about-X swings forward; the foot points forward
+   (`-Z`), where the same rotation lifts the toe. Written with the leg's
+   convention the toe pitched down at footfall — tip 0.02 m below ground,
+   ankle 0.12 m high.
+3. **Root motion through `LocalPose::root_translation` walked the character
+   STRAIGHT DOWN.** That field is routed through `hips_root_rotation` and
+   divided by the rig's parent scale, both right for a hip displacement in
+   the bind frame and wrong for world travel: on this Z-up rig it mapped
+   forward onto `-Y`, sinking at 0.69 m/s against a published 0.72. Travel
+   now moves the entity.
+4. **Horizontal travel alone is not locomotion.** On a 0.3 slope the
+   character held its starting height and ended 7.7 m under the hillside.
+   Height is now sampled from the ground rather than integrated.
+5. **Foot tracking picked the wrong foot.** Following the one planted
+   LONGEST selects the foot about to lift, so the reference switches
+   mid-difference and measures the gap BETWEEN feet: 245 m/s spikes, with a
+   110 m/s lateral component — exactly a hip width — that gave it away.
+
+#### Two measurement traps worth remembering
+
+**A continuity test that could not fail.** It sampled with a 1e-4 step
+against `Quat::angle_between`'s ~9.8e-4 precision floor — pure quantisation
+noise. Fixing it exposed a 0.05 rad knee jump at every footfall. The same
+measurement then showed two more traps: too wide a step stops being local
+and reports curvature as discontinuity, and `angle_between` is unsigned so a
+curve through its minimum reads as exactly zero.
+
+**The synthetic rig cannot show what the real one does.** Its lower leg is a
+0.07 m stub against a 0.459 m shin, so 42 degrees of knee flexion moves the
+sole 0.050 m there and the ankle 0.329 m on a real rig — 6x. A correct walk
+renders with a visibly straight leg in any synthetic-rig preview. The same
+gap then appeared for bind ROTATIONS: the real rig binds its foot at -69.8
+degrees where the test rig left it at identity, so a foot that sat flat in
+every test was visibly pitched in the game.
+
+**That gap is now closed by parsing the asset rather than transcribing it.**
+`gltf_rig.rs` reads `puppet_base.gltf` at test time — a `.gltf` keeps its
+node hierarchy in plain JSON and only mesh data in the `.bin`, so 69 nodes
+with their rotations and translations are readable with `serde_json`
+(already in the tree via `bevy_gltf`) without Bevy, the asset server or a
+GPU.
+
+Faithfulness check: parsed rest-pose foot pitch **26.6 degrees** against
+**26.1** measured on the live rig over BRP. Drift check: flattening
+`foot_l`'s rotation in the asset fails two tests with exact messages. The
+three modules that each carried their own hand-copied copy of the leg
+lengths now share one parsed helper.
+
+**The retargeting path is now covered too**, which an earlier version of
+this entry said needed the live app. That was wrong: of the five
+`HumanoidSkeleton` methods the path uses, only `entity` touches the ECS, and
+a spawned entity per bone is cheap. The claim conflated "needs a Bevy
+`Query`" with "needs the running game".
+
+So `retarget`'s tests now exercise `for_other_rig`,
+`hips_local_translation_for` (including a 0.01 parent scale, overridden
+because `puppet_base` is unit-scaled and the test asserts that first),
+`delta_in_bone_frame`'s conjugation, and `write_pose_to_skeleton` through a
+headless `World` with `MinimalPlugins` + `TransformPlugin` — the rig renders
+upright, human-scale and mirrored under real Bevy propagation.
+
+Two things that had to be right for those to mean anything. The conjugation
+test first used a delta about **X**, which the leg chain's own bind rotation
+is also about — parallel rotations commute, so it was vacuously passing;
+about **Y** it bites, verified by disabling the conjugation. And the
+propagation test needs the rig's `-90` degree correction ON THE ROOT ENTITY:
+without it the offsets and bind rotations are both glTF-local, so the rig
+renders lying down (head y 0.017 against foot y 0.088 — correct for a Z-up
+rig, wrong for a Y-up world).
+
+What still needs the live app is the **glTF loader** itself: these parse the
+asset's JSON, so they verify the maths against the bind pose the file
+declares, not that `bevy_gltf` reproduces it on load.
+
+#### Cleared, not fixed
+
+A ~26 degree nose-down foot was reported from a screenshot. Measurement
+cleared the gait: **standing still** the rig pitches the foot 26.1 degrees
+nose-down and walking is 22.2 — the gait slightly improves it.
+`relaxed_stand` contributes only 4.6 degrees; the rest is the artist's bind
+pose, and `legik`'s normal alignment deliberately adds only the ground's
+difference from level so it never flattens an authored pose.
+
+807 tests, clippy clean.
+### Cleanup: `relaxed_stand_v2` and `src/bench` deleted
+
+Both were carried as "open items" that were really just unused code.
+
+**`relaxed_stand_v2`** was exploratory output from testing the drag fixes —
+a pose with no Mixamo provenance that nothing consumed. It served its
+purpose (proving the studio could author and save a pose) and keeping it
+would have left the named-pose set carrying a pose nobody intended to use.
+`idle_stand` takes its place in `standing_poses()`, so the shape
+assertions it was covering still run — against a pose with *reproducible*
+provenance rather than hand-tuned numbers.
+
+**`src/bench`** (530 lines) had no consumer since the examples that used
+it were replaced. An earlier entry below records the decision to keep it
+documented rather than revive it; deleting it is the same judgement taken
+further, now that it is clear nobody is going to write the renderer
+example that would bring it back. `examples/anim_bench.rs` remains the
+animation harness. Removing it also freed the `image` crate dependency —
+`src/bench`'s screenshot RMSE was its only user.
+
+Both deletions left the test count unchanged (791 / 692), which is the
+point: neither had coverage to lose.
+
+### Correction: the joint-limit "chatter" was stale, and one real effect remains
+
+**790 → 791 tests.**
+
+This log carried an open concern that a joint driven into its rotation
+limit sat in a bounded-but-noisy limit cycle at ~6.5 rad/s. **Re-measured:
+it does not.** A pinned joint holds at **0.062 rad/s**, parked at exactly
+30.00°, and a sweep of avian's `swing_compliance` from 0 to 1e-3 changes
+nothing because there is nothing to absorb.
+
+That number was measured *before* `PdParams::stable_damping` and the frame
+fixes landed. It was then carried into the notes and repeated as an open
+question long after the thing it described had been fixed — the test's own
+bound stayed at `< 5.0 rad/s`, wide enough to hide the improvement.
+
+Tightened to `< 0.5`, plus an assertion that the joint is actually *at* its
+limit rather than passing by never reaching it.
+
+**What is real**, and now documented where it belongs: a joint holding a
+**mid-range** target does oscillate. A body's collider is centred on its
+segment, so its centre of mass sits half a bone from the joint anchor, and
+every commanded angular acceleration also demands a linear motion the point
+constraint cancels — which the controller re-commands next step. It
+persists with damping switched off entirely (3.2 rad/s at ζ=0) and scales
+with the anchor offset (0.10 rad/s anchored at the centre of mass, 13 at
+0.15 m), so it is a torque/constraint interaction rather than a control-law
+defect.
+
+A joint at its limit is quiet for a reason that follows directly: there the
+*constraint* holds it, and a constraint does not re-command itself.
+
+**At shipping ceilings it is much smaller** than the probes suggested —
+2.6 rad/s on an arm, 2.2 on a neck, 4.0 on a hip, against 11 at the 2000
+rad/s² used to make the mechanism measurable. The dominant failure there is
+**undershoot**, not noise: the arm reaches 6.8° of a 15° target, which is a
+weak joint running out of authority. `the_shipped_joints_are_calm_at_their_own_ceilings`
+now pins that, because a bound chosen at test scale says nothing about the
+rig anyone will actually use.
+
+### Phase 8, part one: the pose editor, with viewport dragging
+
+An in-engine pose editor behind the `anim_studio` feature. **674 → 722
+tests** (48 new, all under the feature; CI must build both ways or the
+gated code rots).
+
+Pose data is judged by eye, and this project's history is that the judging
+is where the time goes — two poses once shipped with limbs 59-77% off the
+rig's real bone lengths, past a green suite, caught only by a screenshot.
+Hot-reload already removed the recompile between a tweak and seeing it;
+this removes the rest.
+
+**Structure** mirrors `ragdoll`/`ragdoll_plugin`: `edit` and `drag` are the
+model and the maths as plain values and plain functions, fully unit-tested
+with no egui, no window and no mouse; `save` is RON I/O with real error
+types; `pose_editor` and `drag_plugin` are thin wiring. The interesting
+decisions are testable without standing up the machinery they run inside.
+
+Bones are edited as **axis + degrees**, the same decomposition the RON
+format stores. Nobody reads `(0.0, 0.0, 0.581, 0.814)` as "71 degrees about
+Z", and an editor whose numbers are unreadable barely beats the text file.
+The editor keeps its own `EditableRotation` per bone because
+`to_axis_angle` always returns a non-negative angle, so a round trip can
+flip the sign a user is looking at.
+
+**Viewport dragging.** Grab a joint and pull; the bone follows. Grabbing a
+joint rotates its **parent** — a joint's position is set by its parent's
+rotation, so steering the elbow bends the upper arm. The aim is composed in
+the parent's frame (a world-space arc onto a local rotation is the "right
+angle, wrong axis" bug this project has hit before), with an explicit
+antipodal guard because pulling a limb through its own pivot is a natural
+drag and an undefined arc. Overlapping joints tie-break by depth, nearest
+first: on a front view a hand can sit over a hip, and the one you can see
+is the one you mean.
+
+#### Three bugs, all caught by the mandatory screenshot
+
+1. **Opening the editor destroyed the pose.** The studio's default is the
+   REST pose and the panel writes its edit onto the rig, so the first frame
+   replaced a `relaxed_stand` character with a T-pose. Opening an editor
+   must never modify the thing being edited. The fix needed a second pass:
+   the rig spawns asynchronously from a glTF, and the first version marked
+   adoption done against a still-empty query.
+2. **Drag handles floated off the upper body.** They were computed by
+   running forward kinematics on this crate's *synthetic* T-pose
+   proportions, while the character on screen is a real retargeted mesh
+   with its own. The legs happened to line up and the arms did not — the
+   kind of partial wrongness that reads as "close enough" at a glance. Now
+   read from the rig's own `GlobalTransform`s, the same ground truth the
+   skeleton gizmos use, so a handle lands on its joint by construction on
+   whatever rig is loaded.
+3. egui's default font has no glyph for `→`, so the mirror buttons rendered
+   as replacement boxes.
+
+#### Three more bugs, all found by actually using it
+
+The editor was usable enough to produce `relaxed_stand_v2` — the first pose
+in this project authored by dragging rather than by converting reference
+data. Getting there surfaced:
+
+4. **Dragging never ran at all.** `Query<(&Camera, &GlobalTransform)>`
+   matches two entities: the scene camera and the internal view Bevy's
+   shadow mapping creates. `single()` failed every frame and the system
+   returned immediately — while the handles kept drawing from a *different*
+   system, so nothing looked wrong. The same trap that once made the
+   gallery's entire egui UI render to an invisible camera. Confirmed live
+   via BRP before fixing.
+5. **Clicking a joint jerked it; dragging spun it.** The drag re-read its
+   inputs from the live rig each frame. Every input is now snapshotted at
+   the grab, plus a `grab_offset` so a click with no mouse movement is a
+   no-op. (A first diagnosis — that re-reading the joint's *position*
+   compounds the arc — was tested and **disproved**; that loop converges.
+   The real cause was the parent frame drifting as retargeting re-ran.)
+6. **Vertical drags moved the joint the wrong way.** A pose stores a
+   rig-independent *delta*, and `retarget` wraps it twice —
+   `rest_rotation(bone) * (bind⁻¹ · delta · bind)` — so the frame it acts
+   in is `parent_world · rest_rotation · bind`. Passing only `parent_world`
+   inverted one screen axis while leaving the other correct, exactly the
+   reported symptom.
+
+   Bug 6 had been **invisible to the test suite because a test was
+   validating it**: `aiming_works_in_the_parents_frame_not_the_world`
+   reconstructed the world direction with the same wrong convention the
+   code used, so it agreed with the bug and passed. Replaced with one that
+   pushes the answer through `forward_kinematics`' own composition
+   verbatim, on the real retargeted fixture — a synthetic rig has identity
+   rest rotations and is structurally blind to the whole class.
+
+### Phase 8, part two: spring tuning
+
+Per-bone DHO tuning with a live step-response plot. **739 → 752 tests.**
+
+The pose says *where* a character goes; the springs say *how it gets
+there*, and that is the whole difference between a heavy brute and a quick
+duellist reading from identical pose data. It is judged by feel, so it has
+to be adjusted while the thing moves.
+
+- **Four presets** — Heavy, Default, Quick, Floaty. Each *scales* the
+  rig's existing grading rather than stamping one value across it: a
+  uniform half-life is what makes a character read as a puppet, because
+  every joint arriving at once is the one thing real bodies never do. A
+  test enforces that every preset keeps spine slower than extremities.
+- **Scoped edits** — bone, chain, or whole rig. Chain is the useful
+  default, since a limb's feel comes from the whole chain rather than one
+  joint.
+- **A step-response plot**, which is the point. Whether a spring overshoots,
+  by how much, and how long it rings is the thing a damping-ratio number
+  cannot convey; choosing one without seeing its curve is guessing. The
+  plot's vertical range expands to contain the peak, so overshoot is
+  visible rather than clipped off the top — the failure mode that would
+  make an underdamped spring look identical to a critically damped one.
+
+Tested where it matters and not where it does not: presets are ordered by
+speed, only the documented ones overshoot, a chain scope reaches the hand
+but not the other arm, a critically damped curve never exceeds its target
+and an underdamped one does, and the curve's shape does not change with
+the plot's duration.
+
+### Phase 8, part three: the reference-data pipeline
+
+`tools/dump_animation_pose.py` upgraded and closed into a working loop.
+**752 → 755 tests.** A real pose, `idle_stand`, now comes straight from
+`assets/models/idle.glb` — the first with *reproducible* provenance, since
+its source positions are committed beside it.
+
+```
+blender --background --python tools/dump_animation_pose.py -- \
+    assets/models/idle.glb --frame 0 --ron /tmp/idle.positions.ron
+cargo run --release --example import_reference_pose -- \
+    /tmp/idle.positions.ron assets/anim/idle_stand.pose.ron
+```
+
+Also added: frame ranges (`--start/--end/--step`), local rotations
+(`--rotations`, diagnostic), and per-frame toe speed (`--velocities`) for
+offline contact annotation — 0.0001 m/s on a standing idle, correctly
+reading as planted against `FootLockConfig`'s 0.15 m/s threshold.
+
+#### Positions, not rotations — the first thing that was wrong
+
+Dumping Blender's local rotations directly into a `.pose.ron` was built,
+tried, and **is wrong**. A bone's local rotation there is relative to
+*Mixamo's bind pose*; a `LocalPose` stores a delta relative to *this
+crate's T-pose*. The numbers transfer cleanly and mean something else on
+arrival — measured, the left hand landed 0.54 m **above** the shoulder.
+The same class as the once-live "arms overhead" retargeting bug.
+
+So Blender reads the clip and Rust does the maths: the dump emits world
+positions, which carry no reference frame to get wrong, and
+`convert::pose_from_world_positions` derives the rotations — the path that
+produced `relaxed_stand` in the first place.
+
+#### Three coordinate bugs, each caught by a screenshot
+
+The conversion took three corrections, and **each looked right until
+rendered**:
+
+1. **Z-up to Y-up.** Caught by the numbers.
+2. **The forward-axis sign.** "This crate faces −Z, Blender's +Y is
+   forward, so +Y becomes −Z" is the obvious inference and is wrong. The
+   character stood with its head tilted back staring at the sky — at the
+   same 41.2° as `relaxed_stand`, with the axis negated. Settled against
+   the data instead: `relaxed_stand`'s source had `Neck` at z = +0.0681
+   where Blender reports y = +0.0731, so +Y maps to **+Z**.
+3. **The X mirror.** Mixamo puts the character's left on +X; this crate
+   puts it on −X. Without negating, the import arrived mirrored — shoulders
+   swapped, feet splayed, body reading as turned. Caught only after the
+   neck fix made everything else look plausible.
+
+Note that mirroring X is a *reflection*, so it inverts handedness: an
+axis-angle rotation keeps its reflected axis but reverses its angle. The
+RON export routes through positions specifically so that subtlety cannot
+reach an imported pose.
+
+#### The test that makes the pipeline trustworthy
+
+`relaxed_stand` and `idle_stand` come from the **same clip frame by
+completely independent routes** — the first through the superseded
+position-space module, the second through the new tooling. A test asserts
+they describe the same posture (within 12°, loose enough for the old
+pose's documented hand-editing) and that the arms are not swapped.
+
+Two independent derivations agreeing is worth far more than either
+matching a number chosen by hand — and it makes the coordinate conversion
+permanently regression-tested, which is exactly what took three attempts.
+
+### Phase 8, part four: clips and the timeline
+
+The rewrite had **no clip type at all** until now — every pose was a single
+frame, by design. Stages 1 and 2 already produce continuous, non-repeating
+motion from one authored pose, which is why this arrived last rather than
+first. What they cannot produce is a *sequence*: a footfall pattern, a
+wind-up and release, anything whose shape over time is the thing being
+authored.
+
+**755 → 774 tests.** `src/character/anim/clip.rs` is the model (16 tests,
+no egui); `studio/timeline.rs` is the panel.
+
+- **Sparse keyframes of whole poses**, slerped per bone with
+  neighbourhooding before the interpolation — the recurring quaternion bug
+  in this project, and a blend is exactly where it bites. A test asserts a
+  rotation blended with its own negation does not move the bone.
+- **Contacts are stepped, never interpolated.** A foot is planted or it is
+  not; Stage 3 cannot act on a half-planted foot. The lane drawing and
+  `contacts_at` share that rule, so the picture cannot show a foot planted
+  during a span the runtime treats as lifted.
+- **Dragging a keyframe reports where it landed**, because a drag can
+  reorder the clip and a UI holding an index would otherwise silently
+  select a different keyframe.
+- Interpolation cannot stretch a bone — asserted across 21 samples of a
+  clip, since a blend produces rotations nobody authored and is where an
+  incorrect one would surface.
+
+`--studio-timeline` and `--studio-demo-clip` exist for verification: an
+empty timeline renders its chrome and proves nothing about keyframes,
+scrubbing or contact lanes, which are most of what the panel is. With the
+demo clip the screenshot shows 3 keys over 1.60 s, correctly spaced, with
+the L lane running full width and the R lane stopping partway — the
+authored weight shift, and proof the lanes read real data rather than
+drawing a fixed bar.
+
+### Phase 8, part five: phase oscillators and IK effectors — Phase 8 complete
+
+**774 → 790 tests.**
+
+#### The phase-oscillator editor
+
+Each oscillator is four numbers and none means much alone: amplitude is
+radians on a bone whose visible motion depends how far down a limb it
+sits, a harmonic of 2 reads as "peaks at each footfall" rather than "twice
+as fast", and an offset of `PI/2` is the difference between hip sway
+reinforcing spinal twist and cancelling it.
+
+So the panel plots every oscillator on **one axis**. What is being tuned is
+how the waves sit against each other, and a wave in isolation says almost
+nothing. The plot scales to the largest amplitude present, so a two-degree
+breath beside a twenty-degree sway stays a small wave rather than
+flattening to a line. Amplitudes are edited in degrees — nobody judges
+"is this sway too big" in radians.
+
+Opening the phase panel necessarily un-suspends the procedural animation
+the studio otherwise freezes while authoring; it is the one panel whose
+subject *is* that motion.
+
+#### IK effectors
+
+Grab a hand or foot and the whole limb solves, wrapping the shipped
+`solve_two_bone` rather than writing a second solver — an editor computing
+poses by different code than the runtime is how the two drift apart.
+Effector tips draw larger and orange, so it is visible *before* clicking
+which handles pose a limb and which rotate one bone.
+
+**One real bug, and a test that hid it.** The chain pivots at `upper`, not
+at `root`: a shoulder or hip socket is a fixed attachment the solve never
+rotates, sitting 0.14 m from where the limb actually pivots on this rig.
+Measuring target distance from `root` added that offset to every solve and
+landed exactly that far short.
+
+It took an embarrassing number of passes to find, because *the test made
+the same mistake* — computing its target from `root` too, so it was asking
+for points genuinely outside the chain's reach. Two errors partly masking
+each other, which is why the symptom looked like an imprecise solver and
+survived several wrong fixes (an iterative refinement loop, an explicit
+child lookup) before measurement showed the distance was already exact and
+only the reach was wrong.
+
+**Phase 8 is complete.** The studio covers pose editing with viewport
+dragging, spring tuning, clip authoring, phase oscillators, and IK
+effectors; the reference pipeline turns a Mixamo clip into a loadable
+pose.
+
+### Stage 4 completed: physics now reaches the rendered skeleton
+
+`RagdollSet::ReadBack` had been declared and empty since Phase 6 — the
+simulation ran, the PD controller worked, and nothing downstream read the
+result. The character rendered its kinematic pose regardless, making Stage 4
+an expensive no-op. Test count **669 → 674**.
+
+#### Two frame bugs, found by asking the rig instead of guessing
+
+Wiring read-back was blocked on a prior question: the driven bodies visibly
+sagged instead of tracking. Reading back a wrong pose would only have made
+the bug more visible.
+
+BRP against the live ECS settled it in one query. `Hips` — the kinematic,
+pinned root — matched its target **exactly**, while `Spine` one joint down
+was wildly off. That proved `publish_joint_targets` was correct and moved
+the search downstream. A direct comparison then showed `target-vs-BONE` at
+**0.0° for every bone in the rig**: the targets were perfect, and the bodies
+were in the wrong frames.
+
+1. **`spawn_bone_body` oriented each body along its own segment**, not in
+   its bone's frame. For a bone whose bind rotation differs from its
+   parent's those are different things — 93° apart on the knees, 46° on the
+   ankles, ~40° on the shoulders, while the spine and arms happened to
+   agree. Fixed by building the capsule from explicit endpoints so the
+   *collider* carries the alignment and the body's rotation means exactly
+   one thing.
+2. **`connect_bodies` anchored each joint in the bone entities' frames**,
+   but a body sits at its segment's midpoint — half a bone away. Every
+   constraint pulled toward the wrong point. Both passes of `spawn_ragdoll`
+   now derive the body centre from one shared helper, so agreement is
+   structural rather than a convention two call sites must remember.
+
+Settled tracking error with gravity off: **177° → 15°**.
+
+Three hypotheses were killed by measurement first: gravity (177° error
+persisted with it disabled), torque ceiling (64× more torque only reached
+93°), and joint limits (154° without any). Each was cheap to test and each
+would have been a plausible-sounding wrong answer.
+
+#### The read-back itself
+
+`read_back_simulated_pose` walks parent-before-child inverting the world-
+rotation accumulation (`local = bind⁻¹ · parent_world⁻¹ · world`), so a
+bone with no body keeps its animated rotation and a partial ragdoll renders
+correctly. Per-joint strength selects what is *shown*, inverted from the
+torque path: `slerp(animated, simulated, 1 - strength)` displays the
+simulation exactly where the controller has stopped enforcing the animation.
+
+Verified per the mandatory protocol, Front and Left, claims stated first: a
+limp ragdoll's skeleton visibly **collapses into a heap**; a fully driven one
+**stands correctly**, indistinguishable from the kinematic render.
+
+`JointTarget` and `Bone` are now `Reflect`, so the rig is queryable over
+BRP — which is what made the diagnosis quick and is worth keeping.
+
+**One test caught mid-writing:** the read-back tests initially passed
+through a world where read-back never ran, because the headless harness
+hand-registers systems rather than adding the plugin. Fixed, then confirmed
+non-vacuous by disabling the read-back and watching the limp test fail.
+
+### Ragdoll: joint limits, a full-rig spawn, and two real bugs
+
+Closing the three items Phase 7 left open. Test count **654 → 669**.
+
+**Joint limits shipped.** `JointLimits` (a swing cone plus a twist range,
+the shape avian's `SphericalJoint` already solves) with a per-bone
+anatomical table. Swing-twist rather than three Euler ranges because Euler
+limits on a ball joint are order-dependent and gimbal-lock, so a limit that
+reads right in one pose silently means something else in another.
+
+Deliberately generous: these are *anatomical stops* that prevent a knee
+bending backwards, not a pose authoring tool. Shaping motion inside the
+range is the controller's job, and a tight limit means the controller lives
+pressed against a constraint — the configuration Phase 6 flagged as risky.
+
+#### The `kd · dt` finding
+
+Phase 6 deferred limits because "a PD driving against a constraint is a mild
+analogue of the two-rotational-springs instability". Building the test found
+a real defect, though not that one.
+
+A jointed body driven to a reachable target **vibrated at 12 rad/s**, and
+the vibration got *worse* with more damping:
+
+| ζ | `kd·dt` | chatter |
+|---|---|---|
+| 0.0 | 0.00 | 3.2 rad/s |
+| 0.5 | 0.98 | 10.0 rad/s |
+| 1.0 | 1.96 | 12.3 rad/s |
+| 4.0 | 7.85 | 16.9 rad/s |
+
+Damping that amplifies oscillation is not damping. This is the textbook
+explicit-integration bound `kd · dt < 2`, and at avian's 64 Hz default with
+ζ = 1.0 the ceiling lands at ~10 Hz — where the **shipped hip and spine
+joints already sat**, at 98% of the limit. The 10 Hz hip was measurably the
+worst-behaved joint in the rig, overshooting a 15° target to 29°.
+
+Two fixes: `PdParams::stable_damping(dt)` clamps the gain at runtime, and
+the heavy joints dropped from 9–10 Hz to 8 Hz. "Corrects harder" is what
+`max_torque` expresses — the hip's ceiling is still 20× the neck's —
+whereas frequency is how fast the correction is *integrated*, a property of
+the solver. Raising it past what the step can carry makes a joint unstable,
+not strong. `every_default_joint_is_well_conditioned_for_the_physics_timestep`
+now fails loudly on a future edit that reaches for a higher frequency.
+
+Several wrong hypotheses were killed on the way: limits (bit-identical
+with and without), torque ceiling (present at 70 and at 2000), and substep
+count (helps, does not fix). Each was measured rather than reasoned about.
+
+#### The ragdoll was falling out of the world
+
+`spawn_ragdoll` builds a complete simulated skeleton — 17 bodies, the 22
+bones minus 5 leaves — from a live `HumanoidSkeleton`, so it works on a
+retargeted glTF as well as the synthetic rig.
+
+Wiring it into the gallery immediately exposed something no headless test
+had: the bodies were at **y = −1930 m**, every joint correctly oriented,
+the whole assembly in free fall. The PD controller drives *rotation only*;
+nothing was driving position.
+
+`a_full_ragdoll_holds_itself_together_under_gravity` passed throughout,
+correctly — a ragdoll falling as one connected body keeps its spread
+constant. It took a screenshot to see, and BRP against the live ECS to
+confirm. `RagdollSpawnConfig::pin_root` (default on) fixes it, with
+`a_full_ragdoll_does_not_fall_through_the_world` as the cheap version of
+that screenshot and `an_unpinned_ragdoll_is_free_to_fall` proving the
+switch is real in both directions.
+
+A second bug caught before it ran: `simulated_segment_child` originally
+delegated to `Bone::chain_continuation_child`, which only names a child for
+the two *multi-child* bones and returns `None` for every single-child one —
+a ragdoll of exactly 2 bones out of 22.
+
+#### `src/bench` is renderer-only, and stays that way
+
+Not revived. It is built around a windowed render loop — scripted cameras,
+screenshot RMSE, per-frame wall-clock — which is the right shape for the
+SDF pipeline and the wrong shape for CPU work: a windowed frame time is
+vsync-capped and reports ~16.7 ms regardless of animation cost. Scope note
+added to its module doc; `examples/anim_bench.rs` remains the animation
+harness. Merging them would produce one that answers neither question
+honestly.
+
+**Resolved by the entry above:** `RagdollSet::ReadBack` had no system, and
+the driven bodies sagged rather than tracking. Both are fixed; the sagging
+turned out to be two frame bugs, not a tuning problem.
+
+### Phase 7 — `src/character/muscle` deleted (7,158 lines)
+
+The position-space mass-spring solver is gone. `src/character/anim` is now
+the only animation stack, and the `--anim-backend` A/B switch that carried
+the cutover has been removed along with it.
+
+**Test count: 759 → 654.** The 106 removed tests were the solver's own
+(`solve_muscle.rs`'s 23, plus pose/retargeting tests for code that no
+longer exists). No test was deleted that covered surviving behaviour.
+
+**What had to be preserved, and how.** Two real runtime dependencies ran
+from `anim` back into `muscle`:
+
+1. `poses.rs` *converted* `relaxed_stand` and `wave` from the
+   position-space tables **at startup**, every launch. Those values trace
+   back to real Mixamo `idle.glb` reference data, so they could not simply
+   be re-eyeballed — this project's own history is that hand-guessed pose
+   offsets ship 59-77% wrong past a green suite. The conversion output was
+   frozen into `assets/anim/*.pose.ron` (the same files the asset loader
+   hot-reloads) and embedded with `include_str!`, making the files the
+   single source of truth for both paths.
+
+   **Verified before deleting**, not after: a temporary test asserted the
+   embedded RON reproduced the live conversion to within 1e-5 on every
+   bone of both poses, and was confirmed to fail loudly (naming the exact
+   bone) when a pose file was perturbed by 2°.
+
+2. `convert.rs`'s conversion-fidelity tests read the same tables. Their
+   input is now a frozen `RELAXED_STAND_TARGETS` fixture, guarded by a
+   test asserting every bone appears in it exactly once.
+
+**A new risk the deletion created, and its guard.** The pose rotations
+were previously *derived*, so their provenance was enforced by
+construction. Frozen into a file, they became bare literals that nothing
+validated — precisely the setup that has failed here before. Added
+`relaxed_stand_still_matches_its_reference_data`, pinning the pose against
+the real Mixamo world positions it came from (tight 1 cm bound on the
+spine chain; 15 cm on the arms, which inherit the shoulder displacement
+rotation space provably cannot express). Confirmed non-vacuous: a 10°
+corruption moves the hand 18 cm and fails.
+
+**One test written and then rejected as worthless.** An initial
+"compiled-in poses match the files on disk" test could not fail — both
+sides parse the same bytes through the same loader, so cargo rebuilds them
+in lockstep. Checked by inverting `PoseAsset::to_local_pose` and watching
+it still pass. Replaced with a load test that asserts what it can actually
+observe (the file parses, names only real bones, and yields a posed rig),
+with the limitation written into its own doc comment.
+
+**Gallery changes.** `draw_muscle_debug_gizmos` became
+`draw_skeleton_debug_gizmos`: the white joint chain and yellow rest
+markers survive (both read the bones' real `GlobalTransform`s), the
+magenta velocity layer is gone with `MuscleSim`. The egui panel's dead
+muscle dials were replaced with live pose switching, gait speed, ground
+slope, and spring tuning. Three `MuscleSim` HUD helpers collapsed into
+`worst_bone_length_error`, which measures the rig against **its own first
+frame** rather than the synthetic T-pose constant — the real mesh is
+uniformly scaled, so comparing against the constant would report a large
+permanent error on a perfectly correct rig.
+
+That readout is now a **structural alarm rather than a convergence
+check**: a rotation cannot stretch a bone, so anything above float noise
+means something is writing translations into the chain. It reads
+**0.00000 m** live.
+
+**Verification.** Front and Left, `--gizmos on --show-real-mesh off`,
+claims stated first: both forearms and hands visible hanging at the sides;
+both knees softly bent; both feet on the ground plane. All three hold, and
+the rig is positionally bit-identical to the pre-deletion baseline (the
+only diffs are 1-2° on spine/neck rotations, which is the breathing
+oscillator — the baseline drifts by the same amount between its own
+frames).
+
+**A documentation trap found while doing this.** Gizmos are depth-tested,
+so the skinned mesh hides the entire joint chain running inside it.
+`--gizmos on` alone shows only the few markers past the silhouette, which
+reads as a broken overlay and — worse — can be mistaken for a verified
+skeleton view while showing almost nothing. AGENTS.md's rule 3 now
+requires pairing it with `--show-real-mesh off`.
+
+**Docs updated:** AGENTS.md's mandatory verification rules pointed at three
+deleted paths and at `MuscleSim` as ground truth. The
+`character-animation/` knowledge tree now records what migera actually
+built (it claimed the project was "still in its first, static-T-pose
+milestone"), and the Lugaru document carries a status note so it is read as
+prior art rather than as current code.
+
+**Still open:** `src/bench` remains orphaned — `examples/anim_bench.rs`
+was written standalone rather than reviving it, since that revival is its
+own task. Joint limits ship as `None` (Phase 6's note stands). No example
+spawns a full 22-body ragdoll yet.
+
+## Leg IK, the last three gaps against Holden's recipe (commits 66739b0, ecc3b3f)
+
+`src/character/anim` implemented the article's leg-IK recipe in Phase 3 but
+left three of its steps unbuilt: the toe-end re-orient, foot alignment to
+the ground normal, and the pelvis vertical adjustment. `GroundHit::normal`
+had been computed by `SlopedGround`, carried through the whole stack, and
+read by **nothing** — a foot on a ramp stayed level and buried its heel.
+
+**The toe end came from the rig, not a guess.** `puppet_base.gltf` turns
+out to have the joint the plan assumed was missing: the chain is
+`foot_l → ball_l → ball_leaf_l`, with the leaf 0.0789 m past a 0.1591 m
+toe — a ratio of 0.496, hence `TOE_END_FRACTION = 0.5`. It stays out of the
+`Bone` enum, so every `[T; 22]`, every RON asset and the glTF resolution are
+untouched; `RigGeometry::with_toe_end` takes a measured offset where a rig
+has one.
+
+**Measured numbers.**
+
+| Quantity | Value |
+|---|---|
+| `LeftFoot` pitch, flat ground (live) | −84° |
+| `LeftFoot` pitch, 0.4 slope (live) | −60° |
+| Tilt alignment adds (unit A/B) | 0.304 rad = slope × 0.8 blend |
+| Toe tip vs surface, alignment off | −0.015 m (sinking) |
+| Toe tip vs surface, alignment on | +0.049 m (clear) |
+| Rig's permanent reach shortfall, flat | 0.0108 m |
+| Pelvis drop, flat ground | 0.000 m |
+| Pelvis drop, 5 cm dip | 0.060 m (at cap) |
+| Pelvis drop, 0.12/0.25/3 m drop | 0.000 m (ledge) |
+
+**Four wrong diagnoses, each killed by measurement rather than argument.**
+The alignment overshoot was blamed in turn on double rotation, cross-frame
+accumulation, and rig feedback; instrumenting the solver showed it
+receiving *identical, correct* input every frame — the defect was in the
+test's measurement, which compared sloped against flat ground and so
+conflated alignment with a different leg solve. Comparing alignment-on
+against alignment-off on the **same** ground gives 0.304 rad, exactly as
+designed. Separately, the "0.035 m tip sink" recorded in the first commit
+was measured mid-fix and no longer existed once alignment landed.
+
+**Two bugs that only a real rig exposes.** The toe-end offset must live in
+the *toe's* frame, not its parent's — identical on the synthetic rig
+(identity bind rotations) but `puppet_base` binds `ball_l` at ~180°, which
+points the tip back into the heel. And `reach_margin` as "treat the leg as
+shorter" lowered the hips on level ground forever, because the rig is
+authored at exactly critical extension and carries a permanent 0.0108 m
+shortfall on every surface; it is now a deadband that gates the correction
+without scaling it.
+
+**A boundary worth knowing, opposite to the naive expectation:** a 5 cm dip
+lowers the hips, while 0.12 m, 0.25 m and 3 m do not. Past
+`FootLockConfig::max_contact_height` a surface is a ledge, the foot keeps
+following the animation, and there is no shortfall to correct.
+
+**Verification.** Every new behaviour was sabotage-tested — alignment
+disabled fails 4 tests, the pelvis gate fails 5, the toe-end frame
+conversion fails exactly 1 while the other four toe tests pass either way
+(they are blind to it, which is why the targeted one exists). 726 tests,
+clippy clean. Live: `LeftFoot` −84°→−60° across the slope change, hips
+unchanged at 0.95 on flat ground.
+
+**Still open at the time of this entry:** the article's offline PBD
+foot-sliding removal. Built in the next entry below.
+
+## Offline foot-sliding removal (PBD over a whole clip)
+
+The last unbuilt piece of the article's recipe, and the only one that is not
+a runtime system: `src/character/anim/slide.rs`. The runtime foot lock is
+causal — it sees only frames that have happened, so it can pin a foot but
+cannot know the pin will need to be elsewhere in forty frames. An authored
+clip has every frame available at once, so the error can be distributed
+across the whole contact and baked in at zero runtime cost.
+
+**Three constraints, relaxed by Gauss-Seidel sweeps** over arrays of pelvis
+and toe world positions:
+
+1. **Contact coherence** (`hard_factor` 0.9) — consecutive in-contact frames
+   pull toward their shared midpoint, clamped to the ground. This removes the
+   slide.
+2. **Motion preservation** (`soft_factor` 0.05) — everywhere else, each frame
+   pulls toward reproducing the *original* frame-to-frame offset. Without it
+   the solve collapses the animation to a single motionless pose, which
+   satisfies constraint 1 perfectly.
+3. **Limb length** (`soft_factor`) — pelvis and toe preserve their original
+   separation, so pinning a foot is not satisfied by an infinitely long leg.
+
+**Measured.**
+
+| Quantity | Value |
+|---|---|
+| Toe travel, posed clip, before → after | **0.2900 m → 0.0057 m** (98% removed) |
+| Solver's own slide metric | 0.2900 → 0.0033 m |
+| Worst leg-length change, constraint on | 0.0043 m |
+| ...constraint off | 0.0427 m (10x worse) |
+| Slide after 1,000 sweeps | 0.0124 m |
+| Slide after 25,000 sweeps | 0.0033 m |
+
+**The iteration budget is mostly waste.** The article specifies 25,000
+sweeps. Measured: sliding is already at 0.0124 m after **1,000**, and the
+remaining 24,000 refine it to 0.0033 m — 25x the work for a 4x improvement
+on a quantity invisible either way. A synthetic clip does hit the 1e-4
+movement threshold at ~4,070 sweeps, but a real posed clip never does; the
+tail converges asymptotically. Both numbers are recorded rather than the
+budget being taken on faith.
+
+**Every constraint has a test proven to bite.** Each was disabled in turn:
+contact coherence fails 3 tests, motion preservation 1, limb length 1. Two of
+those tests only bite after being rewritten —
+
+- The motion-preservation term is a *restoring force*: it pulls toward "the
+  neighbour's current position plus the original offset", which for
+  unperturbed input IS the current position, so a free swing in isolation
+  exercises nothing. It is only observable where contact pulls against it,
+  and the effect concentrates entirely in the seam frame (measured 0.140 m
+  jump with the term disabled, against an authored 0.03 m step).
+- The limb-length test originally allowed 0.12 m, roughly 28x too loose to
+  notice the 0.0427 m stretch its own constraint prevents.
+
+**Reachable, not just implemented:** `remove_foot_sliding` is wired to a
+"Remove foot sliding" button in the studio timeline, which reports the
+before/after slide next to it rather than merely claiming success.
+
+**Deterministic**, asserted bit-for-bit across two runs. It matters more for
+a bake than for anything at runtime: a pass that drifted between runs would
+make an authored clip depend on when it was exported.
+
+845 tests with `--features anim_studio`, 746 without; clippy clean in both.
+

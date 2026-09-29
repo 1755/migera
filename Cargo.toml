@@ -1,0 +1,42 @@
+[package]
+name = "migera"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19.1", features = ["bevy_dev_tools", "file_watcher", "bevy_remote"] }
+bevy_ecs = { version = "0.19.1", features = ["debug"] }
+bytemuck = "1"
+fastrand = "2"
+bevy_egui = "0.42.0"
+avian3d = "0.7.0"
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
+
+[features]
+default = []
+# The in-engine animation authoring studio (`character::anim::studio`).
+#
+# Gated so a consumer shipping a game never links the editor UI. Note this
+# does NOT gate `bevy_egui` itself: four examples already use it directly
+# for their own debug panels, so making the dependency optional would force
+# `--features` onto unrelated work for no benefit. What this gates is the
+# studio's own code — the panels, the save path, the dirty tracking.
+#
+# CI must build both with and without it, or the gated code rots silently.
+anim_studio = []
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }
+naga_oil = "0.22"
+# Reads `assets/models/*.gltf`'s node hierarchy in tests, so a test rig is
+# parsed from the real asset rather than hand-transcribed from it — see
+# `character::anim::gltf_rig`. Already in the tree via `bevy_gltf`, so this
+# costs no extra compilation.
+serde_json = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

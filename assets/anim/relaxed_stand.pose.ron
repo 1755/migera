@@ -1,0 +1,99 @@
+(
+    bones: {
+        // The LEGS ARE DELIBERATELY ABSENT.
+        //
+        // They used to carry a baked knee flex, authored in the synthetic
+        // rig's facing convention. A stored rotation cannot know which rig
+        // it will drive, and `puppet_base.gltf` faces the opposite way — so
+        // the baked bend rendered as a BACKWARD-bending knee on the real
+        // character, and no runtime correction could reach it because the
+        // value was already in the file.
+        //
+        // The knee flex is now applied at runtime by
+        // `stance::stance_on_rig`, which derives the bend direction from
+        // the rig's own measured geometry. Do not re-bake it here.
+        //
+        // What remains is the Mixamo-derived upper body, which is
+        // rig-independent: arms, spine, neck and head.
+        //
+        // EXCEPT the neck's angle. The clip bows it 41.27 degrees, and on
+        // the rendered rig that had the character staring 30.5 degrees at
+        // the floor. 10.64 degrees about the same axis levels the gaze
+        // exactly, over the clip's own spine curve — which is kept, because
+        // it is what holds the body's centre of mass 4.8 cm ahead of the
+        // ankles, as Winter's quiet stance does. Solved on
+        // `gltf_rig::puppet_base_as_rendered`; pinned by
+        // `poses::tests::the_relaxed_stand_stands_upright_and_balanced`.
+        "Neck": (
+            swing: (
+                axis: (-0.9990133, 0.0, -0.0444121),
+                degrees: 10.6437,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftShoulder": (
+            swing: (
+                axis: (0.0, -0.6989497, 0.71517086),
+                degrees: 25.556078,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Spine1": (
+            swing: (
+                axis: (0.89769, 0.0, -0.44062755),
+                degrees: 9.946601,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightForeArm": (
+            swing: (
+                axis: (0.0, 0.8163416, -0.57756937),
+                degrees: 1.4620346,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftForeArm": (
+            swing: (
+                axis: (0.0, -0.82655925, 0.56284964),
+                degrees: 1.4620383,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightShoulder": (
+            swing: (
+                axis: (0.0, 0.8389496, -0.54420906),
+                degrees: 19.6339,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftArm": (
+            swing: (
+                axis: (0.0, 0.21313176, 0.9770235),
+                degrees: 71.0214,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Spine": (
+            swing: (
+                axis: (0.7016886, -0.0, 0.7124838),
+                degrees: 6.2451096,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Spine2": (
+            swing: (
+                axis: (-0.56565285, 0.0, -0.82464355),
+                degrees: 4.758554,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightArm": (
+            swing: (
+                axis: (0.0, -0.23060729, -0.97304696),
+                degrees: 71.02141,
+            ),
+            twist_degrees: 0.0,
+        ),
+    },
+    root_translation: (0.0, 0.0, 0.0),
+)

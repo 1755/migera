@@ -1,0 +1,26 @@
+(
+    bones: {
+        "RightShoulder": (
+            swing: (
+                axis: (-0.0, 0.70710653, 0.70710707),
+                degrees: 54.73561,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightArm": (
+            swing: (
+                axis: (-0.0, 0.5415802, 0.8406491),
+                degrees: 27.75563,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightForeArm": (
+            swing: (
+                axis: (0.9457433, 0.19446203, -0.26029634),
+                degrees: 93.194534,
+            ),
+            twist_degrees: 0.0,
+        ),
+    },
+    root_translation: (0.0, 0.0, 0.0),
+)

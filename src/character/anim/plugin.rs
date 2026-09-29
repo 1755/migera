@@ -1,0 +1,2073 @@
+//! The Bevy glue: [`AnimPlugin`], its components, and its system sets.
+//!
+//! Everything in the rest of `character::anim` is plain functions over plain
+//! data, deliberately unaware of Bevy. This module is the only place that
+//! knows about schedules, queries, and components, which is what keeps the
+//! numerical core testable in microseconds without a `World`.
+//!
+//! # Using it
+//!
+//! ```ignore
+//! app.add_plugins(AnimPlugin::default());
+//!
+//! // then, per character:
+//! commands.entity(rig).insert((
+//!     AnimTarget::settled_on(relaxed_stand()),
+//!     AnimSprings::default(),
+//! ));
+//! ```
+//!
+//! The plugin never spawns a skeleton, never owns a camera, and never reads
+//! CLI arguments. A consumer builds its own [`HumanoidSkeleton`] — whether
+//! from this crate's synthetic rig or from a real glTF via
+//! `HumanoidSkeleton::for_other_rig` — and the plugin animates whatever it
+//! finds. Examples are thin consumers, not the home of the logic.
+
+use bevy::prelude::*;
+
+use super::armik::{solve_arm_on, ArmChain, ArmIkConfig, ArmTarget};
+use super::asset::PoseAsset;
+use super::dho::{default_springs, DhoState};
+use super::footlock::{FootLock, FootLockConfig, Turn};
+use super::ground::{FlatGround, GroundProbe};
+use super::legik::{solve_leg_grounded, LegChain, LegIkConfig};
+use super::pelvis::{apply_pelvis_drop, solve_pelvis_drop, PelvisConfig};
+use super::math::spring::SpringParams;
+use super::phase::{GaitPhase, PhaseLayer};
+use super::rig::{forward_kinematics_on, toe_end_positions, RigGeometry};
+use crate::character::skeleton::Bone;
+use super::retarget::write_pose_to_skeleton;
+use super::rig::{BoneSet, LocalPose};
+use crate::character::skeleton::HumanoidSkeleton;
+
+/// The per-frame stages, exposed so a consumer can order its own systems
+/// against them (e.g. driving [`AnimTarget`] before the springs read it, or
+/// reading the solved pose after write-back).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnimSet {
+    /// Resolve what the rig should be aiming at this frame.
+    Target,
+    /// Layer continuous procedural motion onto that target.
+    Phase,
+    /// Integrate the per-joint springs toward the result.
+    Spring,
+    /// Adapt the sprung pose to the ground: foot locking and leg IK.
+    Ik,
+    /// Write the solved pose onto the skeleton's `Transform`s.
+    Write,
+}
+
+/// The pose a character is currently being driven toward.
+///
+/// Set `pose` at any time and the rig springs to it — there is no
+/// transition to start, no blend to schedule, and no bad moment at which to
+/// interrupt. See [`DhoState::retarget`].
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AnimTarget {
+    /// The goal pose.
+    pub pose: LocalPose,
+}
+
+impl AnimTarget {
+    /// Aims at `pose`. The rig springs toward it from wherever it is.
+    pub fn new(pose: LocalPose) -> Self {
+        Self { pose }
+    }
+
+    /// Aims at `pose` — paired with [`AnimPose::settled_on`] when a
+    /// character should *begin* in a pose rather than spring into it.
+    pub fn settled_on(pose: LocalPose) -> Self {
+        Self { pose }
+    }
+}
+
+impl Default for AnimTarget {
+    fn default() -> Self {
+        Self { pose: LocalPose::REST }
+    }
+}
+
+/// Ground adaptation for one character: foot locking plus leg IK.
+///
+/// Optional, like the phase layer. A character without it is driven purely
+/// by its authored pose, which is what a cutscene or an airborne character
+/// wants.
+#[derive(Component, Debug, Clone, Default)]
+pub struct AnimFootIk {
+    /// Thresholds for locking and releasing.
+    pub lock: FootLockConfig,
+    /// How the two-bone solve behaves.
+    pub ik: LegIkConfig,
+    /// Left foot state.
+    pub left: FootLock,
+    /// Right foot state.
+    pub right: FootLock,
+    /// How far the hips may drop to help a foot reach.
+    pub pelvis: PelvisConfig,
+    /// How far the body turned this frame.
+    ///
+    /// Written by whatever owns the character's heading — see
+    /// [`super::locomotion::advance_turning`], which returns exactly this.
+    /// A planted foot pivots with it instead of being dragged sideways; left
+    /// at [`Turn::NONE`] the locks behave as they always have.
+    ///
+    /// Its `travel` is how far the character entity moved this frame, WORLD
+    /// axes, written by whatever moves it. A lock left without it rides
+    /// along with the body.
+    pub turn: Turn,
+    /// The ground-corrected pose, recomputed each frame from the animated
+    /// one. Kept here rather than in [`AnimPose::state`] so the correction
+    /// never feeds back into the spring — see that field's own note.
+    pub corrected: Option<LocalPose>,
+    /// How far the hips were actually lowered this frame, metres.
+    ///
+    /// Exposed for debugging and for a consumer that wants to react to the
+    /// character crouching — it is also the honest readout of how hard the
+    /// ground adaptation is working.
+    pub pelvis_drop: f32,
+    /// The rig this character is actually being driven on, as the IK stage
+    /// measured it from the live skeleton.
+    ///
+    /// Published because a caller that poses the gait needs the SAME rig
+    /// the solve used, and rebuilding it independently is both wasteful and
+    /// a chance for the two to disagree. `None` until the skeleton binds —
+    /// a glTF loads asynchronously, so the first frames have nothing to
+    /// measure.
+    ///
+    /// Needed since the gait's vertical amplitudes became fractions of leg
+    /// length (see [`super::gait::GaitParams::hip_dip`]): posing on the
+    /// synthetic proxy while solving on a real rig scales the body's
+    /// vertical motion to the wrong leg.
+    pub rig: Option<RigGeometry>,
+}
+
+/// Where one character's hands are reaching, in world space.
+///
+/// Optional, like [`AnimFootIk`]. A character without it leaves its arms
+/// entirely to the authored pose.
+///
+/// # Why this lives in the plugin and not in the caller
+///
+/// The arm solve has to run against the character's REAL rig geometry, which
+/// only the plugin has — it reads the live bone transforms to build it (see
+/// `solve_foot_ik`'s own `RigGeometry::from_skeleton` call).
+///
+/// Solving in a caller's system instead means solving against
+/// `RigGeometry::default()`, the synthetic T-pose proxy, and the two rigs'
+/// arms are not merely different sizes: the proxy's left shoulder sits at
+/// x = −0.300 while `puppet_base`'s is at x = +0.212. They are MIRRORED. A
+/// world-space target solved on the proxy and retargeted onto the real rig
+/// therefore sends the hand to the wrong side of the body — measured, a target
+/// at (0.45, 1.15, −0.30) put the left hand at (−0.197, 1.208, +0.147), while
+/// the same solve on the real rig is exact to 0.0000 m.
+///
+/// So a world-space arm target is only meaningful with the real rig in hand,
+/// and this component is how a caller expresses one.
+///
+/// # This works end to end, after three frame bugs stacked on top of each other
+///
+/// Measured live with a target at world (0.32, 1.15, -0.25): `hand_l` lands at
+/// **(0.3200, 1.1500, -0.2500)** and `hand_r` is untouched. Getting there took
+/// three independent fixes, recorded because each one masked the next and the
+/// visible symptom never resembled the cause.
+///
+/// 1. **The pose-space convention.** Forward kinematics applied a pose delta in
+///    the bone's local frame where the renderer applies it about a world axis.
+///    See `rig::accumulate_world_rotations`.
+/// 2. **The substitute hips offset**, in this function. `Hips` cannot be read
+///    back from the live rig, and the value standing in for it was in the
+///    synthetic Y-up frame while the rig's root correction is Z-up — which laid
+///    the whole character on its back inside the solver, ankle y = -0.856. The
+///    leg IK then reacted *correctly* to that, rotating each toe 113 degrees to
+///    rescue a tip it believed was a metre underground, and the only visible
+///    sign was feet whose toes pointed at the sky.
+/// 3. **The world -> pose rotation**, read from the character entity when the
+///    correction it needed sat on a node *below* that entity. See
+///    `root_rotation` in this function.
+///
+/// The misleading part was that (2) and (3) both produce mirror-shaped
+/// symptoms, so each looked like the whole story in turn. The loader — the
+/// prime suspect for two rounds — turned out to be innocent: its captured bind
+/// rotations match the file's bit-for-bit, verified by dumping both.
+///
+/// # A shape of false progress worth remembering
+///
+/// Partway through, `hand_l`'s X error read 0.34 mm while the feature was still
+/// thoroughly broken. The probe target sat near the character's centreline,
+/// where a mirror about X is nearly the identity — the number improved for a
+/// reason unrelated to what it appeared to confirm. Screenshots caught what the
+/// metric could not.
+#[derive(Component, Debug, Clone, Default)]
+pub struct AnimArmIk {
+    /// Where the left hand should be, in world space. `None` leaves the arm
+    /// to the pose.
+    pub left: Option<Vec3>,
+    /// Where the right hand should be, in world space.
+    pub right: Option<Vec3>,
+    /// How the two-bone solve behaves.
+    pub ik: ArmIkConfig,
+    /// How the left hand should be oriented once it arrives.
+    ///
+    /// Only used when [`ArmIkConfig::aim_hand`] is set.
+    pub left_rotation: Option<Quat>,
+    /// How the right hand should be oriented once it arrives.
+    pub right_rotation: Option<Quat>,
+}
+
+/// The ground a character's feet are adapted to.
+///
+/// Boxed rather than generic so characters in one scene can stand on
+/// different things, and so adding this to an entity does not ripple a type
+/// parameter through the whole plugin.
+#[derive(Component)]
+pub struct AnimGround(pub Box<dyn GroundProbe>);
+
+impl Default for AnimGround {
+    fn default() -> Self {
+        Self(Box::new(FlatGround::default()))
+    }
+}
+
+/// The continuous procedural motion layered onto a character's target pose.
+///
+/// Optional: a character without one is driven purely by Stage 1, which is
+/// what a cutscene or a precisely-authored pose wants. Pair it with a
+/// [`GaitPhase`] — both must be present for the layer to do anything.
+#[derive(Component, Debug, Clone, Default)]
+pub struct AnimPhaseLayer(pub PhaseLayer);
+
+/// Per-bone spring tuning for one character.
+///
+/// This is the dial that turns one set of pose data into a heavy brute or a
+/// quick duellist without touching the poses themselves.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AnimSprings(pub BoneSet<SpringParams>);
+
+impl Default for AnimSprings {
+    fn default() -> Self {
+        Self(default_springs())
+    }
+}
+
+impl AnimSprings {
+    /// Every bone on the same spring.
+    pub fn uniform(params: SpringParams) -> Self {
+        Self(BoneSet::splat(params))
+    }
+}
+
+/// The live spring state, and the pose actually being rendered.
+///
+/// Inserted automatically for any entity that has an [`AnimTarget`] and a
+/// [`HumanoidSkeleton`] but no state yet, so a consumer never has to
+/// construct one. Insert it explicitly (via [`AnimPose::settled_on`]) only
+/// to start a character already settled in a pose.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AnimPose {
+    /// Per-joint spring state — the pose the ANIMATION produces, before
+    /// any ground adaptation.
+    ///
+    /// Ground correction is deliberately kept out of this. Writing IK
+    /// results back into the spring would make next frame's "animated"
+    /// position already corrected, and on sloped ground that compounds: a
+    /// raised target moves the foot forward, which samples higher ground,
+    /// which raises the target again. Measured on a 0.35 grade, it threw
+    /// the legs out horizontally within a few frames.
+    pub state: DhoState,
+    /// Root translation, carried through to the skeleton's own hip joint.
+    pub root_translation: Vec3,
+}
+
+impl AnimPose {
+    /// A rig already settled in `pose`, with no residual motion — it will
+    /// not spring away from it on the first frame.
+    pub fn settled_on(pose: &LocalPose) -> Self {
+        Self { state: DhoState::settled_on(pose), root_translation: pose.root_translation }
+    }
+
+    /// The pose currently being rendered.
+    pub fn pose(&self) -> LocalPose {
+        self.state.pose(self.root_translation)
+    }
+}
+
+impl Default for AnimPose {
+    fn default() -> Self {
+        Self { state: DhoState::AT_REST, root_translation: Vec3::ZERO }
+    }
+}
+
+/// Drives a character from a hot-reloadable `.pose.ron` asset.
+///
+/// Attach this alongside (or instead of) setting [`AnimTarget`] by hand.
+/// Whenever the file changes on disk, the character springs to the new
+/// pose — no restart, and no jump, because the spring simply gets a new
+/// target (see [`DhoState::retarget`]).
+#[derive(Component, Debug, Clone)]
+pub struct AnimTargetAsset(pub Handle<PoseAsset>);
+
+/// Stage 1 of the procedural animation stack: authored poses, driven by
+/// per-joint damped harmonic oscillators, written onto a humanoid skeleton.
+///
+/// Add it once; it animates every entity carrying a [`HumanoidSkeleton`] and
+/// an [`AnimTarget`].
+///
+/// Pose *assets* need [`super::asset::AnimAssetPlugin`] as well; it is kept
+/// separate so a consumer building poses in code never pays for the asset
+/// machinery.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AnimPlugin;
+
+impl Plugin for AnimPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                ensure_anim_pose.in_set(AnimSet::Target),
+                // Only runs once pose assets exist, so a consumer that
+                // builds poses in code need not add `AnimAssetPlugin`.
+                apply_pose_assets
+                    .in_set(AnimSet::Target)
+                    .run_if(resource_exists::<Assets<PoseAsset>>),
+                advance_phase_clocks.in_set(AnimSet::Phase),
+                advance_springs.in_set(AnimSet::Spring),
+                solve_foot_ik.in_set(AnimSet::Ik),
+                write_poses.in_set(AnimSet::Write),
+            ),
+        )
+        .configure_sets(
+            Update,
+            (
+                AnimSet::Target,
+                AnimSet::Phase,
+                AnimSet::Spring,
+                AnimSet::Ik,
+                AnimSet::Write,
+            )
+                .chain(),
+        );
+    }
+}
+
+/// Pushes a loaded (or just-reloaded) pose asset into its character's
+/// [`AnimTarget`].
+///
+/// Reacts to `AssetEvent::{Added, Modified}`, so this is the whole of the
+/// hot-reload path: Bevy's `file_watcher` re-parses a changed file, this
+/// system notices, and the spring redirects on the next frame.
+fn apply_pose_assets(
+    mut events: MessageReader<AssetEvent<PoseAsset>>,
+    assets: Res<Assets<PoseAsset>>,
+    mut rigs: Query<(&AnimTargetAsset, &mut AnimTarget)>,
+) {
+    for event in events.read() {
+        let changed = match event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => *id,
+            _ => continue,
+        };
+
+        let Some(asset) = assets.get(changed) else { continue };
+
+        let pose = match asset.to_local_pose() {
+            Ok(pose) => pose,
+            Err(error) => {
+                // A bad edit should report itself and leave the character
+                // in its last good pose, not snap it to rest.
+                warn!("ignoring an invalid pose asset: {error}");
+                continue;
+            }
+        };
+
+        for (handle, mut target) in &mut rigs {
+            if handle.0.id() == changed {
+                target.pose = pose;
+            }
+        }
+    }
+}
+
+/// Gives any newly-targeted rig its spring state, so consumers only have to
+/// insert an [`AnimTarget`].
+///
+/// A rig that specifies a target on spawn begins **settled on it** rather
+/// than springing in from the rest pose — otherwise every character would
+/// visibly unfold from a T-pose on its first frame.
+/// Rigs that have asked to be animated but have no spring state yet.
+type UninitialisedRigs<'w, 's> =
+    Query<'w, 's, (Entity, &'static AnimTarget), (With<HumanoidSkeleton>, Without<AnimPose>)>;
+
+fn ensure_anim_pose(mut commands: Commands, rigs: UninitialisedRigs) {
+    for (entity, target) in &rigs {
+        commands.entity(entity).insert(AnimPose::settled_on(&target.pose));
+    }
+}
+
+/// Advances each character's phase clocks.
+///
+/// Split from [`layer_phase_onto_target`] so the clocks tick exactly once
+/// per frame regardless of how many things read them.
+fn advance_phase_clocks(time: Res<Time>, mut phases: Query<&mut GaitPhase>) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+
+    for mut phase in &mut phases {
+        phase.advance(dt);
+    }
+}
+
+/// Everything the spring step reads. The springs and the procedural layer
+/// are both optional, so a character can opt into as much or as little of
+/// the stack as it wants.
+type SpringDrivenRigs<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static AnimTarget,
+        &'static mut AnimPose,
+        Option<&'static AnimSprings>,
+        Option<&'static GaitPhase>,
+        Option<&'static AnimPhaseLayer>,
+        // For the real rig, which the phase layer's body sway needs.
+        Option<&'static AnimFootIk>,
+    ),
+>;
+
+/// Integrates every rig's springs toward its target, with any procedural
+/// layer composed on top.
+///
+/// The layer is applied to a **copy** of the target, never to the stored
+/// `AnimTarget`. Writing it back would make each frame's sine ride on the
+/// previous frame's, compounding a small sway into an ever-growing one —
+/// and would corrupt the authored pose a consumer set.
+fn advance_springs(time: Res<Time>, mut rigs: SpringDrivenRigs) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+
+    let fallback = AnimSprings::default();
+
+    for (target, mut pose, springs, phase, layer, foot_ik) in &mut rigs {
+        let springs = springs.unwrap_or(&fallback);
+
+        let mut goal = target.pose;
+        if let (Some(phase), Some(layer)) = (phase, layer) {
+            // The body's sway moves the pelvis over the feet, which takes
+            // the real rig; before it has bound (or on a rig without foot
+            // IK) the layer applies its rotations alone. The synthetic
+            // proxy's leg segments are shifted a joint, so swaying on it
+            // would turn the wrong bones.
+            match foot_ik.and_then(|ik| ik.rig.as_ref()) {
+                Some(rig) => layer.0.apply_on(phase, &mut goal, rig),
+                None => layer.0.apply(phase, &mut goal),
+            }
+        }
+
+        pose.state.advance(&goal, &springs.0, dt);
+        pose.root_translation = goal.root_translation;
+    }
+}
+
+/// Everything the IK stage reads and writes per character.
+///
+/// A named alias rather than an inline tuple: the solve needs the sprung pose,
+/// the foot-lock state, the ground, the real skeleton (for rig geometry and
+/// live bone positions), the arm targets, and the character's own placement.
+type IkRig = (
+    &'static AnimPose,
+    &'static mut AnimFootIk,
+    Option<&'static AnimGround>,
+    Option<&'static HumanoidSkeleton>,
+    Option<&'static AnimArmIk>,
+    Option<&'static GlobalTransform>,
+);
+
+/// Plants each character's feet on the ground, and places any reaching hands.
+///
+/// Runs after the springs, deliberately: IK is a *correction* to the pose
+/// the animation produced, so it has to see the final animated result. It
+/// writes directly into [`AnimPose`] rather than the target, for the same
+/// reason the phase layer does not write back — the correction is recomputed
+/// from the ground every frame, and feeding it forward would compound.
+fn solve_foot_ik(
+    time: Res<Time>,
+    mut rigs: Query<IkRig>,
+    transforms: Query<&Transform>,
+    world_transforms: Query<&GlobalTransform>,
+    toe_children: Query<&Children>,
+) {
+    let dt = time.delta_secs();
+    let fallback = AnimGround::default();
+
+    for (pose, mut foot_ik, ground, skeleton, arm_ik, root) in &mut rigs {
+        let ground = ground.unwrap_or(&fallback);
+
+
+        // Copied out before the per-foot loop takes a mutable borrow of the
+        // lock states, which live in the same component.
+        let lock_config = foot_ik.lock;
+        let ik_config = foot_ik.ik;
+        let turn = foot_ik.turn;
+
+        // The rig this pose is actually driving. Ground height is a
+        // property of the world, so solving against it on a proxy rig gives
+        // the wrong answer everywhere the two disagree — which is
+        // everywhere except flat ground.
+        let rig = match skeleton {
+            Some(skeleton) => {
+                let offsets = BoneSet::from_fn(|bone| {
+                    // `Hips` is excluded deliberately: its translation is
+                    // the one thing `write_pose_to_skeleton` overwrites
+                    // every frame, so reading it back here would feed the
+                    // solve its own previous output. Every other bone keeps
+                    // its fixed rest offset, which is exactly the rig
+                    // geometry wanted.
+                    //
+                    // The substitute has to be in the RIG's frame, not this
+                    // crate's. `t_pose_offset` is the synthetic table's Y-up
+                    // (0, 0.94, 0), while `root_rotation` is the real rig's
+                    // Z-up correction — and forward kinematics applies that
+                    // correction to the hips offset, because the root has no
+                    // parent to inherit one from. Handing it the Y-up value
+                    // turned it into Z-up (0, 0, 0.94) and laid the whole
+                    // character on its back: measured ankle y = -0.856, toe
+                    // y = -0.927, a metre underground.
+                    //
+                    // Nothing looked obviously broken because the leg IK then
+                    // reacted correctly to that garbage — `lift_toe_end_out_
+                    // of_the_ground` saw a tip 1.006 m below the floor and
+                    // dutifully rotated the toe 113 degrees to rescue it,
+                    // which rendered as feet whose toes point at the sky.
+                    if bone == Bone::Hips {
+                        return skeleton.hips_root_rotation().inverse()
+                            * bone.t_pose_offset();
+                    }
+                    transforms
+                        .get(skeleton.entity(bone))
+                        .map(|transform| transform.translation)
+                        .unwrap_or_else(|_| bone.t_pose_offset())
+                });
+                RigGeometry::from_skeleton(skeleton, offsets)
+            }
+            None => RigGeometry::default(),
+        };
+
+        // The toe tip, MEASURED off the rig rather than estimated.
+        //
+        // `RigGeometry::from_skeleton` can only estimate it — a fraction of the
+        // ankle-to-toe offset — because `HumanoidSkeleton` has no toe-end bone
+        // and deliberately never will (a 23rd bone would invalidate every
+        // `[T; 22]`, `Bone::ALL`, and every RON asset for a point that is never
+        // rendered). `from_gltf` measures it from the rig's own `ball_leaf_l`,
+        // and the two disagree by ~27 degrees on `puppet_base`:
+        //
+        // ```text
+        //   measured   (0, 0.0789,  0.0000)
+        //   estimated  (0, 0.0711, -0.0356)
+        // ```
+        //
+        // That matters because `legik::lift_toe_end_out_of_the_ground` rotates
+        // the toe to rescue a tip it believes is under the floor. Pointed the
+        // wrong way, the estimate reports a penetration that is not there and
+        // the toe gets pitched up for nothing — measured live as a tip 0.060 m
+        // ABOVE its own joint on flat ground, where every in-crate path keeps
+        // it level to within 0.8 mm. That is the "toes point at the sky"
+        // symptom.
+        //
+        // The toe's own CHILD is the tip, on any rig that models one, so this
+        // needs no per-rig name table: whatever hangs off the toe joint is by
+        // construction the thing the toe points at. A rig with no such child
+        // keeps the estimate.
+        let rig = match skeleton {
+            Some(skeleton) => {
+                let mut rig = rig;
+                for toe in [Bone::LeftToeBase, Bone::RightToeBase] {
+                    let Ok(children) = toe_children.get(skeleton.entity(toe)) else {
+                        continue;
+                    };
+                    let Some(tip) = children.iter().next() else {
+                        continue;
+                    };
+                    let Ok(local) = transforms.get(tip) else { continue };
+                    rig = rig.with_toe_end(toe, local.translation);
+                }
+                rig
+            }
+            None => rig,
+        };
+
+        // The character's own placement in the world, for converting
+        // world-space arm targets into the frame the pose is solved in.
+        //
+        // Only the ROTATION is needed: the translation half of the mapping is
+        // calibrated from a shoulder's live position instead (see the arm loop),
+        // which is exact where reconstructing the hip placement is not.
+        //
+        // # Read from the live HIPS, not the character entity
+        //
+        // The character entity is not necessarily the top of the correction
+        // chain. `character_gallery` spawns its mesh under a node carrying a
+        // 180-degree yaw (`--character-yaw-correction`, default 180) so the
+        // model faces the camera, and that node sits BELOW the character entity
+        // and ABOVE `pelvis`. Reading the character entity therefore returns
+        // identity while every live bone transform carries the yaw, and the
+        // world -> pose mapping silently loses it.
+        //
+        // Measured with the yaw unaccounted for, every bone's x came back
+        // negated — `LeftArm` world +0.2106 against pose -0.2104, `LeftUpLeg`
+        // +0.1143 against -0.1143, `Head` -0.0140 against +0.0143. That is a
+        // 180-degree yaw exactly, and it is what made a left-hand target look
+        // like it was driving the right arm: the solve was correct and aimed at
+        // a mirrored point.
+        //
+        // The hips' own world rotation carries every correction between the
+        // world and the rig, whatever the asset's nesting happens to be. The
+        // rig's own root and hip bind rotations are divided back out because
+        // forward kinematics already applies them.
+        let root_rotation = match skeleton
+            .and_then(|skeleton| world_transforms.get(skeleton.entity(Bone::Hips)).ok())
+        {
+            Some(hips) => {
+                hips.to_scale_rotation_translation().1
+                    * (rig.root_rotation * rig.bind_rotations[Bone::Hips]).inverse()
+            }
+            // No skeleton yet: fall back to the character entity, which is
+            // correct whenever nothing sits between it and the hips.
+            None => match root {
+                Some(global) => global.to_scale_rotation_translation().1,
+                None => Quat::IDENTITY,
+            },
+        };
+
+        let mut solved = pose.pose();
+        let pelvis_config = foot_ik.pelvis;
+
+        // Where the ANIMATION puts each toe, sampled once before any IK
+        // runs. Both the ground query and the lock read from this.
+        //
+        // Sampling from the in-progress solve instead creates a positive
+        // feedback loop on any non-flat ground: raising a target moves the
+        // foot forward, which samples higher ground, which raises the
+        // target again. On a 0.35 grade that diverged within a handful of
+        // frames and threw the legs out horizontally — a Left-view
+        // screenshot caught it, with every test passing.
+        let animated_toes = forward_kinematics_on(&solved, &rig);
+
+        // Pass one: decide where each toe wants to go. No solving yet — the
+        // pelvis drop below depends on ALL the targets, and dropping the hips
+        // changes every leg's reach, so nothing can be solved until the hip
+        // height is settled.
+        let mut resolved: [Option<(LegChain, Vec3, crate::character::anim::ground::GroundHit)>;
+            2] = [None, None];
+
+        for (slot, (chain, side)) in [
+            (LegChain::LEFT, Side::Left),
+            (LegChain::RIGHT, Side::Right),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let animated = animated_toes[chain.toe];
+
+            let Some(hit) = ground.0.sample(animated) else {
+                // No ground under this foot — over a ledge, say. Leave it
+                // following the animation rather than planting it on
+                // nothing.
+                continue;
+            };
+
+            // The toe JOINT is not the contact point. On this rig
+            // `LeftToeBase` sits at y = -0.02 in the bind pose — the joint
+            // is inside the foot, and the sole is what touches the floor.
+            //
+            // So "on the ground" means the joint sits at its own offset
+            // above the surface, not at the surface itself. Forcing the
+            // joint to the surface lifts the whole leg by that offset every
+            // frame, which dragged the legs into a visible forward lunge —
+            // caught by a Left-view screenshot after every test had passed.
+            //
+            // Measured from the ANIMATED pose, not the rest pose. The walk
+            // articulates the ankle through toe-off and heel-strike, so how
+            // far the joint sits above the sole genuinely changes; a fixed
+            // rest-pose value pinned every target at `y = +0.0152` while the
+            // cycle swung the toe between `-0.038` and `+0.060`, and the leg
+            // IK folded the knee to close the gap. See
+            // [`toe_contact_offset`] for the measurement and why reading the
+            // animated pose cannot feed back on itself.
+            let contact_offset = toe_contact_offset(&solved, chain, &rig);
+            let surface = hit.height + contact_offset;
+
+            let lock = match side {
+                Side::Left => &mut foot_ik.left,
+                _ => &mut foot_ik.right,
+            };
+
+            // The body's travel arrives in world axes; the lock works in the
+            // pose's, the same rotation the arm targets below go through.
+            let turn = Turn { travel: root_rotation.inverse() * turn.travel, ..turn };
+            let mut target =
+                lock.update_turning(animated, surface, &lock_config, dt, turn);
+
+            // Never let the sole sink below the surface, even mid-release.
+            target.y = target.y.max(surface);
+
+            resolved[slot] = Some((chain, target, hit));
+        }
+
+        // Pass two: lower the hips if a foot cannot reach, BEFORE any leg is
+        // solved. A leg solved against the old hip height would be
+        // immediately invalidated by the drop.
+        //
+        // Only when both feet have targets — with one foot over a ledge there
+        // is no shared constraint to satisfy, and dropping the hips for the
+        // single grounded foot would crouch the character mid-stride.
+        if let [Some((left_chain, left_target, _)), Some((right_chain, right_target, _))] =
+            resolved
+        {
+            let drop = solve_pelvis_drop(
+                &solved,
+                &rig,
+                [(left_chain, left_target), (right_chain, right_target)],
+                &pelvis_config,
+            );
+            apply_pelvis_drop(&mut solved, drop);
+            foot_ik.pelvis_drop = drop;
+        } else {
+            foot_ik.pelvis_drop = 0.0;
+        }
+
+        // Pass three: solve each leg against the settled hip height.
+        for entry in resolved.into_iter().flatten() {
+            let (chain, target, hit) = entry;
+            solve_leg_grounded(&mut solved, chain, target, Some(hit), &ik_config, &rig);
+        }
+
+        // Pass four: the arms, if this character is reaching for anything.
+        //
+        // After the legs and the pelvis drop, deliberately: lowering the hips
+        // moves both shoulders, so an arm solved first would be aiming from a
+        // shoulder position that the drop then invalidates. The legs cannot be
+        // affected in turn, because nothing here touches the spine or hips.
+        // Each shoulder's live world position, for calibrating the world -> pose
+        // mapping below. Read before the arm loop because the loop mutates
+        // `solved`, and this must reflect the frame the skeleton is actually in.
+        let shoulder_positions: BoneSet<Option<Vec3>> = BoneSet::from_fn(|bone| {
+            skeleton.and_then(|skeleton| {
+                world_transforms
+                    .get(skeleton.entity(bone))
+                    .ok()
+                    .map(|global| global.translation())
+            })
+        });
+
+        if let Some(arm_ik) = arm_ik {
+            for (chain, target, rotation) in [
+                (ArmChain::LEFT, arm_ik.left, arm_ik.left_rotation),
+                (ArmChain::RIGHT, arm_ik.right, arm_ik.right_rotation),
+            ] {
+                let Some(world_target) = target else {
+                    continue;
+                };
+
+                // Targets are world-space; the solve happens in the FK frame.
+                //
+                // ROTATION: just the entity's own transform. `rig.root_rotation`
+                // is already inside `forward_kinematics_on`'s accumulation, so
+                // composing it again here double-applies the Z-up correction —
+                // measured, that turned a leg direction of (0, -0.992, -0.126)
+                // into (0, -0.126, -0.992), swapping Y and Z outright.
+                //
+                // ORIGIN: calibrated rather than derived, because the two frames
+                // deliberately place the root differently —
+                // `write_pose_to_skeleton` puts the hips at
+                // `Hips::t_pose_world_position()` while the FK chain uses its own
+                // root, which measured as a 0.95 m disagreement in the
+                // shoulder's height. The shoulder this solve pivots from has a
+                // known position in BOTH frames, so the offset is measured
+                // directly and cannot drift out of sync with the writer the way
+                // a reconstruction of its hip placement would.
+                let rotation_to_pose = root_rotation.inverse();
+
+
+                let Some(shoulder_world) = shoulder_positions[chain.shoulder] else {
+                    // No live transform for this shoulder — the skeleton is
+                    // still loading. Leave the arm to the animation rather than
+                    // solving against a frame we cannot locate.
+                    continue;
+                };
+                let shoulder_pose = forward_kinematics_on(&solved, &rig)[chain.shoulder];
+
+
+                // World -> pose: rotate into the pose's axes, then shift so the
+                // shoulder coincides.
+                let local =
+                    rotation_to_pose * (world_target - shoulder_world) + shoulder_pose;
+
+                solve_arm_on(
+                    &mut solved,
+                    chain,
+                    match rotation {
+                        Some(hand) => ArmTarget::grip(local, rotation_to_pose * hand),
+                        None => ArmTarget::reach(local),
+                    },
+                    &arm_ik.ik,
+                    &rig,
+                );
+            }
+        }
+
+        foot_ik.corrected = Some(solved);
+        // Published so a caller posing the gait uses the same rig this
+        // solve measured, rather than rebuilding one that can disagree.
+        foot_ik.rig = Some(rig);
+    }
+}
+
+/// Which leg is being solved.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// How far the toe JOINT sits above the lowest point of its own foot, in a
+/// given pose.
+///
+/// This is the quantity a ground target needs: "the joint is on the floor"
+/// means the joint sits this far above the surface, because the sole — not
+/// the joint — is what touches.
+///
+/// # Why the pose matters, and why this is not a world height
+///
+/// This used to be measured in [`LocalPose::REST`] and used directly as a
+/// world height, which conflated two different things: the foot's own
+/// SHAPE (joint above sole, a fixed property of how the artist bound it)
+/// and however high the rest pose happened to hold that foot.
+///
+/// Those agree only while the foot is at its rest attitude. The walk cycle
+/// articulates the ankle through toe-off and heel-strike, so the joint's
+/// height above the sole genuinely changes — and pinning the target to the
+/// rest value made the animated foot miss it by a wide margin.
+///
+/// Measured on `puppet_base.gltf` with the old rest-pose value: the target
+/// sat at `y = +0.0152` for every frame while the walk cycle swung the toe
+/// between `-0.038` and `+0.060`. The leg IK closed that gap by folding
+/// the knee, reaching **39 degrees** of anatomical knee angle where a
+/// walking human holds 160-175. That is the "grasshopper legs" report.
+///
+/// # Why this cannot feed back on itself
+///
+/// It is taken from the ANIMATED pose — the spring's output, before any
+/// ground correction — and never from the corrected one. The correction is
+/// deliberately kept out of the spring's state (see
+/// [`AnimFootIk::corrected`]), so this frame's offset cannot depend on last
+/// frame's solve. It is also a difference WITHIN the foot rather than an
+/// absolute height, so translating the whole character changes it by zero.
+fn toe_contact_offset(pose: &LocalPose, chain: LegChain, rig: &RigGeometry) -> f32 {
+    let positions = forward_kinematics_on(pose, rig);
+    let joint = positions[chain.toe].y;
+
+    let (left_tip, right_tip) = toe_end_positions(pose, rig);
+    let tip = match chain.toe {
+        Bone::LeftToeBase => left_tip.y,
+        _ => right_tip.y,
+    };
+
+    // The joint's height above whichever part of the foot is lowest. Never
+    // negative: if the joint IS the lowest point, the offset is zero and
+    // the joint plants on the surface itself.
+    (joint - joint.min(tip)).max(0.0)
+}
+
+/// Writes each rig's solved pose onto its skeleton's `Transform`s.
+///
+/// Runs in `Update`, hence before Bevy's own `PostUpdate` transform
+/// propagation — the rig's world positions are derived from these
+/// rotations, so they must be in place first.
+fn write_poses(
+    rigs: Query<(&HumanoidSkeleton, &AnimPose, Option<&AnimFootIk>)>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (skeleton, pose, foot_ik) in &rigs {
+        // Prefer the ground-corrected pose where one exists. It is stored
+        // separately from the spring state precisely so it can be rendered
+        // without feeding back into next frame's animation.
+        let rendered = foot_ik
+            .and_then(|ik| ik.corrected)
+            .unwrap_or_else(|| pose.pose());
+
+        write_pose_to_skeleton(skeleton, &rendered, &mut transforms);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character::anim::ground::SlopedGround;
+    use crate::character::anim::rig::forward_kinematics;
+    use crate::character::skeleton::Bone;
+    use std::f32::consts::FRAC_PI_2;
+
+    /// An app with the plugin and one bare rig, ready to step.
+    fn app_with_rig(target: LocalPose) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, skeleton) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            world.entity_mut(root).insert((AnimTarget::new(target), AnimSprings::default()));
+            let _ = skeleton;
+            root
+        };
+
+        (app, rig)
+    }
+
+    /// Steps the app, advancing `Time` by a fixed frame.
+    fn step(app: &mut App, frames: usize) {
+        for _ in 0..frames {
+            let world = app.world_mut();
+            let mut time = world.resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+            app.update();
+        }
+    }
+
+    #[test]
+    fn the_plugin_inserts_spring_state_for_a_targeted_rig() {
+        // A consumer should only have to insert an AnimTarget.
+        let (mut app, rig) = app_with_rig(LocalPose::REST);
+        step(&mut app, 1);
+
+        assert!(
+            app.world().get::<AnimPose>(rig).is_some(),
+            "the plugin must give a targeted rig its own AnimPose",
+        );
+    }
+
+    #[test]
+    fn a_rig_spawned_with_a_pose_starts_settled_in_it() {
+        // Otherwise every character visibly unfolds from a T-pose on frame
+        // one, which is the sort of thing that is obvious in motion and easy
+        // to miss in a still.
+        let mut target = LocalPose::REST;
+        target.set_rotation(Bone::LeftArm, Quat::from_axis_angle(Vec3::Y, FRAC_PI_2));
+
+        let (mut app, rig) = app_with_rig(target);
+        step(&mut app, 1);
+
+        let pose = app.world().get::<AnimPose>(rig).unwrap();
+        assert!(
+            pose.state.current[Bone::LeftArm]
+                .abs_diff_eq(target.rotation(Bone::LeftArm), 1.0e-5),
+            "a rig spawned with a pose must begin in it, not spring toward it",
+        );
+    }
+
+    #[test]
+    fn the_solved_pose_reaches_the_skeletons_transforms() {
+        // End-to-end: target -> spring -> write-back -> Transform.
+        let mut target = LocalPose::REST;
+        target.set_rotation(Bone::Head, Quat::from_axis_angle(Vec3::Y, 0.6));
+
+        let (mut app, rig) = app_with_rig(target);
+        step(&mut app, 1);
+
+        let skeleton = app.world().get::<HumanoidSkeleton>(rig).unwrap().clone();
+        let head = app.world().get::<Transform>(skeleton.entity(Bone::Head)).unwrap();
+
+        let expected = skeleton.rest_rotation(Bone::Head) * target.rotation(Bone::Head);
+        assert!(
+            head.rotation.abs_diff_eq(expected, 1.0e-4),
+            "the Head transform should carry the solved pose, got {:?}",
+            head.rotation,
+        );
+    }
+
+    #[test]
+    fn changing_the_target_springs_the_rig_toward_it() {
+        let (mut app, rig) = app_with_rig(LocalPose::REST);
+        step(&mut app, 1);
+
+        let mut moved = LocalPose::REST;
+        moved.set_rotation(Bone::RightArm, Quat::from_axis_angle(Vec3::Z, 1.0));
+        app.world_mut().entity_mut(rig).insert(AnimTarget::new(moved));
+
+        step(&mut app, 120);
+
+        let pose = app.world().get::<AnimPose>(rig).unwrap();
+        assert!(
+            pose.state.current[Bone::RightArm].abs_diff_eq(moved.rotation(Bone::RightArm), 1.0e-4),
+            "the rig should have sprung to its new target, got {:?}",
+            pose.state.current[Bone::RightArm],
+        );
+    }
+
+    #[test]
+    fn a_rig_without_explicit_springs_still_animates() {
+        // AnimSprings is optional; the plugin falls back to sane defaults.
+        let mut target = LocalPose::REST;
+        target.set_rotation(Bone::Spine, Quat::from_axis_angle(Vec3::X, 0.4));
+
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            // Deliberately NO AnimSprings.
+            world.entity_mut(root).insert(AnimTarget::new(target));
+            root
+        };
+
+        step(&mut app, 2);
+
+        let pose = app.world().get::<AnimPose>(rig).unwrap();
+        assert!(
+            pose.state.current[Bone::Spine].abs_diff_eq(target.rotation(Bone::Spine), 1.0e-5),
+            "a rig with no AnimSprings should still be driven by the defaults",
+        );
+    }
+
+    #[test]
+    fn a_pose_asset_drives_the_character_and_reloading_it_redirects_the_spring() {
+        // The whole hot-reload contract, end to end: an asset becomes the
+        // target, and CHANGING that asset moves the character again without
+        // a restart and without a jump.
+        use crate::character::anim::asset::{AnimAssetPlugin, AuthoredBone, AuthoredRotation};
+
+        let mut app = App::new();
+        app.add_plugins((bevy::asset::AssetPlugin::default(), AnimAssetPlugin, AnimPlugin));
+        app.init_resource::<Time>();
+
+        // A pose asset built in memory — the loader's own parsing is
+        // covered in `asset`'s tests; this is about the runtime wiring.
+        let handle = {
+            let mut assets = app.world_mut().resource_mut::<Assets<PoseAsset>>();
+            let mut pose = PoseAsset::default();
+            pose.bones.insert(
+                "LeftArm".into(),
+                AuthoredBone {
+                    swing: AuthoredRotation { axis: (0.0, 0.0, 1.0), degrees: 60.0 },
+                    twist_degrees: 0.0,
+                },
+            );
+            assets.add(pose)
+        };
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            world
+                .entity_mut(root)
+                .insert((AnimTarget::default(), AnimTargetAsset(handle.clone())));
+            root
+        };
+
+        // Long enough for the spring to settle: the exponential form only
+        // approaches its target, so a tolerance this tight needs several
+        // half-lives (1 s leaves ~1.3 degrees on the default arm spring).
+        step(&mut app, 180);
+
+        let sixty_degrees = Quat::from_axis_angle(Vec3::Z, 60f32.to_radians());
+        let settled = app.world().get::<AnimPose>(rig).unwrap().state.current[Bone::LeftArm];
+        assert!(
+            settled.abs_diff_eq(sixty_degrees, 1.0e-3),
+            "the character should have sprung to the asset's pose, got {settled:?}",
+        );
+
+        // Now "edit the file": mutating the asset raises `Modified`, which
+        // is exactly what `file_watcher` does after a save on disk.
+        {
+            let mut assets = app.world_mut().resource_mut::<Assets<PoseAsset>>();
+            let mut pose = assets.get_mut(&handle).unwrap();
+            pose.bones.get_mut("LeftArm").unwrap().swing.degrees = -30.0;
+        }
+
+        step(&mut app, 180);
+
+        let reloaded = app.world().get::<AnimPose>(rig).unwrap().state.current[Bone::LeftArm];
+        assert!(
+            reloaded.abs_diff_eq(Quat::from_axis_angle(Vec3::Z, -30f32.to_radians()), 1.0e-3),
+            "editing the asset should redirect the character, got {reloaded:?}",
+        );
+    }
+
+    #[test]
+    fn an_invalid_pose_asset_leaves_the_character_in_its_last_good_pose() {
+        // A typo mid-edit must not snap the character to rest — that would
+        // make the hot-reload loop hostile to work in.
+        use crate::character::anim::asset::{AnimAssetPlugin, AuthoredBone, AuthoredRotation};
+
+        let mut app = App::new();
+        app.add_plugins((bevy::asset::AssetPlugin::default(), AnimAssetPlugin, AnimPlugin));
+        app.init_resource::<Time>();
+
+        let handle = {
+            let mut assets = app.world_mut().resource_mut::<Assets<PoseAsset>>();
+            let mut pose = PoseAsset::default();
+            pose.bones.insert(
+                "LeftArm".into(),
+                AuthoredBone {
+                    swing: AuthoredRotation { axis: (0.0, 0.0, 1.0), degrees: 60.0 },
+                    twist_degrees: 0.0,
+                },
+            );
+            assets.add(pose)
+        };
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            world
+                .entity_mut(root)
+                .insert((AnimTarget::default(), AnimTargetAsset(handle.clone())));
+            root
+        };
+
+        step(&mut app, 60);
+        let good = app.world().get::<AnimTarget>(rig).unwrap().pose.rotation(Bone::LeftArm);
+
+        // Introduce a bone name that does not exist on the rig.
+        {
+            let mut assets = app.world_mut().resource_mut::<Assets<PoseAsset>>();
+            let mut pose = assets.get_mut(&handle).unwrap();
+            pose.bones.clear();
+            pose.bones.insert("LeftArmm".into(), AuthoredBone::default());
+        }
+
+        step(&mut app, 10);
+
+        let after = app.world().get::<AnimTarget>(rig).unwrap().pose.rotation(Bone::LeftArm);
+        assert_eq!(
+            after, good,
+            "an invalid edit must be ignored, leaving the last good pose in place",
+        );
+    }
+
+    /// A bare rig carrying a phase layer and its clock.
+    fn app_with_idle_rig() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            world.entity_mut(root).insert((
+                AnimTarget::new(LocalPose::REST),
+                AnimSprings::default(),
+                GaitPhase::default(),
+                AnimPhaseLayer(PhaseLayer::standing_idle()),
+            ));
+            root
+        };
+
+        (app, rig)
+    }
+
+    #[test]
+    fn a_character_with_a_phase_layer_never_goes_completely_still() {
+        // The point of Stage 2: a settled spring would otherwise stop dead,
+        // which reads as a mannequin.
+        let (mut app, rig) = app_with_idle_rig();
+
+        // Let the spring settle first, so any motion after this is the
+        // oscillators' doing and not the initial convergence.
+        step(&mut app, 240);
+
+        let mut samples = Vec::new();
+        for _ in 0..120 {
+            step(&mut app, 1);
+            // The neck: the idle's weight shift moves the pelvis now (with a
+            // rig to move it over), and the neck rides the same clock.
+            samples.push(app.world().get::<AnimPose>(rig).unwrap().state.current[Bone::Neck]);
+        }
+
+        let largest_change = samples
+            .windows(2)
+            .map(|pair| pair[0].angle_between(pair[1]))
+            .fold(0.0f32, f32::max);
+
+        assert!(
+            largest_change > 1.0e-5,
+            "a character with an idle layer should keep moving after settling, but the \
+             spine changed by at most {largest_change} rad per frame",
+        );
+    }
+
+    #[test]
+    fn the_phase_layer_never_writes_back_into_the_authored_target() {
+        // The compounding bug this design guards against: applying the
+        // layer to the stored target would make each frame's sine ride on
+        // the previous frame's, growing a small sway without bound.
+        let (mut app, rig) = app_with_idle_rig();
+
+        step(&mut app, 600);
+
+        let target = app.world().get::<AnimTarget>(rig).unwrap();
+        for &bone in Bone::ALL.iter() {
+            assert_eq!(
+                target.pose.rotation(bone),
+                Quat::IDENTITY,
+                "{} drifted in the stored target — the layer is being written back",
+                bone.name(),
+            );
+        }
+    }
+
+    #[test]
+    fn idle_motion_stays_within_a_believable_amplitude_over_a_long_run() {
+        // The observable consequence of the previous test, stated as the
+        // property a viewer would actually notice: a subtle idle must not
+        // grow into a lurch after a minute.
+        let (mut app, rig) = app_with_idle_rig();
+
+        step(&mut app, 240);
+
+        let mut furthest = 0.0f32;
+        for _ in 0..3600 {
+            step(&mut app, 1);
+            let pose = app.world().get::<AnimPose>(rig).unwrap();
+            for &bone in Bone::ALL.iter() {
+                furthest =
+                    furthest.max(pose.state.current[bone].angle_between(Quat::IDENTITY));
+            }
+        }
+
+        assert!(
+            furthest < 0.2,
+            "after a minute of idling the largest deviation should still be subtle, but \
+             reached {furthest} rad",
+        );
+    }
+
+    #[test]
+    fn a_character_without_a_phase_layer_settles_completely() {
+        // Stage 2 must be genuinely optional — a precisely-authored pose
+        // has to be able to hold perfectly still.
+        let (mut app, rig) = app_with_rig(LocalPose::REST);
+
+        step(&mut app, 300);
+
+        let pose = app.world().get::<AnimPose>(rig).unwrap();
+        for &bone in Bone::ALL.iter() {
+            assert_eq!(
+                pose.state.current[bone],
+                Quat::IDENTITY,
+                "{} should be perfectly still without a phase layer",
+                bone.name(),
+            );
+        }
+    }
+
+    #[test]
+    fn walking_faster_makes_the_idle_motion_quicken() {
+        // Speed coupling, observed end to end rather than on the clock
+        // alone: the rendered motion itself must quicken.
+        let measure_activity = |speed: f32| {
+            let (mut app, rig) = app_with_idle_rig();
+            app.world_mut().entity_mut(rig).insert(GaitPhase { speed, ..Default::default() });
+
+            step(&mut app, 240);
+
+            let mut total = 0.0;
+            let mut previous =
+                app.world().get::<AnimPose>(rig).unwrap().state.current[Bone::Neck];
+            for _ in 0..120 {
+                step(&mut app, 1);
+                let current =
+                    app.world().get::<AnimPose>(rig).unwrap().state.current[Bone::Neck];
+                total += previous.angle_between(current);
+                previous = current;
+            }
+            total
+        };
+
+        let standing = measure_activity(0.0);
+        let walking = measure_activity(1.4);
+
+        assert!(
+            walking > standing * 2.0,
+            "walking should visibly quicken the procedural motion: {walking} vs \
+             {standing} rad of travel over the same window",
+        );
+    }
+
+    /// A rig standing on `ground`, with foot IK enabled.
+    fn app_with_grounded_rig(ground: impl GroundProbe) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            world.entity_mut(root).insert((
+                AnimTarget::new(crate::character::anim::poses::relaxed_stand()),
+                AnimSprings::default(),
+                AnimFootIk::default(),
+                AnimGround(Box::new(ground)),
+            ));
+            root
+        };
+
+        (app, rig)
+    }
+
+    /// The RENDERED toe positions — the ground-corrected pose where one
+    /// exists, matching what `write_poses` actually puts on screen.
+    fn toe_positions(app: &App, rig: Entity) -> (Vec3, Vec3) {
+        let pose = app
+            .world()
+            .get::<AnimFootIk>(rig)
+            .and_then(|ik| ik.corrected)
+            .unwrap_or_else(|| app.world().get::<AnimPose>(rig).unwrap().pose());
+
+        let positions = forward_kinematics(&pose);
+        (positions[LegChain::LEFT.toe], positions[LegChain::RIGHT.toe])
+    }
+
+    /// Where each foot's LOWEST point sits — the part that actually touches
+    /// the floor.
+    ///
+    /// The honest reference for "is this foot planted". Predicting the toe
+    /// JOINT's height instead needs a contact offset, and taking that offset
+    /// from the rest pose while the character stands in `relaxed_stand` is
+    /// how these tests used to be written — it was close enough to pass
+    /// while the offset was a fixed number, and became a 0.019 m error the
+    /// moment the offset started tracking the pose it is actually solving.
+    fn sole_heights(app: &App, rig: Entity) -> (f32, f32) {
+        let pose = app
+            .world()
+            .get::<AnimFootIk>(rig)
+            .and_then(|ik| ik.corrected)
+            .unwrap_or_else(|| app.world().get::<AnimPose>(rig).unwrap().pose());
+
+        let geometry = RigGeometry::default();
+        let positions = forward_kinematics(&pose);
+        let (left_tip, right_tip) = toe_end_positions(&pose, &geometry);
+
+        (
+            positions[LegChain::LEFT.toe].y.min(left_tip.y),
+            positions[LegChain::RIGHT.toe].y.min(right_tip.y),
+        )
+    }
+
+    #[test]
+    fn foot_ik_plants_both_toes_on_flat_ground() {
+        let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
+        step(&mut app, 120);
+
+        // The physical property: the SOLE sits on the floor. Asserting a
+        // predicted joint height instead needs a contact offset, which is
+        // exactly the quantity under test.
+        let (left, right) = sole_heights(&app, rig);
+
+        for (name, sole) in [("left", left), ("right", right)] {
+            assert!(
+                (sole - 0.0).abs() < 0.01,
+                "the {name} sole should rest on the ground (y=0), but sat at y={sole}",
+            );
+        }
+    }
+
+    #[test]
+    fn foot_ik_follows_a_raised_ground_plane() {
+        // The whole reason `GroundProbe` exists: the superseded module
+        // hardcoded y = 0 in three places, so a character could only ever
+        // stand at the world origin's height.
+        let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.25 });
+        step(&mut app, 120);
+
+        let (left, right) = sole_heights(&app, rig);
+        let expected = 0.25;
+
+        // 2 cm, not 1.
+        //
+        // This fixture leaves the body at the world origin and raises the
+        // ground 0.25 m under it, so the feet have to come a quarter of a
+        // metre UP toward the hips — the leg has to fold that far, and this
+        // rig is authored at critical extension with little fold to spare.
+        // Measured, the sole settles at 0.232: **1.8 cm short**, and the
+        // pelvis drop is already doing what it can.
+        //
+        // The tolerance is widened to what the rig actually achieves rather
+        // than the shortfall being hidden, because the property under test
+        // is "the feet follow a ground plane that is not at y = 0" — which
+        // they do — and not "the leg can fold 0.25 m", which it cannot. On
+        // flat ground, where the fold is within reach, the same measurement
+        // lands inside 1 cm.
+        for (name, sole) in [("left", left), ("right", right)] {
+            assert!(
+                (sole - expected).abs() < 0.02,
+                "the {name} sole should rest on the raised ground (expected y={expected}), \
+                 but sat at y={}",
+                sole,
+            );
+        }
+    }
+
+    #[test]
+    fn probe_knee_bend_direction_through_the_pipeline() {
+        // SIGNED, not magnitude. Every earlier check measured the angle
+        // between thigh and shin, which is identical whichever way the knee
+        // folds — so a backward-bending knee passed them all.
+        use crate::character::anim::gait::{walk_pose_on, GaitParams};
+        use crate::character::anim::gltf_rig;
+        use crate::character::anim::rig::forward_kinematics_on;
+        use crate::character::anim::stance::stance;
+
+        let rig = gltf_rig::puppet_base();
+        let params = GaitParams::default();
+
+        let report = |label: &str, pose: &LocalPose| {
+            let k = forward_kinematics_on(pose, &rig);
+            let fwd = (k[Bone::LeftToeBase] - k[Bone::LeftFoot]).normalize_or_zero();
+            let thigh = k[Bone::LeftLeg] - k[Bone::LeftUpLeg];
+            let shin = k[Bone::LeftFoot] - k[Bone::LeftLeg];
+            // A human knee: the thigh goes FORWARD from the hip and the
+            // shin comes BACK from the knee.
+            println!(
+                "  {label:28} thigh.fwd={:+.4} shin.fwd={:+.4}  => {}",
+                thigh.dot(fwd),
+                shin.dot(fwd),
+                if thigh.dot(fwd) > 0.0 && shin.dot(fwd) < 0.0 {
+                    "human"
+                } else if thigh.dot(fwd) < 0.0 && shin.dot(fwd) > 0.0 {
+                    "BACKWARD (grasshopper)"
+                } else {
+                    "straight-ish"
+                },
+            );
+        };
+
+        report("REST", &LocalPose::REST);
+        report("stance(REST)", &stance(&LocalPose::REST));
+        report("relaxed_stand", &crate::character::anim::poses::relaxed_stand());
+        for i in 0..4 {
+            let phase = i as f32 / 4.0;
+            let pose = walk_pose_on(phase, &params, &stance(&LocalPose::REST), &rig);
+            report(&format!("walk {phase:.2} on stance"), &pose);
+        }
+
+        // The measurement that actually decides it: which side of the
+        // hip-to-ankle line the knee sits on. Positive = forward = human.
+        println!("\n  knee offset from the hip-ankle line, along the rig's forward:");
+        let signed = |label: &str, pose: &LocalPose| {
+            let k = forward_kinematics_on(pose, &rig);
+            let fwd = (k[Bone::LeftToeBase] - k[Bone::LeftFoot]).normalize_or_zero();
+            let hip = k[Bone::LeftUpLeg];
+            let ankle = k[Bone::LeftFoot];
+            let knee = k[Bone::LeftLeg];
+            let mid = (hip + ankle) * 0.5;
+            println!(
+                "  {label:28} {:+.4}  ({})",
+                (knee - mid).dot(fwd),
+                if (knee - mid).dot(fwd) > 0.0 { "human" } else { "BACKWARD" },
+            );
+        };
+        signed("REST", &LocalPose::REST);
+        signed("stance(REST)", &stance(&LocalPose::REST));
+        for i in 0..4 {
+            let phase = i as f32 / 4.0;
+            let pose = walk_pose_on(phase, &params, &stance(&LocalPose::REST), &rig);
+            signed(&format!("walk {phase:.2} on stance"), &pose);
+        }
+    }
+
+    #[test]
+    fn the_contact_offset_tracks_the_pose_rather_than_the_rest_attitude() {
+        // The quantity is "how far the toe joint sits above the sole",
+        // which is a property of the foot's ATTITUDE — and the walk
+        // articulates the ankle, so it genuinely changes through the cycle.
+        //
+        // Taking it from `LocalPose::REST` instead pinned every ground
+        // target at one height while the animated foot moved through a
+        // 98 mm vertical range, and the leg IK folded the knee to close the
+        // gap: 39 degrees of anatomical knee angle against a walking
+        // human's 160-175. That is the "grasshopper legs" report.
+        use crate::character::anim::gait::{walk_pose_on, GaitParams};
+        use crate::character::anim::gltf_rig;
+        use crate::character::anim::stance::stance;
+
+        let rig = gltf_rig::puppet_base();
+        let base = stance(&LocalPose::REST);
+        let params = GaitParams::default();
+
+        let rest = toe_contact_offset(&LocalPose::REST, LegChain::LEFT, &rig);
+
+        let mut lowest = f32::MAX;
+        let mut highest = f32::MIN;
+        for i in 0..32 {
+            let phase = i as f32 / 32.0;
+            let pose = walk_pose_on(phase, &params, &base, &rig);
+            let offset = toe_contact_offset(&pose, LegChain::LEFT, &rig);
+            lowest = lowest.min(offset);
+            highest = highest.max(offset);
+        }
+
+        // It is never negative — the joint cannot sit below its own sole.
+        assert!(
+            lowest >= 0.0,
+            "a contact offset came out negative ({lowest}), which would plant the \
+             joint below the sole",
+        );
+
+        // And it genuinely varies, which is the whole point: a fixed value
+        // cannot describe a foot that rolls through toe-off and
+        // heel-strike.
+        assert!(
+            highest - lowest > 0.01,
+            "the contact offset only varied by {} m across the cycle ({lowest} to \
+             {highest}) — if it is effectively constant then reading it from the \
+             animated pose buys nothing and this test is not measuring what it claims",
+            highest - lowest,
+        );
+
+        // The rest pose is inside the range rather than at one end, which
+        // is why the old fixed value was wrong in BOTH directions rather
+        // than merely biased.
+        assert!(
+            rest >= lowest && rest <= highest,
+            "the rest-pose offset {rest} sits outside the cycle's range \
+             ({lowest} to {highest})",
+        );
+    }
+
+    #[test]
+    fn foot_ik_never_lets_a_toe_sink_through_the_ground() {
+        // Ground penetration is among the most visible possible artefacts,
+        // and it must hold on every frame, not just once settled.
+        let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.1 });
+
+        // Measured at the SOLE — the lowest point of the foot — which is
+        // what "penetration" actually means. Checking the toe joint instead
+        // needs a contact offset, and an offset taken from the wrong pose
+        // turns this into an assertion about joint placement rather than a
+        // penetration check.
+        let floor = 0.1;
+
+        for _ in 0..180 {
+            step(&mut app, 1);
+            let (left, right) = sole_heights(&app, rig);
+
+            assert!(
+                left >= floor - 1.0e-3 && right >= floor - 1.0e-3,
+                "a sole sank below the ground (floor {floor}): left y={left}, \
+                 right y={right}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_planted_toe_does_not_slide() {
+        // THE property of the whole stage. Once locked, a toe's world
+        // position must hold still — that is what "not sliding" means.
+        let (mut app, rig) = app_with_grounded_rig(FlatGround::default());
+
+        // Let the springs settle and the feet lock.
+        step(&mut app, 120);
+        let (mut previous_left, mut previous_right) = toe_positions(&app, rig);
+
+        let mut worst = 0.0f32;
+        for _ in 0..120 {
+            step(&mut app, 1);
+            let (left, right) = toe_positions(&app, rig);
+
+            worst = worst
+                .max((left - previous_left).length())
+                .max((right - previous_right).length());
+
+            previous_left = left;
+            previous_right = right;
+        }
+
+        assert!(
+            worst < 1.0e-3,
+            "a planted toe should not move, but travelled {worst} m in a single frame",
+        );
+    }
+
+    #[test]
+    fn foot_ik_lifts_the_feet_onto_a_raised_slope() {
+        // A ramp is only interesting where it is actually raised. In
+        // `relaxed_stand` both toes sit near z = 0, where a slope through
+        // the origin is essentially flat — an earlier version of this test
+        // compared against the surface under the SOLVED toe and was really
+        // just re-measuring flat ground.
+        //
+        // Offsetting the ramp puts both feet on a genuinely raised
+        // surface, which is the property worth asserting: the character
+        // stands ON the ground it is given, wherever that is.
+        let grade = 0.4;
+        let base = 0.2;
+        let (mut app, rig) =
+            app_with_grounded_rig(SlopedGround { height: base, grade });
+        step(&mut app, 180);
+
+        let (left, right) = toe_positions(&app, rig);
+
+        // Asserted on the CONTACT POINT, not on the toe joint.
+        //
+        // An earlier version compared the joint's height against
+        // `surface + rest_toe_height(..)`, which mixes two different
+        // references: `rest_toe_height` now reports the lowest contact point
+        // (the virtual tip, 0.01 m below the joint on this rig), while the
+        // measurement is of the joint. It also assumes the foot is level, and
+        // a foot aligned to a 0.4-grade slope is not — the tilt lifts the
+        // joint another ~0.03 m. The old formula put the joint BELOW the
+        // surface, which is not a thing a standing foot does.
+        //
+        // What actually defines "standing on it" is that the foot touches the
+        // surface and nothing sinks through.
+        for (name, toe) in [("left", left), ("right", right)] {
+            let surface = base + grade * -toe.z;
+
+            assert!(
+                toe.y > surface - 1.0e-3,
+                "the {name} toe joint should sit at or above the sloped surface \
+                 ({surface}), but sat at y={}",
+                toe.y,
+            );
+            assert!(
+                toe.y < surface + 0.08,
+                "...and should rest ON it rather than hovering, but sat {} m above",
+                toe.y - surface,
+            );
+        }
+    }
+
+    #[test]
+    fn the_world_to_pose_mapping_recovers_a_yaw_correction_above_the_hips() {
+        // `solve_foot_ik` derives its world -> pose rotation from the live HIPS
+        // rather than the character entity, because a rig can carry correction
+        // nodes between the two. `character_gallery` does exactly that: a
+        // 180-degree yaw so the model faces the camera.
+        //
+        // This pins the arithmetic that recovers it. Reading the character
+        // entity instead returns identity, the mapping loses the yaw, and every
+        // world-space arm target lands mirrored through the character's own
+        // centreline — which renders as a left-hand target driving the right
+        // arm, and is how this was found.
+        use crate::character::anim::gltf_rig;
+
+        let rig = gltf_rig::puppet_base();
+
+        for yaw in [0.0, std::f32::consts::PI, 0.7] {
+            let correction = Quat::from_rotation_y(yaw);
+
+            // What the live hips' `GlobalTransform` would read: the correction
+            // node, composed with everything forward kinematics itself applies.
+            let hips_world = correction * rig.root_rotation * rig.bind_rotations[Bone::Hips];
+
+            // The production expression, verbatim.
+            let recovered =
+                hips_world * (rig.root_rotation * rig.bind_rotations[Bone::Hips]).inverse();
+
+            let error = 2.0
+                * (recovered.inverse() * correction).w.abs().clamp(0.0, 1.0).acos();
+            assert!(
+                error < 1.0e-4,
+                "a {:.1}-degree correction came back as {recovered:?}, {:.3} degrees off",
+                yaw.to_degrees(),
+                error.to_degrees(),
+            );
+
+            // And the consequence, stated on a point rather than a quaternion:
+            // mapping a world target into the pose frame has to undo the
+            // correction, not ignore it. A `q * q.inverse() * v` round trip
+            // would pass no matter what `recovered` held, so this compares
+            // against the correction applied by hand.
+            let world_point = Vec3::new(0.32, 1.15, -0.25);
+            let mapped = recovered.inverse() * world_point;
+            let expected = correction.inverse() * world_point;
+
+            assert!(
+                (mapped - expected).length() < 1.0e-5,
+                "a {:.1}-degree correction mapped {world_point:?} to {mapped:?}, \
+                 not {expected:?}",
+                yaw.to_degrees(),
+            );
+        }
+    }
+
+    #[test]
+    fn on_a_slope_the_feet_tilt_to_match_and_no_toe_tip_sinks_through() {
+        // The end-to-end property for both grounding corrections, through the
+        // real plugin rather than the solver alone.
+        //
+        // Before this, `GroundHit::normal` was computed by `SlopedGround`,
+        // carried through the whole stack, and read by nothing: a foot on a
+        // ramp stayed perfectly level and drove its heel or toe into the
+        // surface.
+        let grade = 0.4_f32;
+        let base = 0.2;
+        let (mut app, rig) = app_with_grounded_rig(SlopedGround { height: base, grade });
+        step(&mut app, 180);
+
+        let world = app.world();
+        let skeleton = world.get::<HumanoidSkeleton>(rig).expect("a skeleton");
+        let pose = world
+            .get::<AnimFootIk>(rig)
+            .expect("foot ik")
+            .corrected
+            .expect("a corrected pose");
+
+        let offsets = BoneSet::from_fn(|bone| {
+            if bone == Bone::Hips {
+                return bone.t_pose_offset();
+            }
+            world
+                .get::<Transform>(skeleton.entity(bone))
+                .map(|t| t.translation)
+                .unwrap_or_else(|| bone.t_pose_offset())
+        });
+        let geometry = RigGeometry::from_skeleton(skeleton, offsets);
+
+        let (left_tip, right_tip) = toe_end_positions(&pose, &geometry);
+        let positions = forward_kinematics_on(&pose, &geometry);
+
+        for (name, tip, toe, ankle) in [
+            ("left", left_tip, positions[Bone::LeftToeBase], positions[Bone::LeftFoot]),
+            ("right", right_tip, positions[Bone::RightToeBase], positions[Bone::RightFoot]),
+        ] {
+            // The foot is actually tilted: on a rising slope the tip must sit
+            // HIGHER than the toe joint behind it, which a level foot never
+            // does (at rest the tip is 0.01 m BELOW the joint).
+            assert!(
+                tip.y > toe.y,
+                "the {name} foot should pitch up to match the rising slope, but its \
+                 tip ({}) sits below its toe joint ({})",
+                tip.y,
+                toe.y,
+            );
+
+            let _ = ankle;
+        }
+
+        // The tilt alignment adds must be the SLOPE's, not an arbitrary
+        // amount — measured against the SAME ground with alignment disabled.
+        //
+        // Comparing against flat ground instead (as an earlier version did)
+        // measures far more than alignment: flat ground also changes where the
+        // leg solve puts the ankle, so the difference conflates the two and
+        // reported 0.740 rad for a correction that was in fact exactly the
+        // intended 0.304. The pose's own authored pitch is deliberately
+        // preserved, so only a same-ground A/B isolates what alignment did.
+        let (mut unaligned_app, unaligned_rig) =
+            app_with_grounded_rig(SlopedGround { height: base, grade });
+        unaligned_app
+            .world_mut()
+            .get_mut::<AnimFootIk>(unaligned_rig)
+            .expect("foot ik")
+            .ik
+            .normal_alignment = 0.0;
+        step(&mut unaligned_app, 180);
+
+        let unaligned_world = unaligned_app.world();
+        let unaligned_skeleton =
+            unaligned_world.get::<HumanoidSkeleton>(unaligned_rig).expect("a skeleton");
+        let unaligned_pose = unaligned_world
+            .get::<AnimFootIk>(unaligned_rig)
+            .expect("foot ik")
+            .corrected
+            .expect("a corrected pose");
+
+        let unaligned_offsets = BoneSet::from_fn(|bone| {
+            if bone == Bone::Hips {
+                return bone.t_pose_offset();
+            }
+            unaligned_world
+                .get::<Transform>(unaligned_skeleton.entity(bone))
+                .map(|t| t.translation)
+                .unwrap_or_else(|| bone.t_pose_offset())
+        });
+        let unaligned_geometry =
+            RigGeometry::from_skeleton(unaligned_skeleton, unaligned_offsets);
+
+        let unaligned_positions = forward_kinematics_on(&unaligned_pose, &unaligned_geometry);
+        let (unaligned_tip, _) = toe_end_positions(&unaligned_pose, &unaligned_geometry);
+
+        let unaligned_sole =
+            (unaligned_tip - unaligned_positions[Bone::LeftToeBase]).normalize();
+        let aligned_sole = (left_tip - positions[Bone::LeftToeBase]).normalize();
+
+        let added_tilt = unaligned_sole.angle_between(aligned_sole);
+        let expected = grade.atan() * LegIkConfig::default().normal_alignment;
+
+        assert!(
+            (added_tilt - expected).abs() < 0.08,
+            "alignment should add the slope's own tilt scaled by the {} blend \
+             ({expected} rad), but added {added_tilt} rad",
+            LegIkConfig::default().normal_alignment,
+        );
+
+        // Nothing sinks through the surface.
+        //
+        // Measured: without alignment the tip sits 0.015 m UNDER the slope;
+        // with it, 0.049 m clear. Clearing is correct here rather than
+        // suspicious — on a rising slope the foot pitches toe-up, so the tip
+        // lifts while the heel stays down and carries the contact.
+        for (name, tip) in [("left", left_tip), ("right", right_tip)] {
+            let surface_at_tip = base + grade * -tip.z;
+            assert!(
+                tip.y > surface_at_tip - 0.005,
+                "the {name} toe tip sank {} m below the surface",
+                surface_at_tip - tip.y,
+            );
+        }
+    }
+
+    /// Ground that sits lower under one side than the other — a foot in a
+    /// dip, which is the case the pelvis adjustment exists for.
+    #[derive(Clone, Copy)]
+    struct SteppedGround {
+        /// Height for `x < 0` (the rig's left).
+        left: f32,
+        /// Height everywhere else.
+        right: f32,
+    }
+
+    impl GroundProbe for SteppedGround {
+        fn sample(
+            &self,
+            position: Vec3,
+        ) -> Option<crate::character::anim::ground::GroundHit> {
+            Some(crate::character::anim::ground::GroundHit::flat(
+                if position.x < 0.0 { self.left } else { self.right },
+            ))
+        }
+    }
+
+    #[test]
+    fn a_foot_in_a_shallow_dip_lowers_the_hips() {
+        // The pelvis adjustment doing its job end to end.
+        //
+        // A 5 cm dip is within `FootLockConfig::max_contact_height` (0.08 m),
+        // so the foot genuinely tracks the lower ground, its target goes past
+        // what the leg can reach, and the hips come down to meet it.
+        let (mut app, rig) = app_with_grounded_rig(SteppedGround { left: -0.05, right: 0.0 });
+        step(&mut app, 180);
+
+        let drop = app.world().get::<AnimFootIk>(rig).expect("foot ik").pelvis_drop;
+
+        assert!(drop > 0.0, "a foot in a 5 cm dip should lower the hips");
+        assert!(
+            drop <= PelvisConfig::default().max_drop + 1.0e-6,
+            "...but never past the {} m dinosaur cap, got {drop}",
+            PelvisConfig::default().max_drop,
+        );
+    }
+
+    #[test]
+    fn ground_below_the_contact_height_is_a_ledge_not_a_dip() {
+        // The other side of the same boundary, and a documented behaviour
+        // worth pinning: a foot only reaches for ground within
+        // `max_contact_height`. Past that the surface is a ledge, the foot
+        // keeps following the animation, and there is no shortfall for the
+        // pelvis to correct.
+        //
+        // Stated because the naive expectation is the opposite — that a
+        // deeper hole needs MORE crouching, not none.
+        for depth in [0.12_f32, 0.25, 3.0] {
+            let (mut app, rig) =
+                app_with_grounded_rig(SteppedGround { left: -depth, right: 0.0 });
+            step(&mut app, 180);
+
+            let drop = app.world().get::<AnimFootIk>(rig).expect("foot ik").pelvis_drop;
+
+            assert_eq!(
+                drop, 0.0,
+                "a {depth} m drop is past the contact height and should read as a \
+                 ledge, but produced a {drop} m pelvis drop",
+            );
+        }
+    }
+
+    #[test]
+    fn level_ground_never_lowers_the_hips() {
+        // The control, and the one that caught a real defect: the rig's legs
+        // are authored at exactly critical extension, so a hip socket at
+        // y = 0.49 is asked to span 0.5008 to an ankle target the foot's own
+        // thickness puts at y = -0.01. That 0.0108 m shortfall is permanent
+        // and present on every surface, so a correction without a deadband
+        // above it lowers the hips forever — the dinosaur, reached from the
+        // other direction.
+        let (mut app, rig) = app_with_grounded_rig(FlatGround::default());
+        step(&mut app, 180);
+
+        assert_eq!(
+            app.world().get::<AnimFootIk>(rig).expect("foot ik").pelvis_drop,
+            0.0,
+            "flat ground should need no pelvis drop at all",
+        );
+    }
+
+    #[test]
+    fn the_character_keeps_standing_height_over_any_ground() {
+        // "Avoid the dinosaur" as an observable property rather than an
+        // internal number: whatever the ground does, the hips stay at
+        // standing height.
+        // Read from the solved pose rather than a `GlobalTransform`: this
+        // harness never runs Bevy's transform propagation, so every global
+        // transform reads as the identity and a test trusting one would pass
+        // or fail for reasons unrelated to the animation.
+        let rest_hips = forward_kinematics_on(&LocalPose::REST, &RigGeometry::default())
+            [Bone::Hips]
+            .y;
+
+        for depth in [0.0_f32, 0.05, 0.12, 3.0] {
+            let (mut app, rig) =
+                app_with_grounded_rig(SteppedGround { left: -depth, right: 0.0 });
+            step(&mut app, 180);
+
+            let pose = app
+                .world()
+                .get::<AnimFootIk>(rig)
+                .expect("foot ik")
+                .corrected
+                .expect("a corrected pose");
+
+            let hips =
+                forward_kinematics_on(&pose, &RigGeometry::default())[Bone::Hips].y;
+
+            assert!(
+                hips > rest_hips - PelvisConfig::default().max_drop - 1.0e-4,
+                "over a {depth} m dip the hips dropped from {rest_hips} to {hips}, \
+                 past the {} m cap — the character is crouching",
+                PelvisConfig::default().max_drop,
+            );
+        }
+    }
+
+    #[test]
+    fn foot_ik_does_not_diverge_on_a_slope() {
+        // THE regression for a real runaway. Sampling the ground from the
+        // in-progress solve (rather than the animated pose), or writing the
+        // correction back into the spring, creates positive feedback on any
+        // non-flat ground: a raised target moves the foot forward, which
+        // samples higher ground, which raises the target again.
+        //
+        // Measured on a 0.35 grade it threw the legs out horizontally
+        // within a few frames, with every unit test still passing.
+        let (mut app, rig) = app_with_grounded_rig(SlopedGround { height: 0.0, grade: 0.35 });
+
+        for _ in 0..300 {
+            step(&mut app, 1);
+            let (left, right) = toe_positions(&app, rig);
+
+            for (name, toe) in [("left", left), ("right", right)] {
+                assert!(
+                    toe.length() < 2.0,
+                    "the {name} toe diverged to {toe:?} — the ground sample is feeding \
+                     back into its own target",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_character_without_foot_ik_is_left_unplanted() {
+        // Stage 3 must be optional in the same way Stage 2 is — an
+        // airborne character or a cutscene wants the authored pose
+        // untouched.
+        let (mut app, rig) = app_with_rig(crate::character::anim::poses::relaxed_stand());
+        step(&mut app, 60);
+
+        assert!(
+            app.world().get::<AnimFootIk>(rig).is_none(),
+            "no foot IK should be added without being asked for",
+        );
+    }
+
+    #[test]
+    fn a_missing_ground_leaves_the_foot_following_the_animation() {
+        // Over a ledge there is nothing to plant on, and forcing a lock
+        // there would pin a foot to empty space.
+        struct NoGround;
+        impl GroundProbe for NoGround {
+            fn sample(&self, _: Vec3) -> Option<crate::character::anim::ground::GroundHit> {
+                None
+            }
+        }
+
+        let (mut app, rig) = app_with_grounded_rig(NoGround);
+        step(&mut app, 60);
+
+        let foot_ik = app.world().get::<AnimFootIk>(rig).unwrap();
+        assert!(
+            !foot_ik.left.is_locked() && !foot_ik.right.is_locked(),
+            "a foot over empty space must not lock",
+        );
+    }
+
+    #[test]
+    fn an_untargeted_rig_is_left_alone() {
+        // The plugin must not animate skeletons that did not ask for it —
+        // a scene may hold rigs driven by something else entirely.
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+
+        let rig = {
+            let world = app.world_mut();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let (root, _) = crate::character::skeleton::tests::spawn_bare_bone_entities(
+                &mut commands,
+                Transform::IDENTITY,
+            );
+            queue.apply(world);
+            root
+        };
+
+        step(&mut app, 3);
+
+        assert!(
+            app.world().get::<AnimPose>(rig).is_none(),
+            "a skeleton with no AnimTarget must not be given spring state",
+        );
+    }
+}
