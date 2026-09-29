@@ -2156,4 +2156,180 @@ mod tests {
         assert_eq!(locomotion.position, Vec3::ZERO);
         assert!(locomotion.root_velocity.length() > 0.0, "but it still publishes");
     }
+
+    #[test]
+    fn a_walking_body_sways_over_its_stance_feet_but_never_past_them() {
+        // Winter §11.3.1: in steady walking the centre of mass weaves toward
+        // each stance foot and passes just medial of its inside border,
+        // never over it. The sway turns both legs about their ankles, so
+        // the feet stay exactly where the walk put them — which is also
+        // what keeps it out of root motion.
+        use crate::character::anim::anthropometry::centre_of_mass;
+        use crate::character::anim::foot::Sole;
+        use crate::character::anim::gait::leg_phase;
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer, WalkSway};
+        let (stood, _, rig) = real_walk();
+        let left = rig.left();
+        let soles = [Sole::of(&rig, Bone::LeftFoot), Sole::of(&rig, Bone::RightFoot)];
+        let sole = |pose: &LocalPose, leg: usize| soles[leg].points(pose, &rig).map(|p| p + pose.root_translation);
+        // `puppet_base`'s foot mesh: its inside border is 3.8 cm medial of
+        // the sole's centreline (measured from the vertices skinned to
+        // foot_l / ball_l, 11 cm wide).
+        const INNER_BORDER: f32 = 0.038;
+        let layer = PhaseLayer { walk_sway: Some(WalkSway { gain: 1.0 }), ..PhaseLayer::none() };
+
+        for speed in [0.7, 1.2, 1.6] {
+            let params = GaitParams::walking_on(speed, &rig);
+            let distance = distance_per_cycle(&params, &stood, &rig);
+            let (mut toward, mut margin, mut feet_moved) = (0.0f32, f32::MAX, 0.0f32);
+            let (mut swing_across, mut swing_lowered) = (0.0f32, 0.0f32);
+            let (mut double_moved, mut clearance) = (0.0f32, [f32::MAX; 2]);
+            let ground = [0, 1].map(|leg| sole(&stood, leg).iter().map(|p| p.y).fold(f32::MAX, f32::min));
+            for i in 0..64 {
+                let cycle = i as f32 / 64.0;
+                let walked = walk_pose_on(cycle, &params, &stood, &rig);
+                let clock = GaitPhase {
+                    gait: cycle * std::f32::consts::TAU,
+                    speed,
+                    base_frequency_hz: 0.0,
+                    speed_coefficient: 1.0 / distance,
+                    ..Default::default()
+                };
+                let mut swayed = walked;
+                layer.apply_on(&clock, &mut swayed, &rig);
+                let stance = [0.0, 0.5].map(|shift| leg_phase(cycle + shift, params.duty_factor).is_stance());
+                let single = stance[0] != stance[1];
+                for leg in 0..2 {
+                    let (a, b) = (sole(&walked, leg), sole(&swayed, leg));
+                    if !stance[leg] {
+                        let low = |c: &[Vec3; 3]| c.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                        clearance[0] = clearance[0].min(low(&a) - ground[leg]);
+                        clearance[1] = clearance[1].min(low(&b) - ground[leg]);
+                    }
+                    for k in 0..3 {
+                        let moved = b[k] - a[k];
+                        if stance[leg] && !single {
+                            double_moved = double_moved.max(moved.length());
+                        } else if stance[leg] {
+                            feet_moved = feet_moved.max(moved.length());
+                        } else {
+                            // A swinging foot keeps its path over the
+                            // ground; its height is the pelvis's to set.
+                            swing_across = swing_across.max(Vec3::new(moved.x, 0.0, moved.z).length());
+                            swing_lowered = swing_lowered.max(-moved.y);
+                        }
+                    }
+                }
+                if stance[0] == stance[1] {
+                    continue;
+                }
+                // Single support: signed toward the stance foot.
+                let (leg, side) = if stance[0] { (0, 1.0) } else { (1, -1.0) };
+                let pelvis = (swayed.root_translation - walked.root_translation).dot(left) * side;
+                toward = toward.max(pelvis);
+                assert!(pelvis > -1.0e-3, "at {speed} m/s, cycle {cycle}: the pelvis leans {pelvis} m away from the stance foot");
+                let com = (swayed.root_translation + centre_of_mass(&swayed, &rig)).dot(left) * side;
+                let centreline = sole(&swayed, leg).iter().map(|p| p.dot(left)).sum::<f32>() / 3.0 * side;
+                margin = margin.min(centreline - INNER_BORDER - com);
+            }
+            // Measured 0.02 mm in single support; 0.57-0.67 mm in double
+            // support, where the trailing leg is near full extension and
+            // cannot give the last fraction of a millimetre.
+            assert!(feet_moved < 1.0e-4, "at {speed} m/s the sway moved the planted foot {:.2} mm", feet_moved * 1e3);
+            assert!(double_moved < 1.0e-3, "at {speed} m/s the sway moved a planted foot {:.2} mm in double support", double_moved * 1e3);
+            assert!(swing_across < 1.0e-4, "at {speed} m/s the sway moved a swinging foot {:.2} mm across the ground", swing_across * 1e3);
+            assert!(swing_lowered < 1.0e-4, "at {speed} m/s the sway lowered a swinging foot {:.2} mm", swing_lowered * 1e3);
+            assert!(clearance[1] > clearance[0] - 1.0e-4, "at {speed} m/s the sway cost the swing {:.2} mm of clearance", (clearance[0] - clearance[1]) * 1e3);
+            assert!(toward > 0.01, "at {speed} m/s the pelvis should sway over 1 cm toward the stance foot, got {toward}");
+            // Just medial: inside the border, and within a few centimetres of it.
+            assert!(
+                (0.0..0.03).contains(&margin),
+                "at {speed} m/s the centre of mass passes {:.1} mm medial of the stance foot's inside border",
+                margin * 1e3
+            );
+        }
+    }
+
+    // TEMPORARY PROBE (plan step 1.1) — remove after measuring.
+    #[test]
+    #[ignore]
+    fn probe_frontal_walk_baseline() {
+        use crate::character::anim::anthropometry::centre_of_mass;
+        use crate::character::anim::foot::Sole;
+        use crate::character::anim::gait::{leg_phase, LegPhase};
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer};
+        use crate::character::anim::rig::offset_from;
+        let (stood, _, rig) = real_walk();
+        let (left, fwd) = (rig.left(), rig.forward());
+        let at = |p: &LocalPose, b: Bone| p.root_translation + offset_from(p, &rig, Bone::Hips, b);
+        let soles = [Sole::of(&rig, Bone::LeftFoot), Sole::of(&rig, Bone::RightFoot)];
+        let sole_mid = |p: &LocalPose, i: usize| {
+            let pts = soles[i].points(p, &rig);
+            p.root_translation + (pts[0] + pts[1] + pts[2]) / 3.0
+        };
+        println!("standing: sole lateral L {:.4} R {:.4}; hips lateral {:.4}; sockets L {:.4} R {:.4}",
+            sole_mid(&stood, 0).dot(left), sole_mid(&stood, 1).dot(left), stood.root_translation.dot(left),
+            at(&stood, Bone::LeftUpLeg).dot(left), at(&stood, Bone::RightUpLeg).dot(left));
+        for speed in [0.7f32, 1.2, 1.6] {
+            let params = GaitParams::walking_on(speed, &rig);
+            let layer = PhaseLayer::locomotion();
+            let (mut width_sum, mut width_n) = (0.0f32, 0);
+            let mut slide = [0.0f32; 2];
+            let mut rows = Vec::new();
+            let mut com_min_margin = f32::MAX;
+            for i in 0..64 {
+                let phase = i as f32 / 64.0;
+                let bare = walk_pose_on(phase, &params, &stood, &rig);
+                let mut layered = bare;
+                let clock = GaitPhase { gait: phase * std::f32::consts::TAU, speed, ..Default::default() };
+                layer.apply_on(&clock, &mut layered, &rig);
+                let stance = [
+                    leg_phase(phase, params.duty_factor),
+                    leg_phase(phase + 0.5, params.duty_factor),
+                ];
+                let in_stance = |k: usize| matches!(stance[k], LegPhase::Stance { .. });
+                if in_stance(0) && !in_stance(1) || in_stance(1) && !in_stance(0) {}
+                let (l, r) = (sole_mid(&bare, 0).dot(left), sole_mid(&bare, 1).dot(left));
+                if in_stance(0) && in_stance(1) {
+                    width_sum += l - r;
+                    width_n += 1;
+                }
+                for k in 0..2 {
+                    if let LegPhase::Stance { progress } = stance[k]
+                        && (0.1..=0.9).contains(&progress)
+                    {
+                        slide[k] = slide[k].max((sole_mid(&layered, k) - sole_mid(&bare, k)).length());
+                    }
+                }
+                let s = at(&layered, Bone::LeftUpLeg) - at(&layered, Bone::RightUpLeg);
+                let roll = (s.y).atan2(s.dot(left)); // + = left socket higher
+                let yaw = (s.dot(fwd)).atan2(s.dot(left)); // + = left socket ahead
+                let com = (layered.root_translation + centre_of_mass(&layered, &rig)).dot(left);
+                // Single support: margin between COM and the stance sole's centreline, positive = medial.
+                if in_stance(0) != in_stance(1) {
+                    let (k, sign) = if in_stance(0) { (0, 1.0) } else { (1, -1.0) };
+                    let foot = sole_mid(&layered, k).dot(left);
+                    com_min_margin = com_min_margin.min(sign * (foot - com));
+                }
+                let pelvis = ((at(&layered, Bone::LeftUpLeg) + at(&layered, Bone::RightUpLeg)) * 0.5).dot(left);
+                rows.push((phase, stance, roll, yaw, com, pelvis));
+            }
+            let distance = distance_per_cycle(&params, &stood, &rig);
+            let com_height = (stood.root_translation + centre_of_mass(&stood, &rig)).y
+                - at(&stood, Bone::LeftFoot).y;
+            let hips_height = stood.root_translation.y - at(&stood, Bone::LeftFoot).y;
+            println!("   COM/hips height above ankle: {com_height:.4} / {hips_height:.4} = {:.4}", com_height / hips_height);
+            println!("\n== {speed} m/s: stride {distance:.3} m, stride time {:.3} s, COM above ankle {com_height:.3} m",
+                distance / speed);
+            println!("   duty {:.3}, double-support step width (sole centrelines) {:.4} m",
+                params.duty_factor, width_sum / width_n.max(1) as f32);
+            println!("layer moves stance soles (L, R) up to {:.1} / {:.1} mm", slide[0] * 1e3, slide[1] * 1e3);
+            println!("min COM margin medial of stance sole centreline: {:.4} m", com_min_margin);
+            for (phase, stance, roll, yaw, com, pelvis) in rows.iter().step_by(4) {
+                let tag = |s: &LegPhase| match s { LegPhase::Stance { .. } => "St", _ => "Sw" };
+                println!("  c {phase:.3}  L {} R {}  roll {:+.2}°  yaw {:+.2}°  com_lat {:+.4}  pelvis_lat {:+.4}",
+                    tag(&stance[0]), tag(&stance[1]), roll.to_degrees(), yaw.to_degrees(), com, pelvis);
+            }
+        }
+    }
 }

@@ -1541,13 +1541,18 @@ mod tests {
             let now = walk_pose(phase, &params, &base);
             let half_later = walk_pose(phase + 0.5, &params, &base);
 
+            // Mirrored across the sagittal plane (`convert::mirrored`'s
+            // convention, +X lateral): a turn about X — all a sagittal
+            // stride has — is its own mirror, but the feet brought in to
+            // the step width turn about forward, opposite ways per side.
+            let mirror = |q: Quat| Quat::from_xyzw(q.x, -q.y, -q.z, q.w);
             for (left, right) in [
                 (Bone::LeftUpLeg, Bone::RightUpLeg),
                 (Bone::LeftLeg, Bone::RightLeg),
                 (Bone::LeftFoot, Bone::RightFoot),
             ] {
                 assert!(
-                    now.rotation(left).abs_diff_eq(half_later.rotation(right), 1.0e-5),
+                    mirror(now.rotation(left)).abs_diff_eq(half_later.rotation(right), 1.0e-5),
                     "at phase {phase}, {} does not match {} half a cycle later",
                     left.name(),
                     right.name(),

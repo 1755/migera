@@ -1,0 +1,191 @@
+# Winter-grounded motion plan
+
+What Winter's *Biomechanics and Motor Control of Human Movement* (and its
+notes under `docs/knowledge/biomechanics-winter/`) can still ground in the
+animation system, as ordered, gated steps. Progress with measured numbers
+goes to [CHARACTER_PROGRESS.md](./CHARACTER_PROGRESS.md); this file only
+tracks the plan and which steps are done.
+
+Order: **1 → 2 → 3a → 4 → 3b.**
+
+## Scope findings
+
+1. **Winter gives the walk's frontal/transverse pelvis *timing and
+   direction*, not its angles.** §7.4.5 has hip moments only (abductor humps
+   at ~12 % and ~45 % of stride; H1-F pelvic drop at ~10 %). No pelvic
+   obliquity or rotation in degrees.
+   - The lateral COM path *is* derivable: the inverted pendulum (§11.2.1,
+     K ≈ 0.1 s²) with the COP switching feet every step (T ≈ 0.49 s) gives a
+     periodic sway of `a · (1 − 1/cosh(T / (2√K)))`, `a` = half step width,
+     i.e. ≈ ¼ of half the step width (~2–3 cm).
+   - §11.3.1's "COM passes medial of each stance foot" becomes a test.
+   - Any angle amplitude is a labelled non-Winter constant.
+2. **The ragdoll root is pinned kinematic, and its ceilings are
+   acceleration-shaped** (`ragdoll.rs`, `CEILING_SCALE = 12`, raised so the
+   limbs track the walk). Winter's N·m/kg budgets must be converted through
+   each body's inertia. Physiological budgets will likely not track the walk,
+   so they apply only in a new balancing mode.
+3. **Body proportions on a skinned mesh are a feasibility question.**
+   Moving joints apart stretches the mesh at the joints; spike before
+   committing.
+
+## 1. Sideways motion in the walk (§11.3.1, §7.4.5, §11.2.1)
+
+- [x] **1.1 Measure, no code.** On `puppet_base` and `character.glb`: the
+  walk's step width; the hips' lateral track vs the stance foot's inner
+  border; what the authored 0.05 rad Hips roll and 0.09 rad Spine1 twist do
+  to the planted feet. Baseline trace of pelvis position/roll at 0.7, 1.2,
+  1.6 m/s.
+
+  **Results (2026-09-29, headless, `puppet_base`, target pose = gait +
+  `PhaseLayer::locomotion()`; ignored probe
+  `locomotion::tests::probe_frontal_walk_baseline`, delete at 1.5).**
+  `character.glb` has no test fixture; it is checked live in 1.5.
+  - **Step width 22.9 cm** (sole centrelines) at every speed: the feet
+    track straight under the hip sockets (±11.4 cm). This is about twice a
+    typical adult step width. Winter gives no number in cm. Fig. 11.7 has no
+    scale bar and a stretched lateral axis, but in its ratios the COM comes
+    within ~15 % of the step width of each foot's centreline.
+  - **The pelvis does not move sideways**: ±1 mm. The COM moves ±0.8 cm,
+    only through the roll and trunk, and peaks at the *opposite* heel
+    contact (c = 0.5), a quarter step later than a pendulum's mid-single-
+    support peak. The COM stays ≥ 5.6 cm medial of the stance sole's
+    centreline.
+  - **Pendulum prediction** (K = d/g = 0.104 s², d = 1.02 m COM above the
+    ankle; step time = half of 1.30 / 1.10 / 0.99 s stride at 0.7 / 1.2 /
+    1.6 m/s): peak lateral COM ±4.1 / ±3.2 / ±2.7 cm at this rig's width;
+    ±1.8 / ±1.4 / ±1.2 cm at a 10 cm width.
+  - **Hips roll: ±2.86°, pure roll, no yaw, mistimed.** Left socket is
+    highest at left heel contact (c = 0) and level at mid single support
+    (0.25). Through late left single support (0.25–0.5) the *stance* side
+    is lower, the reverse of the H1-F pattern (swing side drops, peak
+    ~10–12 % of stride).
+  - **Pelvic yaw is 0.** Only Spine1 twists (0.09 rad).
+  - **The authored layer moves each stance sole up to 45–48 mm in the
+    target pose.** Both legs hang from the rolled Hips, so the foot IK
+    and lock must absorb this live (live planted slide stays 1–3 mm). 1.3
+    must re-solve the legs rather than leave it to the IK.
+  - **Decision needed before 1.2:** keep the 22.9 cm step width (±3.2 cm
+    sway at 1.2 m/s) or narrow the walk toward a human width (±1.4 cm).
+    Narrowing is not Winter-grounded in cm; the book's check (COM medial of
+    the stance foot's inner border) holds either way.
+- [x] **1.2a Narrower step (decided 2026-09-29: "more human-like").**
+  `stance::STEP_WIDTH = 0.57` of the hip-socket spacing, 13 cm on
+  `puppet_base`, derived from Winter's constraint: the widest step at
+  which the pendulum COM still passes medial of the stance foot's inner
+  border. Measured on the rig's foot mesh: 11 cm wide, inner border 3.8 cm
+  inside the sole centreline. Margin 4.4 / 8.5 / 10.9 mm at 0.7 / 1.2 /
+  1.6 m/s; 12 cm would leave 1 mm at 0.7 m/s and 10 cm crosses the border.
+  `stance::narrow_feet` turns each leg about its hip with the foot turned
+  back; `WalkCycle` composes Winter's stride onto the narrowed legs.
+  Test: `narrowed_feet_stand_the_step_width_apart_flat_and_mirrored`; the
+  gait mirror test now compares true mirror images.
+- [x] **1.2 Lateral pelvis path** (`phase.rs` `WalkSway`,
+  `walk_sway_at`; `stance::sway_over_loaded_feet`). Done in the locomotion
+  `PhaseLayer` rather than `walk.rs`: the layer has the stride clock,
+  so it knows the stride time the pendulum needs. The COM is the trapezoid
+  pressure path with each odd harmonic divided by `1 + K(2πk/T)²`, and
+  `K = d/g` from the pose's own COM height. Faded with the gait weight in
+  `PhaseLayer::between`. The legs turn about their ankles and each knee
+  takes up its leg's millimetres (`keep_ankle`), so the feet stay exact.
+  - Tests: `the_walking_sway_is_the_pendulums_periodic_path` (vs a direct
+    finite-difference solve; a phase-shift sabotage fails it by 11.6 mm);
+    `a_walking_body_sways_over_its_stance_feet_but_never_past_them`
+    (sways 2.3 / 1.8 / 1.6 cm toward the stance foot; planted foot 0.02 mm
+    in single support, ≤ 0.67 mm in double support; swing foot 0.01 mm).
+  - Original plan text: The periodic
+  pendulum solution, reversing at each heel contact, applied like
+  `sway_over_feet` (legs turned about their ankles). Stored beside the bob
+  as a per-cycle envelope, folded by phase.
+  - Tests: `the_walking_pelvis_sways_toward_the_stance_foot` (phase;
+    amplitude ±20 % of the pendulum value);
+    `the_walking_com_stays_medial_of_the_stance_foot` (via
+    `anthropometry::centre_of_mass`); `a_swaying_pelvis_does_not_weave_the_body`
+    (root motion: the hips' `root_translation` and the leg turn must cancel).
+  - Existing planted-foot (< 2 mm), mirror and velocity-jump tests stay green.
+  - Live (1.2 m/s, A/B vs the previous build): step width 230 → 134 mm,
+    pelvis sway 36.8 mm peak to peak, start slide unchanged. Front + Left
+    gizmo views checked. `anim_bench` 2.4 → 3.8 µs per character.
+  - **Open, predating this (found by the A/B):** the root weaves ~90–100 mm
+    sideways in a steady walk (heading ±14°). The last step glides 8–10 cm
+    near the floor after the root stops.
+- [ ] **1.3 Pelvic drop on the swing side** (§7.4.5 H1-F). Replace the
+  authored Hips roll oscillator (`phase.rs::locomotion`) with a gait-phase
+  roll: drop from stance heel contact to a peak at ~10–12 % of stride, lift
+  through the ~45 % abductor hump. Amplitude 0.05 rad, labelled non-Winter.
+  Legs re-solved to their feet like `shift_weight`.
+  - Tests: `the_pelvis_drops_on_the_swing_side_in_early_stance` (sign and
+    peak time); swing-toe minimum clearance not below today's.
+- [ ] **1.4 Pelvic yaw against the trunk** (§7.4.5 hip rotators). Pelvis
+  yaw in step with the stride, Spine1 counter-twist kept, thighs
+  compensated so the planted foot holds. Check the sprung pose, not the
+  target ([a lagging pelvis rotation slides planted feet](./docs/knowledge/character-animation/ik-and-locomotion/a-lagging-pelvis-rotation-slides-planted-feet.md)).
+  - Tests: `the_pelvis_yaws_with_the_swing_leg`; planted slide unchanged.
+- [ ] **1.5 Live check.** BRP capture with `--anim-speed-schedule` (start and
+  stop). Front + Left, `--gizmos on --show-real-mesh off`. Claim: "the
+  pelvis moves toward each stance foot and drops on the swing side, and the
+  feet do not slide." `anim_bench`, CHARACTER_PROGRESS, KB note, update the
+  Winter 11.3.1 / 7.4.5 notes. Checkpoint: commit.
+
+## 2. Push recovery while standing (§5.2.9, §11.2.1)
+
+- [ ] **2.1 Balance state** (new `balance.rs`). `Balance` component: COM
+  offset and velocity (A/P, M/L), pendulum `COM̈ = −(COP − COM)/K`. COP
+  controller `COP = COM + gains·(offset, velocity)`, clamped to the support
+  polygon from the `Sole` points less a margin. `Balance::push(impulse, mass)`.
+  - Tests: `a_push_sways_and_returns` (no overshoot past the step
+    threshold; settles in ~1–2 s); `the_cop_leads_the_com_with_the_opposite_sign`;
+    `a_push_beyond_the_support_saturates_and_flags_a_step` (hook for a
+    future stepping reaction).
+- [ ] **2.2 Posing the offset.** A/P through `sway_over_feet` (whole-leg
+  ankle lean, trunk upright); M/L through `shift_weight`'s load/unload,
+  scaled continuously.
+  - Tests: planted feet ≤ 1 mm in the target, ≤ 5 mm in the sprung pose;
+    sway angle < 8° (the model's validity range).
+- [ ] **2.3 Wire and verify.** Compose after the idle weight shift; gallery
+  `--push-schedule T:X,Z` for reproducible BRP capture. Live check, progress,
+  KB note. Checkpoint: commit.
+
+## 3a. Per-character knee style (§11.1)
+
+- [ ] A per-character knee-flex setting (`stance_on(base, knee_flex)`,
+  `DEFAULT_KNEE_FLEX`) passed into the stance, the release and the walk's
+  pelvis envelope. One test swept over 0.1–0.3 rad: feet planted, pelvis
+  height consistent with the flex. Live check at two settings. Checkpoint:
+  commit.
+
+## 4. Self-balancing active ragdoll (§11.2, §7.4.5, §9.0.5, §9.2, §8.1)
+
+- [ ] **4.1 Spike, unpinned root** (in a worktree). Release the root, add
+  foot colliders and ground friction, drive only the pose PD. Measure time
+  to fall; Winter §8.1's null result predicts ~0.5 s. Stop and report if
+  contact itself is unstable.
+- [ ] **4.2 Torque budgets.** Per joint: Winter per-kg peak × body mass
+  (ankle ≈ 1.6 N·m/kg), converted to an acceleration ceiling through
+  `limb_mass_properties`. Only in a new `Balancing` mode. Test: ceilings
+  equal the budgets within 1 %.
+- [ ] **4.3 Balance controller.** Part 2's controller on the measured COM:
+  A/P ankle torque = W·(COP target − ankle); M/L hip abductor load/unload.
+  Log the co-contraction ratio Σ|τ|/|Στ| (§11.2.2: alternating, not
+  co-contraction).
+  - Tests: `an_unpinned_ragdoll_stands_60s` (no drift, no NaN);
+    `a_push_is_recovered_within_budget`; `a_push_beyond_the_base_falls`;
+    torque never exceeds budget.
+- [ ] **4.4 Muscle behaviour**, each only if stable: activation lag as a
+  critical filter, ~40–60 ms (§9.0.5); Hill force–velocity ceiling (§9.2).
+  Each keeps its own stability test green.
+- [ ] **4.5 Mode switching.** Pinned → balancing → fall → stun recovery, no
+  pops. Live check, bench, KB notes (decision + Winter 8.1 / 11.2).
+  Checkpoint: commit.
+
+## 3b. Body proportions (§4.0.1), spike only
+
+- [ ] Scale one `character.glb` segment (thigh +10 %) by (a) moving the
+  joint alone and (b) bone scale with child compensation; inspect the knee
+  skinning. Build height-fraction proportions only if one is acceptable.
+
+## Throughout
+
+`--release` for all cargo commands; structural tests before screenshots;
+measured numbers in CHARACTER_PROGRESS; `python3 tools/kb.py lint` at 0
+errors; no `git stash` (worktrees for A/B).

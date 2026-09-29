@@ -42,6 +42,74 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A human step width, and a walk that sways over its stance feet
+
+Steps 1.1–1.2 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled
+in [the walk's step width and sideways sway](./docs/knowledge/character-animation/ik-and-locomotion/walk-step-width-and-sideways-sway.md).
+
+**Measured first (headless, `puppet_base`).**
+- The walk's feet tracked under the hip sockets, 22.9 cm apart.
+- The pelvis never moved sideways (±1 mm).
+- The authored locomotion layer's Hips roll (±2.86°, pure roll, no yaw)
+  is mistimed. It lowers the *stance* side through late single support,
+  the reverse of Winter's H1-F.
+- The authored layer moves each planted sole 45–48 mm in the target pose;
+  the foot IK absorbs it. Step 1.3 replaces it.
+
+**Step width 13 cm** (`stance::STEP_WIDTH`, 0.57 of the socket spacing).
+This is the narrowest width at which the pendulum's COM still passes medial
+of the stance foot's inner border, measured from the foot mesh. Margins
+4.3 / 9.2 / 11.9 mm at 0.7 / 1.2 / 1.6 m/s; 10 cm crosses the border.
+`narrow_feet` turns each leg about its hip with the foot turned back, and
+`WalkCycle` composes Winter's stride onto the narrowed legs. The gait
+mirror test now compares true mirror images: a turn about forward flips
+sign between the sides.
+
+**Sideways sway** (`phase::WalkSway`, `walk_sway_at`). It follows Eq. 11.3,
+the pressure moving foot to foot as a trapezoid wave, with each harmonic
+divided by `1 + K(2πk/T)²`. The pelvis sways 2.3 / 1.8 / 1.6 cm toward the
+stance foot, peaking at ~0.31 of the stride. The formula matches a direct
+finite-difference solve within 0.5 mm; a phase-shift sabotage fails it by
+11.6 mm.
+
+Feet held under the sway:
+
+| | before | after |
+|---|---|---|
+| planted, single support | 0.00 mm | 0.02 mm |
+| planted, double support | 1.2 mm | 0.67 mm |
+| swinging toe | 0.6 mm into the floor | 0.01 mm |
+
+This needed a load-weighted pelvis height (`sway_over_loaded_feet`) and
+`keep_ankle`, which bends the knee for each leg's residual. `solve_leg_on`
+was tried for that and made it worse (1.4 / 4.2 mm): it re-aims the foot.
+
+**Live, 1.2 m/s** (BRP, schedule `0:0,4:1.2,10:0`, A/B against the
+previous build in a worktree):
+
+| | before | after |
+|---|---|---|
+| step width | 230 mm | 134 mm |
+| pelvis sway vs root, peak to peak | 0 mm | 36.8 mm |
+| start, worst planted slide | 1.6 / 2.5 mm | 1.4 / 2.3 mm |
+
+Front and Left gizmo views at frames 110 and 128: both legs converge to feet
+inside the hips; the sagittal stride is unchanged.
+
+Two issues predate this change and are unchanged by it (A/B):
+- **The root weaves ~90–100 mm sideways over a steady walk.** Its heading
+  swings ±14°.
+- **The last step glides.** It moves 8–10 cm near the floor after the root
+  stops. `slide.py`'s "stop" figure (15.9 mm before, 20.5 after) is this
+  glide, not a planted foot. The previous entry's 2.9 mm came from a
+  different capture.
+
+`anim_bench` now calls the rig-aware `apply_on` on a stance base, as the
+plugin does, with the same change in the baseline. Per character per frame:
+2.4 → 3.8 µs. Evaluating the COM every frame had cost another 2 µs; a
+pinned height ratio (`COM_OVER_HIPS`) replaced it. 1004 tests pass.
+
+
 ### A first step that plants and lifts; a walk that no longer drops onto each leg
 
 Closes the open first-step problem from the entry below, and a jerk seen

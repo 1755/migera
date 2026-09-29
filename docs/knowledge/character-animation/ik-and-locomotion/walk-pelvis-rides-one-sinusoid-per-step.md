@@ -75,3 +75,4 @@ acceleration p95 21 → 0.86 m/s², max 44 → 1.3 m/s².
 - [Recorded pelvis path and leg angles conflict](./recorded-pelvis-path-and-leg-angles-conflict.md) — context: why the pelvis follows the legs rather than Winter's recorded path.
 - [Rig authored at critical extension](./rig-authored-at-critical-extension.md) — prerequisite: why the fit may press, never float.
 - [Walking foot rocker contact model](./walking-foot-rocker-contact-model.md) — context: the contacts the raw path is derived from.
+- [The walk's step width and sideways sway](./walk-step-width-and-sideways-sway.md) — contrast: the pelvis's side-to-side motion, from the pendulum rather than the legs.

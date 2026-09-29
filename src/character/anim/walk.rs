@@ -75,7 +75,11 @@ const LEGS: [(f32, Bone, Bone, Bone); 2] = [
 pub struct WalkCycle {
     amplitude: f32,
     duty_factor: f32,
-    /// The base pose's own `gait::sagittal_angles`, per leg.
+    /// Each leg's hip and foot rotations with the feet brought in to the
+    /// walk's step width (`stance::narrow_feet`). The recorded stride is
+    /// composed onto these, not onto the base's standing width.
+    narrowed: [[Quat; 2]; 2],
+    /// The narrowed base pose's own `gait::sagittal_angles`, per leg.
     base_angles: [[f32; 4]; 2],
     /// The bind's shank angle from vertical, per leg: the foot's bind-zeroed
     /// attitude is measured against it.
@@ -111,8 +115,13 @@ const BOB_COEFFICIENTS: usize = 1 + 2 * BOB_HARMONICS.len();
 
 impl WalkCycle {
     fn build(params: &GaitParams, amplitude: f32, base: &LocalPose, rig: &RigGeometry) -> Self {
+        // A walk puts its feet closer together than a stance does (Winter
+        // §11.3.1; see `stance::STEP_WIDTH`).
+        let mut narrow = *base;
+        super::stance::narrow_feet(&mut narrow, rig, super::stance::step_width(base, rig));
+        let narrowed = LEGS.map(|(_, hip, _, ankle)| [narrow.rotations[hip], narrow.rotations[ankle]]);
         let base_angles =
-            [0, 1].map(|leg| gait::sagittal_angles(base, rig, gait::leg_joints(LEGS[leg].3)));
+            [0, 1].map(|leg| gait::sagittal_angles(&narrow, rig, gait::leg_joints(LEGS[leg].3)));
         let bind_shank = [0, 1].map(|leg| {
             let [thigh, _, knee, _] =
                 gait::sagittal_angles(&LocalPose::REST, rig, gait::leg_joints(LEGS[leg].3));
@@ -123,6 +132,7 @@ impl WalkCycle {
         let mut cycle = Self {
             amplitude,
             duty_factor: params.duty_factor,
+            narrowed,
             base_angles,
             bind_shank,
             correction: [[0.0; SAMPLES]; 2],
@@ -217,6 +227,12 @@ impl WalkCycle {
     /// The walking pose's legs and pelvis at `phase`, composed onto `base`.
     pub fn pose(&self, base: &LocalPose, rig: &RigGeometry, phase: f32, facing: f32) -> LocalPose {
         let mut pose = *base;
+        // `ground` stays the standing base's: a foot brought in rises a
+        // little (the leg turns whole), and the pelvis comes down for it.
+        for (leg, &(_, hip, _, ankle)) in LEGS.iter().enumerate() {
+            pose.rotations[hip] = self.narrowed[leg][0];
+            pose.rotations[ankle] = self.narrowed[leg][1];
+        }
         self.pose_legs(&mut pose, phase, facing);
 
         let (mut loads, mut needs) = ([0.0; 2], [0.0; 2]);

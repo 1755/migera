@@ -201,6 +201,110 @@ pub struct PhaseLayer {
     /// Quiet-standing body sway, if any: the pelvis shifted over planted
     /// feet. Needs the rig, so only [`PhaseLayer::apply_on`] applies it.
     pub sway: Option<QuietSway>,
+    /// A walking body's side-to-side sway over its stance feet, if any.
+    /// Needs the rig, so only [`PhaseLayer::apply_on`] applies it.
+    pub walk_sway: Option<WalkSway>,
+}
+
+/// The side-to-side sway of a walking body, after Winter §11.3.1.
+///
+/// Each stance foot carries the centre of pressure, and the body is an
+/// inverted pendulum over it (Eq. 11.3, `COP − COM = −K·COM̈`): pulled
+/// toward the foot it stands on, and turned back by the next foot's
+/// pressure before it gets there. The COM passes just medial of each stance
+/// foot and never over it. [`walk_sway_at`] is that periodic path; the
+/// pelvis carries it, with both legs turned about their ankles so the feet
+/// stay where they are ([`super::stance::sway_over_feet`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WalkSway {
+    /// How much of the sway applies, `0..=1`: the walk's weight, while a
+    /// walk starts or stops.
+    pub gain: f32,
+}
+
+/// Stride harmonics [`walk_sway_at`] keeps: the odd ones, where all of a
+/// side-to-side path is. The first alone is 98 % of it; the pendulum
+/// divides the third by ~30 against the first.
+const WALK_SWAY_HARMONICS: [f32; 3] = [1.0, 3.0, 5.0];
+
+/// The walking centre of mass's side-to-side offset at stride position
+/// `cycle` (0 = left heel contact), toward the rig's left, metres.
+///
+/// The centre of pressure is under the left foot (`+width/2`) through left
+/// single support and the right (`−width/2`) through right, and crosses
+/// linearly through each double support: a trapezoid wave, which is a
+/// square wave smoothed over the double support, `duty − 0.5` of the
+/// stride. The pendulum's periodic answer divides each harmonic `k` of it
+/// by `1 + K·(2πk/T)²`, `T` the stride's seconds.
+///
+/// Measured against a direct numerical solution of the same model on
+/// `puppet_base` (13 cm step width, K = 0.104 s²): ±2.27 / ±1.78 / ±1.51 cm
+/// at 0.7 / 1.2 / 1.6 m/s, furthest out at ~0.31 of the stride, in left
+/// single support.
+pub fn walk_sway_at(cycle: f32, stride_seconds: f32, duty_factor: f32, width: f32, pendulum_k: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    if stride_seconds <= 0.0 || !stride_seconds.is_finite() {
+        return 0.0;
+    }
+    let double = (duty_factor - 0.5).clamp(0.0, 0.5);
+    WALK_SWAY_HARMONICS
+        .iter()
+        .map(|&k| {
+            // The square wave's harmonic, 4/(πk) of its half-height, spread
+            // over the double support (a box's sinc), then the pendulum.
+            let spread = if double > 0.0 { (PI * k * double).sin() / (PI * k * double) } else { 1.0 };
+            let omega = TAU * k / stride_seconds;
+            let pendulum = 1.0 / (1.0 + pendulum_k * omega * omega);
+            4.0 / (PI * k) * spread * pendulum * (TAU * k * (cycle - 0.5 * double)).sin()
+        })
+        .sum::<f32>()
+        * width
+        * 0.5
+}
+
+/// Gravity, m/s², for the pendulum constant `K = d / g`.
+const GRAVITY: f32 = 9.81;
+
+/// The whole-body centre of mass's height above the ankles, as a multiple
+/// of the hips': 1.018 / 0.856 m on `puppet_base` standing
+/// (`anthropometry::centre_of_mass`). A ratio rather than the COM itself:
+/// the pendulum needs it every frame, and evaluating the COM there cost
+/// ~2 µs a character, as much as the rest of the phase layer and the
+/// springs together.
+const COM_OVER_HIPS: f32 = 1.19;
+
+/// [`walk_sway_at`] for a character walking on `phase`'s clock in `pose`.
+///
+/// The stride's seconds are the clock's own; the step width is the walk's
+/// (`stance::step_width`); `K = d / g`, `d` the centre of mass's height
+/// above the ankles ([`COM_OVER_HIPS`]), for a point mass. Winter's K for
+/// a distributed body is somewhat larger (~0.1 s² at d ≈ 0.9 m); 1.02 m on
+/// `puppet_base` gives 0.104.
+///
+/// Also returns how the body rests on each foot (left, right), from the
+/// walk's stance timing, for the vertical that keeps the planted feet down.
+fn walk_sway_now(
+    phase: &GaitPhase,
+    pose: &super::rig::LocalPose,
+    rig: &super::rig::RigGeometry,
+) -> (f32, [f32; 2]) {
+    use super::gait::{leg_phase, stance_load, LegPhase};
+    use super::rig::offset_from;
+    let hz = phase.gait_frequency_hz();
+    let duty = super::gait::GaitParams::walking_on(phase.speed, rig).duty_factor;
+    let cycle = phase.gait / std::f32::consts::TAU;
+    let loads = [0.0, 0.5].map(|shift| match leg_phase(cycle + shift, duty) {
+        LegPhase::Stance { progress } => stance_load(progress, duty),
+        _ => 0.0,
+    });
+    if hz <= 0.0 {
+        return (0.0, loads);
+    }
+    let width = super::stance::step_width(pose, rig);
+    let ankles = 0.5
+        * (offset_from(pose, rig, Bone::Hips, Bone::LeftFoot).y + offset_from(pose, rig, Bone::Hips, Bone::RightFoot).y);
+    let height = -ankles * COM_OVER_HIPS;
+    (walk_sway_at(cycle, 1.0 / hz, duty, width, height.max(0.0) / GRAVITY), loads)
 }
 
 /// The sway of a body standing still, after Winter §11.2.1.
@@ -310,6 +414,13 @@ impl PhaseLayer {
             super::stance::shift_weight(pose, rig, sway.weight_shift(phase.elapsed));
             super::stance::sway_over_feet(pose, rig, sway.shift(phase, rig));
         }
+        if let Some(walk) = self.walk_sway
+            && walk.gain > 0.0
+            && phase.speed > 0.0
+        {
+            let (shift, loads) = walk_sway_now(phase, pose, rig);
+            super::stance::sway_over_loaded_feet(pose, rig, rig.left() * (walk.gain * shift), loads);
+        }
     }
 
     /// A layer part-way from `from` to `to`: `from`'s oscillators faded by
@@ -331,9 +442,14 @@ impl PhaseLayer {
                     (*bone, PhaseOscillator { amplitude: oscillator.amplitude * gain, ..*oscillator })
                 })
         }
+        // A walk's sway fades with its gait, weight for weight.
+        let walk_sway = |layer: &PhaseLayer, gain: f32| {
+            layer.walk_sway.filter(|_| gain > 0.0).map(|sway| WalkSway { gain: sway.gain * gain })
+        };
         Self {
             oscillators: faded(from, 1.0 - weight).chain(faded(to, weight)).collect(),
             sway: if weight < 0.5 { from.sway } else { to.sway },
+            walk_sway: walk_sway(to, weight).or(walk_sway(from, 1.0 - weight)),
         }
     }
 
@@ -359,6 +475,7 @@ impl PhaseLayer {
             // mass moves less than the pressure steering it); ±4 mm front
             // to back on the breath clock.
             sway: Some(QuietSway { lateral: 0.006, fore_aft: 0.004, weight_shift: 1.0 }),
+            walk_sway: None,
             oscillators: vec![
                 // Breathing: the chest rises and falls on its own clock.
                 // Smaller than the body's sway: at 0.022 rad it carried the
@@ -422,8 +539,10 @@ impl PhaseLayer {
     /// twice per stride, not once.
     pub fn locomotion() -> Self {
         Self {
-            // A walking body's rise, fall and sway come from its legs.
+            // A walking body's rise and fall come from its legs; its
+            // side-to-side sway from the pendulum over its stance feet.
             sway: None,
+            walk_sway: Some(WalkSway { gain: 1.0 }),
             oscillators: vec![
                 (
                     Bone::Spine1,
@@ -641,6 +760,7 @@ mod tests {
     fn an_oscillator_only_touches_its_own_bone() {
         let layer = PhaseLayer {
             sway: None,
+            walk_sway: None,
             oscillators: vec![(
                 Bone::Head,
                 PhaseOscillator {
@@ -732,6 +852,85 @@ mod tests {
         );
     }
 
+    /// The same pendulum solved without a Fourier series: the periodic
+    /// finite-difference system `(x[i+1] − 2x[i] + x[i−1]) / h² = (x[i] − p[i]) / K`,
+    /// by dense Gaussian elimination.
+    fn pendulum_by_finite_differences(stride_seconds: f32, duty: f32, width: f32, k: f32) -> Vec<f64> {
+        let n = 240usize;
+        let h = stride_seconds as f64 / n as f64;
+        let (a, double, k) = (width as f64 * 0.5, (duty - 0.5) as f64, k as f64);
+        let pressure = |c: f64| {
+            let c = c.rem_euclid(1.0);
+            if c < double {
+                -a + 2.0 * a * c / double
+            } else if c < 0.5 {
+                a
+            } else if c < 0.5 + double {
+                a - 2.0 * a * (c - 0.5) / double
+            } else {
+                -a
+            }
+        };
+        let mut m = vec![vec![0.0f64; n + 1]; n];
+        for i in 0..n {
+            m[i][(i + n - 1) % n] += 1.0 / (h * h);
+            m[i][(i + 1) % n] += 1.0 / (h * h);
+            m[i][i] += -2.0 / (h * h) - 1.0 / k;
+            m[i][n] = -pressure(i as f64 / n as f64) / k;
+        }
+        for col in 0..n {
+            let pivot = (col..n).max_by(|&x, &y| m[x][col].abs().total_cmp(&m[y][col].abs())).unwrap();
+            m.swap(col, pivot);
+            for row in 0..n {
+                if row != col {
+                    let f = m[row][col] / m[col][col];
+                    for j in col..=n {
+                        m[row][j] -= f * m[col][j];
+                    }
+                }
+            }
+        }
+        (0..n).map(|i| m[i][n] / m[i][i]).collect()
+    }
+
+    #[test]
+    fn the_pendulum_height_ratio_matches_the_bodys_centre_of_mass() {
+        use crate::character::anim::anthropometry::centre_of_mass;
+        use crate::character::anim::rig::offset_from;
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let ankles = offset_from(&stood, &rig, Bone::Hips, Bone::LeftFoot).y;
+        let ratio = (centre_of_mass(&stood, &rig).y - ankles) / -ankles;
+        assert!((ratio - COM_OVER_HIPS).abs() < 0.01, "the COM stands {ratio:.4}x the hips' height above the ankles");
+    }
+
+    #[test]
+    fn the_walking_sway_is_the_pendulums_periodic_path() {
+        // Winter Eq. 11.3 with the pressure under each stance foot in turn.
+        // `puppet_base`'s walk: 13 cm step width, K = 0.104 s², and its
+        // strides at 0.7 / 1.2 / 1.6 m/s.
+        for (seconds, duty, peak) in [(1.304, 0.641, 0.0227), (1.101, 0.622, 0.0178), (0.988, 0.608, 0.0151)] {
+            let direct = pendulum_by_finite_differences(seconds, duty, 0.13, 0.104);
+            let n = direct.len();
+            let mut worst = 0.0f64;
+            let mut furthest = (0.0f32, 0usize);
+            for (i, &x) in direct.iter().enumerate() {
+                let ours = walk_sway_at(i as f32 / n as f32, seconds, duty, 0.13, 0.104);
+                worst = worst.max((ours as f64 - x).abs());
+                if ours > furthest.0 {
+                    furthest = (ours, i);
+                }
+            }
+            assert!(worst < 5.0e-4, "at a {seconds} s stride the sway is {:.2} mm off the direct solution", worst * 1e3);
+            assert!((furthest.0 - peak).abs() < 1.0e-3, "peak {:.4} m, expected ~{peak}", furthest.0);
+            // Furthest toward the left foot in left single support, not at a
+            // heel contact: the pendulum turns back before it gets there.
+            let at = furthest.1 as f32 / n as f32;
+            assert!((duty - 0.5..0.5).contains(&at), "the sway peaks at {at:.3} of the stride");
+        }
+    }
+
     #[test]
     fn hip_sway_runs_a_quarter_cycle_behind_the_spinal_twist() {
         // The two are 90 degrees out of phase, which is what makes the hips
@@ -774,11 +973,12 @@ mod tests {
         };
         let only = |bone: Bone| PhaseLayer {
             sway: None,
+            walk_sway: None,
             oscillators: idle.oscillators.iter().copied().filter(|(b, _)| *b == bone).collect(),
         };
         let peak = |gait: f32, breath: f32| GaitPhase { gait, breath, ..Default::default() };
 
-        let sway = moved(PhaseLayer { sway: idle.sway, oscillators: vec![] }, peak(FRAC_PI_2, 0.0));
+        let sway = moved(PhaseLayer { sway: idle.sway, walk_sway: None, oscillators: vec![] },peak(FRAC_PI_2, 0.0));
         let breath = moved(only(Bone::Spine2), peak(0.0, FRAC_PI_2));
         let head = moved(only(Bone::Neck), peak(std::f32::consts::PI, 0.0));
 

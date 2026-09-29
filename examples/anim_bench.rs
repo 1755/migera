@@ -33,7 +33,9 @@ fn main() {
     const DT: f32 = 1.0 / 60.0;
 
     let springs = default_springs();
-    let base = poses::relaxed_stand();
+    // Stood on bent knees, as every character is: the straight bind leg
+    // has no knee to take up a sway.
+    let base = migera::character::anim::stance::stance(&poses::relaxed_stand());
 
     // Each character gets its own spring state and its own gait clock,
     // seeded so they do not all march in lockstep — identical phases
@@ -90,8 +92,10 @@ fn step(
     for (dho, phase) in states.iter_mut() {
         phase.advance(dt);
 
+        // On a rig, as `AnimPlugin` does once one is bound: the layer's
+        // sway over the feet needs it.
         let mut target = *base;
-        layer.apply(phase, &mut target);
+        layer.apply_on(phase, &mut target, &migera::character::anim::rig::RigGeometry::default());
 
         dho.advance(&target, springs, dt);
 

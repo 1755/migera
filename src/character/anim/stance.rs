@@ -211,33 +211,159 @@ pub const AUTHORED_FORWARD: Vec3 = Vec3::NEG_Z;
 /// carried them 3.3 mm off the floor. The vertical is the mean the two legs
 /// ask for; they differ only by the stance's small side-to-side asymmetry.
 pub fn sway_over_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift: Vec3) {
+    sway_over_loaded_feet(pose, rig, shift, [0.5, 0.5]);
+}
+
+/// [`sway_over_feet`] for a body resting on its feet unequally: the pelvis
+/// takes the vertical that keeps the loaded feet down, each leg's need
+/// weighted by `loads` (left, right; normalized here).
+///
+/// A walk rests on one foot while the other swings: averaged in, the
+/// swinging leg's need moved the planted foot 1.3 mm.
+pub fn sway_over_loaded_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift: Vec3, loads: [f32; 2]) {
     use super::rig::{delta_after_world_turn, offset_from};
+    let total = loads[0].max(0.0) + loads[1].max(0.0);
+    let loads = if total > 1.0e-6 { loads.map(|l| l.max(0.0) / total) } else { [0.5, 0.5] };
     let shift = Vec3::new(shift.x, 0.0, shift.z);
     if shift.length_squared() < 1.0e-12 {
         return;
     }
-    let legs = [(Bone::LeftUpLeg, Bone::LeftFoot), (Bone::RightUpLeg, Bone::RightFoot)]
-        .map(|(socket, ankle)| {
-            (socket, ankle, offset_from(pose, rig, Bone::Hips, ankle) - offset_from(pose, rig, Bone::Hips, socket))
+    // Each leg: its bones, its hip socket and the hip-to-ankle line. The
+    // socket stays put under the hips while its leg turns.
+    let legs = [(Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot), (Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot)]
+        .map(|(socket, knee, ankle)| {
+            let hip = offset_from(pose, rig, Bone::Hips, socket);
+            ([socket, knee, ankle], hip, offset_from(pose, rig, Bone::Hips, ankle) - hip)
         });
     // How far the pelvis must drop (negative: rise) for each leg to keep
     // its length under the shift: |leg − shift − v·Y| = |leg|.
     let drop = legs
         .iter()
-        .map(|(_, _, leg)| {
+        .zip(loads)
+        .map(|((_, _, leg), load)| {
             let shifted = *leg - shift;
             let horizontal = Vec3::new(shifted.x, 0.0, shifted.z).length_squared();
-            shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt()
+            load * (shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt())
         })
-        .sum::<f32>()
-        * 0.5;
+        .sum::<f32>();
     let moved = shift + Vec3::Y * drop;
-    for (socket, ankle, leg) in legs {
+    for ([socket, _, ankle], _, leg) in legs {
         let turn = Quat::from_rotation_arc(leg.normalize_or_zero(), (leg - moved).normalize_or_zero());
         pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, turn);
         pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, turn.inverse());
     }
     pose.root_translation += moved;
+    // Turned whole, a leg keeps its length, and one pelvis height cannot
+    // suit two legs asking different things: measured in a walk, a planted
+    // foot 1.2 mm off in double support and a swinging toe 0.6 mm into the
+    // floor just after toe-off. Each knee takes up its leg's millimetres.
+    for (bones, hip, leg) in legs {
+        let reached = hip + (leg - moved).normalize_or_zero() * leg.length();
+        keep_ankle(pose, rig, bones, hip, reached, hip + leg - moved);
+    }
+}
+
+/// Puts the ankle at `target` (hips-relative) by bending the knee just
+/// enough for the distance and turning the leg about its hip onto it, with
+/// the foot turned back so it keeps its attitude in the world.
+///
+/// For millimetre corrections: it keeps the knee's hinge where it is and
+/// leaves an unreachable target short. `hip` and `ankle_at` are where the
+/// socket and ankle are now, hips-relative, known to the caller.
+fn keep_ankle(
+    pose: &mut LocalPose,
+    rig: &super::rig::RigGeometry,
+    [socket, knee, ankle]: [Bone; 3],
+    hip: Vec3,
+    ankle_at: Vec3,
+    target: Vec3,
+) {
+    use super::rig::{delta_after_world_turn, offset_from};
+    let at = |pose: &LocalPose, bone| offset_from(pose, rig, Bone::Hips, bone);
+    if (ankle_at - target).length_squared() < 1.0e-12 {
+        return;
+    }
+    let knee_at = at(pose, knee);
+    let (femur, shin) = ((knee_at - hip).length(), (ankle_at - knee_at).length());
+    let hinge = (knee_at - hip).cross(ankle_at - knee_at);
+    if hinge.length_squared() < 1.0e-12 {
+        return;
+    }
+    let hinge = hinge.normalize();
+    // Interior knee angles now and for the distance wanted.
+    let interior = |reach: f32| {
+        ((femur * femur + shin * shin - reach * reach) / (2.0 * femur * shin)).clamp(-1.0, 1.0).acos()
+    };
+    let bend = interior((ankle_at - hip).length()) - interior((target - hip).length());
+    // Whichever way about the hinge opens the knee by `bend`.
+    let unfold = [bend, -bend]
+        .into_iter()
+        .map(|angle| Quat::from_axis_angle(hinge, angle))
+        .min_by(|a, b| {
+            let reach = |turn: &Quat| ((knee_at + *turn * (ankle_at - knee_at) - hip).length() - (target - hip).length()).abs();
+            reach(a).total_cmp(&reach(b))
+        })
+        .unwrap_or(Quat::IDENTITY);
+    pose.rotations[knee] = delta_after_world_turn(pose, rig, knee, unfold);
+    let reached = at(pose, ankle) - hip;
+    let aim = Quat::from_rotation_arc(reached.normalize_or_zero(), (target - hip).normalize_or_zero());
+    pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, aim);
+    pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, (aim * unfold).inverse());
+}
+
+/// A walk's step width, as a fraction of the rig's hip-socket spacing:
+/// 13 cm between the feet's centrelines on `puppet_base`, where standing
+/// puts them under the sockets, 22.9 cm apart.
+///
+/// Winter gives the constraint, not a width: in steady walking the centre
+/// of mass passes just medial of each stance foot's inner border (§11.3.1,
+/// Fig. 11.7). Its sway follows from the inverted pendulum (Eq. 11.3,
+/// K ≈ 0.1 s²) driven by the pressure moving foot to foot, and it grows with
+/// the width. On `puppet_base` (inner border 3.8 cm inside the sole's
+/// centreline), 13 cm keeps the COM 4 mm medial of the border at 0.7 m/s
+/// and 9 mm at 1.2 m/s; 12 cm leaves 1 mm at the slow walk, and 10 cm
+/// crosses it. The standing width swayed ±3.2 cm at 1.2 m/s, twice a
+/// person's.
+pub const STEP_WIDTH: f32 = 0.57;
+
+/// Brings each foot toward the midline until the feet are `width` apart
+/// (between their ankles, across the rig's left), turning each leg whole
+/// about its hip socket and each foot back by the same turn, so the sole
+/// keeps its attitude on the ground.
+///
+/// The leg keeps its length, so the foot rises a little as it comes in,
+/// `leg · (1 − cos θ)`: 1.3 mm on `puppet_base` for 22.9 → 13 cm.
+pub fn narrow_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, width: f32) {
+    use super::rig::{delta_after_world_turn, offset_from};
+    let left = rig.left();
+    for (socket, ankle, side) in [(Bone::LeftUpLeg, Bone::LeftFoot, 1.0), (Bone::RightUpLeg, Bone::RightFoot, -1.0)] {
+        let hip = offset_from(pose, rig, Bone::Hips, socket);
+        let leg = offset_from(pose, rig, Bone::Hips, ankle) - hip;
+        // The leg's new sideways component, the rest of its length shared
+        // by the other two in their present proportion: a turn about the
+        // rig's forward only.
+        let across = side * width * 0.5 - hip.dot(left);
+        let sideways = leg.dot(left);
+        let rest = leg - left * sideways;
+        let rest_length = rest.length();
+        if rest_length < 1.0e-6 || across.abs() >= leg.length() {
+            continue;
+        }
+        let kept = (leg.length_squared() - across * across).sqrt();
+        let wanted = rest * (kept / rest_length) + left * across;
+        let turn = Quat::from_rotation_arc(leg.normalize(), wanted.normalize());
+        pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, turn);
+        pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, turn.inverse());
+    }
+}
+
+/// The step width [`STEP_WIDTH`] asks for on `rig`, metres: its fraction
+/// of the distance between the hip sockets under `pose`.
+pub fn step_width(pose: &LocalPose, rig: &super::rig::RigGeometry) -> f32 {
+    use super::rig::offset_from;
+    let sockets = offset_from(pose, rig, Bone::Hips, Bone::LeftUpLeg)
+        - offset_from(pose, rig, Bone::Hips, Bone::RightUpLeg);
+    sockets.dot(rig.left()).abs() * STEP_WIDTH
 }
 
 /// How far a full weight shift carries the pelvis toward the loaded foot,
@@ -319,6 +445,37 @@ pub fn horizontal_reach_budget(straight_reach: f32, hip_height: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::character::anim::rig::{forward_kinematics, Side};
+
+    #[test]
+    fn narrowed_feet_stand_the_step_width_apart_flat_and_mirrored() {
+        use crate::character::anim::gltf_rig::puppet_base;
+        use crate::character::anim::rig::{accumulate_world_rotations, offset_from};
+        let rig = puppet_base();
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let width = step_width(&stood, &rig);
+        assert!((width - 0.13).abs() < 0.002, "puppet_base's step width should be ~13 cm, got {width}");
+
+        let mut narrowed = stood;
+        narrow_feet(&mut narrowed, &rig, width);
+        let left = rig.left();
+        let across = |bone| offset_from(&narrowed, &rig, Bone::Hips, bone).dot(left);
+        let (l, r) = (across(Bone::LeftFoot), across(Bone::RightFoot));
+        assert!((l - r - width).abs() < 1.0e-4, "ankles {l:.4} / {r:.4} should be {width:.4} apart");
+        assert!((l + r).abs() < 1.0e-3, "and centred on the pelvis: {l:.4} / {r:.4}");
+
+        // The feet keep their attitude on the ground.
+        let (before, after) = (accumulate_world_rotations(&stood, &rig), accumulate_world_rotations(&narrowed, &rig));
+        for foot in [Bone::LeftFoot, Bone::RightFoot, Bone::LeftToeBase, Bone::RightToeBase] {
+            let dot = before[foot].dot(after[foot]).abs();
+            assert!(1.0 - dot < 1.0e-6, "{foot:?} tipped: 1 - |dot| = {}", 1.0 - dot);
+        }
+        // Each ankle rose only by what a whole-leg turn costs, the same on
+        // both sides.
+        let rise = |bone| offset_from(&narrowed, &rig, Bone::Hips, bone).y - offset_from(&stood, &rig, Bone::Hips, bone).y;
+        let (rise_l, rise_r) = (rise(Bone::LeftFoot), rise(Bone::RightFoot));
+        assert!((0.0..0.003).contains(&rise_l), "the left ankle rose {rise_l} m");
+        assert!((rise_l - rise_r).abs() < 1.0e-4, "the ankles rose {rise_l} / {rise_r} m");
+    }
 
     #[test]
     fn a_weight_shift_loads_one_leg_and_rests_the_other() {
