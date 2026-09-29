@@ -283,7 +283,15 @@ fn step_bone(
 pub fn default_springs() -> BoneSet<SpringParams> {
     BoneSet::from_fn(|bone| match bone {
         // The spine carries the most mass and should feel weighty.
-        Bone::Spine1 | Bone::Spine2 => SpringParams::critical(0.16),
+        Bone::Spine2 => SpringParams::critical(0.16),
+        // Except where the walk times it. Spine1 carries the chest's twist
+        // against the pelvis, in step with the arm swing, and for the arms'
+        // reason (below) a weighty spring cannot carry a timed motion: at
+        // 0.16 s against a ~0.9 Hz stride it passed 0.36 of the twist,
+        // 107 degrees late, and live the chest swung ±1.8 degrees,
+        // uncorrelated with the pelvis. The arms' 0.03 s passes ~0.9 of it,
+        // ~28 degrees late, alongside the arms themselves.
+        Bone::Spine1 => SpringParams::critical(0.03),
         // Except its first bone, which carries the trunk's counter-roll to
         // the pelvis's (the walk's obliquity, a weight shift, the release):
         // the target holds the trunk upright only if both arrive together.

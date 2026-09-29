@@ -2304,6 +2304,110 @@ mod tests {
     }
 
     #[test]
+    fn the_pelvis_turns_with_the_stepping_leg_and_the_chest_against_it() {
+        // Each side of the pelvis is furthest forward at its own heel
+        // contact (the stance hip rotators brake it just after, Winter
+        // §7.4.5 H1-T); the chest turns the other way with the arms.
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer, PELVIC_ROTATION};
+        use crate::character::anim::rig::offset_from;
+        let (stood, _, rig) = real_walk();
+        let (left, fwd) = (rig.left(), rig.forward());
+        let layer = PhaseLayer::locomotion();
+        let params = GaitParams::walking_on(1.2, &rig);
+        let distance = distance_per_cycle(&params, &stood, &rig);
+        // Positive: the rig's left side ahead.
+        let yaw = |pose: &LocalPose, l: Bone, r: Bone| {
+            let across = offset_from(pose, &rig, Bone::Hips, l) - offset_from(pose, &rig, Bone::Hips, r);
+            across.dot(fwd).atan2(across.dot(left))
+        };
+        let samples: Vec<(f32, f32, f32)> = (0..100)
+            .map(|i| {
+                let cycle = i as f32 / 100.0;
+                let mut pose = walk_pose_on(cycle, &params, &stood, &rig);
+                let bare = yaw(&pose, Bone::LeftUpLeg, Bone::RightUpLeg);
+                let clock = GaitPhase {
+                    gait: cycle * std::f32::consts::TAU,
+                    speed: 1.2,
+                    base_frequency_hz: 0.0,
+                    speed_coefficient: 1.0 / distance,
+                    ..Default::default()
+                };
+                layer.apply_on(&clock, &mut pose, &rig);
+                (cycle, yaw(&pose, Bone::LeftUpLeg, Bone::RightUpLeg) - bare, yaw(&pose, Bone::LeftArm, Bone::RightArm))
+            })
+            .collect();
+        let extreme = |pick: fn(&(f32, f32, f32)) -> f32| {
+            let most = samples.iter().max_by(|a, b| pick(a).total_cmp(&pick(b))).unwrap();
+            let least = samples.iter().min_by(|a, b| pick(a).total_cmp(&pick(b))).unwrap();
+            ((most.0, pick(most)), (least.0, pick(least)))
+        };
+        let near = |cycle: f32, at: f32| {
+            let d = (cycle - at).rem_euclid(1.0);
+            d.min(1.0 - d) < 0.06
+        };
+        let ((left_ahead_at, left_ahead), (right_ahead_at, right_ahead)) = extreme(|s| s.1);
+        assert!(near(left_ahead_at, 0.0) && near(right_ahead_at, 0.5), "pelvis extremes at {left_ahead_at} / {right_ahead_at}");
+        for turned in [left_ahead, -right_ahead] {
+            assert!((turned - PELVIC_ROTATION).abs() < 0.01, "the pelvis turns {:.2}°", turned.to_degrees());
+        }
+        // The chest: right shoulder ahead as the left heel lands.
+        let ((chest_left_at, _), (chest_right_at, _)) = extreme(|s| s.2);
+        assert!(near(chest_right_at, 0.0) && near(chest_left_at, 0.5), "chest extremes at {chest_right_at} / {chest_left_at}");
+    }
+
+    #[test]
+    fn the_rendered_chest_turns_against_the_pelvis_on_time() {
+        // The chest's twist is timed by the gait, like the arm swing. A
+        // spring slow enough to feel weighty low-passes it: on the spine's
+        // 0.16 s the rendered chest kept 0.36 of its turn and peaked 107°
+        // late — live, it swung ±1.8° and was uncorrelated with the pelvis.
+        use crate::character::anim::dho::{default_springs, DhoState};
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer};
+        use crate::character::anim::rig::offset_from;
+        let (stood, _, rig) = real_walk();
+        let (left, fwd) = (rig.left(), rig.forward());
+        let layer = PhaseLayer::locomotion();
+        let params = GaitParams::walking_on(1.2, &rig);
+        let distance = distance_per_cycle(&params, &stood, &rig);
+        let springs = default_springs();
+        let mut clock =
+            GaitPhase { speed: 1.2, base_frequency_hz: 0.0, speed_coefficient: 1.0 / distance, ..Default::default() };
+        let target_at = |clock: &GaitPhase| {
+            let mut pose = walk_pose_on(clock.gait / std::f32::consts::TAU, &params, &stood, &rig);
+            layer.apply_on(clock, &mut pose, &rig);
+            pose
+        };
+        // Positive: the left shoulder ahead.
+        let chest = |pose: &LocalPose| {
+            let across = offset_from(pose, &rig, Bone::Hips, Bone::LeftArm) - offset_from(pose, &rig, Bone::Hips, Bone::RightArm);
+            across.dot(fwd).atan2(across.dot(left))
+        };
+        let mut dho = DhoState::settled_on(&target_at(&clock));
+        let dt = 1.0 / 60.0;
+        let (mut rendered, mut target) = (Vec::new(), Vec::new());
+        for frame in 0..300 {
+            clock.advance(dt);
+            let goal = target_at(&clock);
+            dho.advance(&goal, &springs, dt);
+            if frame >= 120 {
+                let cycle = clock.gait / std::f32::consts::TAU;
+                rendered.push((cycle, chest(&dho.pose(goal.root_translation))));
+                target.push((cycle, chest(&goal)));
+            }
+        }
+        let span = |s: &[(f32, f32)]| {
+            s.iter().map(|p| p.1).fold(f32::MIN, f32::max) - s.iter().map(|p| p.1).fold(f32::MAX, f32::min)
+        };
+        assert!(span(&rendered) > 0.8 * span(&target), "the rendered chest turns {:.2}° of the target's {:.2}°",
+            span(&rendered).to_degrees(), span(&target).to_degrees());
+        // The right shoulder is furthest ahead within a tenth of a stride
+        // after the left heel lands.
+        let (at, _) = rendered.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        let late = (at - 0.0).rem_euclid(1.0);
+        assert!(late < 0.1 || late > 0.97, "the rendered chest's right-shoulder peak is {late:.3} of a stride after the left heel");
+    }
+
+    #[test]
     fn the_rendered_trunk_stays_upright_while_the_pelvis_rolls() {
         // The target counter-rolls the trunk against the pelvis; on screen
         // that holds only if the springs deliver both together. With the
@@ -2409,7 +2513,13 @@ mod tests {
                     com_min_margin = com_min_margin.min(sign * (foot - com));
                 }
                 let pelvis = ((at(&layered, Bone::LeftUpLeg) + at(&layered, Bone::RightUpLeg)) * 0.5).dot(left);
-                rows.push((phase, stance, roll, yaw, com, pelvis));
+                let shoulders = at(&layered, Bone::LeftArm) - at(&layered, Bone::RightArm);
+                let chest_yaw = (shoulders.dot(fwd)).atan2(shoulders.dot(left)); // + = left shoulder ahead
+                let hands = (
+                    (at(&layered, Bone::LeftHand) - layered.root_translation).dot(fwd),
+                    (at(&layered, Bone::RightHand) - layered.root_translation).dot(fwd),
+                );
+                rows.push((phase, stance, roll, yaw, com, pelvis, chest_yaw, hands));
             }
             let distance = distance_per_cycle(&params, &stood, &rig);
             let com_height = (stood.root_translation + centre_of_mass(&stood, &rig)).y
@@ -2422,10 +2532,10 @@ mod tests {
                 params.duty_factor, width_sum / width_n.max(1) as f32);
             println!("layer moves stance soles (L, R) up to {:.1} / {:.1} mm", slide[0] * 1e3, slide[1] * 1e3);
             println!("min COM margin medial of stance sole centreline: {:.4} m", com_min_margin);
-            for (phase, stance, roll, yaw, com, pelvis) in rows.iter().step_by(4) {
+            for (phase, stance, roll, yaw, com, pelvis, chest_yaw, hands) in rows.iter().step_by(4) {
                 let tag = |s: &LegPhase| match s { LegPhase::Stance { .. } => "St", _ => "Sw" };
-                println!("  c {phase:.3}  L {} R {}  roll {:+.2}°  yaw {:+.2}°  com_lat {:+.4}  pelvis_lat {:+.4}",
-                    tag(&stance[0]), tag(&stance[1]), roll.to_degrees(), yaw.to_degrees(), com, pelvis);
+                println!("  c {phase:.3}  L {} R {}  roll {:+.2}°  yaw {:+.2}°  com_lat {:+.4}  pelvis_lat {:+.4}  chest_yaw {:+.2}°  hands fwd L {:+.3} R {:+.3}",
+                    tag(&stance[0]), tag(&stance[1]), roll.to_degrees(), yaw.to_degrees(), com, pelvis, chest_yaw.to_degrees(), hands.0, hands.1);
             }
         }
     }

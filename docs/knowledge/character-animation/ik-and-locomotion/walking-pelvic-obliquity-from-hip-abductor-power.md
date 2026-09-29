@@ -103,8 +103,9 @@ the trunk still has weight.
 
 - Walking speeds far from ~1.2 m/s matter: the curve is Winter's natural
   cadence, not scaled with speed.
-- A pelvic yaw is added (plan step 1.4): it is also a Hips turn, so it
-  belongs in the same single re-solve.
+- The pelvic turn about the vertical is now composed into the same
+  re-solve ([the walking pelvis's turn](./walking-pelvic-turn-and-chest-counter-twist.md)).
+  Any further Hips motion belongs there too.
 
 ## Related
 
@@ -112,3 +113,5 @@ the trunk still has weight.
 - [The walk's step width and sideways sway](./walk-step-width-and-sideways-sway.md) — context: the sway applied in the same pass.
 - [A lagging pelvis rotation slides planted feet](./a-lagging-pelvis-rotation-slides-planted-feet.md) — same-trap: a slow spring breaking a counter-rotation the target gets right.
 - [Rig authored at critical extension](./rig-authored-at-critical-extension.md) — why the roll pivots on the stance hip.
+- [The walking pelvis's turn](./walking-pelvic-turn-and-chest-counter-twist.md) — contrast: the transverse motion, where Winter gives timing but not size.
+- [A gait-timed motion cannot ride a weighty spring](./a-gait-timed-motion-cannot-ride-a-weighty-spring.md) — deeper: the general rule behind the Spine spring change.

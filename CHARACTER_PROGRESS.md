@@ -42,6 +42,53 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The walking pelvis turns with the stepping leg, and the chest against it
+
+Step 1.4 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in
+[the walking pelvis's turn](./docs/knowledge/character-animation/ik-and-locomotion/walking-pelvic-turn-and-chest-counter-twist.md)
+and [a gait-timed motion cannot ride a weighty spring](./docs/knowledge/character-animation/ik-and-locomotion/a-gait-timed-motion-cannot-ride-a-weighty-spring.md).
+
+**Measured first** (headless, `puppet_base`, 1.2 m/s):
+- The pelvis did not turn about the vertical.
+- The authored chest twist (`Spine1`, ±5.1°) peaked at midstance.
+- The arms peak at 0.06 of the stride.
+
+**Winter could only time it.** Integrating power over moment, as for the
+roll, would give the pelvis against a stance femur that rotates in the
+world, and the transverse moments are small. H1-T says the turn reverses
+at heel contact. The size, ±4° (`phase::PELVIC_ROTATION`), is Perry's,
+labelled outside Winter.
+
+**Built:**
+- `pelvic_rotation_at` is composed with the roll into one turn in
+  `stance::move_pelvis_over_feet`: about the loaded hip, `Spine` turned
+  back, feet exact.
+- The `Spine1` twist is retimed a quarter cycle to peak at the heel
+  contacts, against the pelvis.
+
+**On screen the chest was still wrong: ±1.8°, uncorrelated with the pelvis
+(+0.03).** Its 0.16 s spring passes 0.36 of a 0.9 Hz motion, 107° late,
+which is the arms' old problem. The new
+`the_rendered_chest_turns_against_the_pelvis_on_time` runs the springs and
+failed at 3.67° of the target's 10.04° peak to peak. `Spine1` is now on the
+arms' 0.03 s; `Spine2` keeps 0.16 s for weight.
+
+| Live, 1.2 m/s (BRP) | before the spring change | after |
+|---|---|---|
+| pelvis turn | ±3.9° (+3.3° / −3.3° at left / right foot-down) | same |
+| chest turn | −2.2..+1.5° | −5.1..+4.3° (−4.9° / +4.1° at foot-down) |
+| pelvis–chest correlation | +0.03 | −0.97 |
+
+Start slide 2.1 / 2.5 mm; root weave 15 mm; both unchanged. The test
+fails on the old twist timing ("chest extremes at 0.25 / 0.75").
+
+Top view: the hip line turns with the stepping leg and the shoulders the
+other way. Front and Left: trunk upright, stride unchanged.
+
+`anim_bench` ~4.3 µs per character per frame: the turn rides the existing
+re-solve. 1008 tests pass.
+
+
 ### The walking pelvis drops on its swing side, Winter's way
 
 Step 1.3 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in

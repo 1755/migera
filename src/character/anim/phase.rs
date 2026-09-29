@@ -281,6 +281,30 @@ const GRAVITY: f32 = 9.81;
 const OBLIQUITY: [(f32, f32, f32); 3] =
     [(1.0, -0.008_02, 0.055_89), (3.0, -0.015_02, 0.004_86), (5.0, 0.003_85, -0.005_33)];
 
+/// How far the walking pelvis turns about the vertical each way, radians
+/// (4°).
+///
+/// Not Winter's: his transverse hip data (§7.4.5, H1-T) cannot give it.
+/// Its moments and powers are small (±0.2 N·m/kg, −0.15 W/kg), and the hip
+/// angle they integrate to is the pelvis against a stance femur that itself
+/// rotates in the world. Winter gives the timing: the stance hip's external
+/// rotators brake the pelvis turning over the stance limb just after heel
+/// contact (~10 %), so each side is furthest forward at its own heel
+/// contact. The size is the commonly cited gait-lab figure (Perry, *Gait
+/// Analysis*, 1992: 4° forward and back at a normal walk).
+pub const PELVIC_ROTATION: f32 = 0.070;
+
+/// The walking pelvis's turn about the vertical at stride position `cycle`
+/// (0 = left heel contact), radians about +Y: positive brings the right
+/// side forward. Each side is furthest forward at its own heel contact:
+/// the left at 0, the right at 0.5. See [`PELVIC_ROTATION`].
+///
+/// About +Y a positive turn swings the rig's forward toward its left, so
+/// the right side comes forward, whichever way the rig faces.
+pub fn pelvic_rotation_at(cycle: f32) -> f32 {
+    -PELVIC_ROTATION * (std::f32::consts::TAU * cycle).cos()
+}
+
 /// The walking pelvis's roll at stride position `cycle` (0 = left heel
 /// contact), radians about the rig's forward: positive lifts the left
 /// side. See [`OBLIQUITY`].
@@ -447,13 +471,9 @@ impl PhaseLayer {
         {
             let (shift, loads) = walk_sway_now(phase, pose, rig);
             let cycle = phase.gait / std::f32::consts::TAU;
-            super::stance::move_pelvis_over_feet(
-                pose,
-                rig,
-                rig.left() * (walk.gain * shift),
-                walk.gain * pelvic_obliquity_at(cycle),
-                loads,
-            );
+            let turn = Quat::from_axis_angle(Vec3::Y, walk.gain * pelvic_rotation_at(cycle))
+                * Quat::from_axis_angle(rig.forward(), walk.gain * pelvic_obliquity_at(cycle));
+            super::stance::move_pelvis_over_feet(pose, rig, rig.left() * (walk.gain * shift), turn, loads);
         }
     }
 
@@ -588,7 +608,13 @@ impl PhaseLayer {
                         clock: PhaseClock::Gait,
                         harmonic: 1.0,
                         amplitude: 0.09,
-                        offset: 0.0,
+                        // At its extremes at the heel contacts, with the arm
+                        // swing and against the pelvis's turn: the right
+                        // shoulder furthest forward as the left heel lands.
+                        // At 0 the chest turned furthest at midstance,
+                        // a fifth of a stride behind the arms (measured on
+                        // `puppet_base`).
+                        offset: std::f32::consts::FRAC_PI_2,
                         axis: Vec3::Y,
                     },
                 ),

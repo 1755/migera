@@ -129,7 +129,17 @@ Order: **1 → 2 → 3a → 4 → 3b.**
   Legs re-solved to their feet like `shift_weight`.
   - Tests: `the_pelvis_drops_on_the_swing_side_in_early_stance` (sign and
     peak time); swing-toe minimum clearance not below today's.
-- [ ] **1.4 Pelvic yaw against the trunk** (§7.4.5 hip rotators). Pelvis
+- [x] **1.4 done (2026-09-29).** Winter times the turn (H1-T: it reverses
+  at heel contact) but cannot size it: the transverse hip angle includes
+  femoral rotation. So ±4° (`PELVIC_ROTATION`, Perry, labelled). The turn
+  is composed with the roll in `move_pelvis_over_feet`; the chest twist is
+  retimed to peak at the heel contacts against the pelvis. `Spine1` is on
+  the arms' 0.03 s spring: at 0.16 s the rendered chest kept ±1.8°,
+  uncorrelated with the pelvis. Live: pelvis ±3.9°, chest ±4.7°,
+  correlation −0.97. Tests:
+  `the_pelvis_turns_with_the_stepping_leg_and_the_chest_against_it`,
+  `the_rendered_chest_turns_against_the_pelvis_on_time`.
+- **1.4 as planned:** (§7.4.5 hip rotators). Pelvis
   yaw in step with the stride, Spine1 counter-twist kept, thighs
   compensated so the planted foot holds. Check the sprung pose, not the
   target ([a lagging pelvis rotation slides planted feet](./docs/knowledge/character-animation/ik-and-locomotion/a-lagging-pelvis-rotation-slides-planted-feet.md)).

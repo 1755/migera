@@ -221,34 +221,37 @@ pub fn sway_over_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift
 /// A walk rests on one foot while the other swings: averaged in, the
 /// swinging leg's need moved the planted foot 1.3 mm.
 pub fn sway_over_loaded_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift: Vec3, loads: [f32; 2]) {
-    move_pelvis_over_feet(pose, rig, shift, 0.0, loads);
+    move_pelvis_over_feet(pose, rig, shift, Quat::IDENTITY, loads);
 }
 
-/// Carries the pelvis `shift` sideways/forward and rolls it by `roll` about
-/// the rig's forward (positive lifts the rig's left side), over feet that
-/// stay exactly where they are, with the trunk held upright.
+/// Carries the pelvis `shift` sideways/forward and turns it by `turn` (a
+/// world rotation: the walk's roll about the rig's forward and yaw about
+/// up), over feet that stay exactly where they are, with the trunk held
+/// where it was.
 ///
 /// - **Height.** The pelvis takes the vertical that keeps the loaded legs
 ///   their length, each leg's need weighted by `loads` (left, right;
 ///   normalized here). Averaged equally in a walk, the swinging leg's need
 ///   moved the planted foot 1.2 mm in double support and put the swinging
 ///   toe 0.6 mm into the floor.
-/// - **Roll.** About the hip carrying the body, as a walking pelvis drops
+/// - **Turn.** About the hip carrying the body, as a walking pelvis drops
 ///   on its swing side (Winter §7.4.5: the stance abductors brake the drop,
-///   then lift it back). Rolled about its own centre, the stance socket
-///   would rise, and this rig's legs have no length to spare for it.
+///   then lift it back) and turns over the stance hip. Rolled about its own
+///   centre, the stance socket would rise, and this rig's legs have no
+///   length to spare for it.
 /// - **Legs.** Each is re-solved once onto its old ankle (`keep_ankle`), the
 ///   foot turned back to its old attitude.
 pub fn move_pelvis_over_feet(
     pose: &mut LocalPose,
     rig: &super::rig::RigGeometry,
     shift: Vec3,
-    roll: f32,
+    turn: Quat,
     loads: [f32; 2],
 ) {
     use super::rig::{delta_after_world_turn, offset_from};
     let shift = Vec3::new(shift.x, 0.0, shift.z);
-    if shift.length_squared() < 1.0e-12 && roll.abs() < 1.0e-6 {
+    let turned = 1.0 - turn.dot(Quat::IDENTITY).abs() > 1.0e-12;
+    if shift.length_squared() < 1.0e-12 && !turned {
         return;
     }
     let total = loads[0].max(0.0) + loads[1].max(0.0);
@@ -260,7 +263,7 @@ pub fn move_pelvis_over_feet(
             ([socket, knee, ankle], hip, offset_from(pose, rig, Bone::Hips, ankle) - hip)
         });
     // How far the pelvis must drop (negative: rise) for each leg to keep
-    // its length under the shift: |leg − shift − v·Y| = |leg|. The roll
+    // its length under the shift: |leg − shift − v·Y| = |leg|. The turn
     // pivots on the loaded socket, so it asks nothing more of the loaded
     // leg.
     let drop = legs
@@ -273,8 +276,7 @@ pub fn move_pelvis_over_feet(
         })
         .sum::<f32>();
     let pivot = legs[0].1 * loads[0] + legs[1].1 * loads[1];
-    let turn = Quat::from_axis_angle(rig.forward(), roll);
-    if roll.abs() >= 1.0e-6 {
+    if turned {
         pose.rotations[Bone::Hips] = delta_after_world_turn(pose, rig, Bone::Hips, turn);
         pose.rotations[Bone::Spine] = delta_after_world_turn(pose, rig, Bone::Spine, turn.inverse());
     }
@@ -283,7 +285,7 @@ pub fn move_pelvis_over_feet(
     let moved = shift + Vec3::Y * drop + (pivot - turn * pivot);
     pose.root_translation += moved;
     for (bones, hip, leg) in legs {
-        // The leg rode the roll; its socket went with the pelvis.
+        // The leg rode the turn; its socket went with the pelvis.
         let socket_now = turn * hip;
         keep_ankle(pose, rig, bones, turn, socket_now, socket_now + turn * leg, hip + leg - moved);
     }
