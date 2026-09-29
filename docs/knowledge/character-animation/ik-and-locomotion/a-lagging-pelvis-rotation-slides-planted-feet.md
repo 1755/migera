@@ -48,8 +48,12 @@ foot, with the whole walk ending up 5 cm off to one side.
 ## The rule
 
 - Everything between the root and the feet springs as fast as the legs.
-  `Bone::Hips` is on `SpringParams::critical(0.015)`; the spine keeps
-  0.16 s, so the trunk still has weight.
+  `Bone::Hips` is on `SpringParams::critical(0.015)`. So is the first spine
+  bone, `Bone::Spine`, which carries the trunk's counter-roll: on 0.16 s it
+  let the rendered trunk roll 8.1° with the walking pelvis where the target
+  held it upright
+  ([pelvic obliquity](./walking-pelvic-obliquity-from-hip-abductor-power.md)).
+  `Spine1` and `Spine2` keep 0.16 s, so the trunk still has weight.
 - A pose check on the TARGET is not a check on the screen. A stance or
   gait change that holds the feet in the target must also be checked on
   the sprung pose (what `solve_foot_ik` calls `animated`), with the foot
@@ -66,3 +70,4 @@ tests) and the steady-walk slide tests are unchanged.
 - [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — prerequisite: why the legs are already on a 0.015 s spring, and the same "rendered, not target" rule for root motion.
 - [Foot IK feedback loops](./foot-ik-feedback-loops.md) — context: how the IK stage samples the animated pose it corrects.
 - [11.3.2 Gait initiation](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.3-dynamic-balance-during-walking/11.3.2-gait-initiation.md) — context: the release phase that exposed it.
+- [The walking pelvis's roll](./walking-pelvic-obliquity-from-hip-abductor-power.md) — same-trap: the Spine spring lagging the trunk's counter-roll.

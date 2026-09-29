@@ -107,9 +107,22 @@ Order: **1 → 2 → 3a → 4 → 3b.**
     pelvis sway 36.8 mm peak to peak, start slide unchanged. Front + Left
     gizmo views checked. `anim_bench` 2.4 → 3.8 µs per character.
   - **Open, predating this (found by the A/B):** the root weaves ~90–100 mm
-    sideways in a steady walk (heading ±14°). The last step glides 8–10 cm
-    near the floor after the root stops.
-- [ ] **1.3 Pelvic drop on the swing side** (§7.4.5 H1-F). Replace the
+    sideways in a steady walk (heading ±14°) — *fixed by 1.3: it was the
+    authored roll*. The last step glides 7–9 cm near the floor after the
+    root stops — still open.
+- [x] **1.3 done (2026-09-29).** The roll is integrated from Winter's
+  frontal hip power over moment: swing side lowest 3.9° at 17 %, 0.74° low
+  at its heel contact (`phase::pelvic_obliquity_at`). The amplitude comes
+  from Winter too, not a labelled constant. It rolls about the loaded hip
+  socket, in one pass with the sway (`stance::move_pelvis_over_feet`).
+  `Bone::Spine` is on the hips' 0.015 s spring: at 0.16 s the rendered
+  trunk rolled 8.1° with the pelvis. Planted soles ≤ 0.6 mm (was
+  45–48 mm); live root weave 101 → 14 mm; trunk 5.9° → 1.5°;
+  `anim_bench` 4.2 µs. Tests:
+  `the_pelvis_drops_on_the_swing_side_then_is_lifted_back`,
+  `a_walking_pelvis_drops_on_the_swing_side_with_the_trunk_upright`,
+  `the_rendered_trunk_stays_upright_while_the_pelvis_rolls`.
+- **1.3 as planned:** (§7.4.5 H1-F). Replace the
   authored Hips roll oscillator (`phase.rs::locomotion`) with a gait-phase
   roll: drop from stance heel contact to a peak at ~10–12 % of stride, lift
   through the ~45 % abductor hump. Amplitude 0.05 rad, labelled non-Winter.

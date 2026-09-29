@@ -362,8 +362,20 @@ impl RigGeometry {
     /// downward component (the toe angles toward the floor) which is not
     /// part of the facing. Zero if the rig has no usable toe to measure.
     pub fn forward(&self) -> Vec3 {
-        let bind = accumulate_bind_rotations(self);
-        let toe = bind[Bone::LeftFoot] * self.offsets[Bone::LeftToeBase];
+        // The bind product down the one chain to the foot, root first — the
+        // same value `accumulate_bind_rotations` gives the foot, without the
+        // rest of the skeleton (120 ns a call that way, and the walk's
+        // pelvis asks several times a frame).
+        let mut chain = [Bone::Hips; 8];
+        let mut length = 0;
+        let mut walker = Some(Bone::LeftFoot);
+        while let Some(current) = walker {
+            chain[length] = current;
+            length += 1;
+            walker = current.parent();
+        }
+        let foot = chain[..length].iter().rev().fold(self.root_rotation, |bind, &link| bind * self.bind_rotations[link]);
+        let toe = foot * self.offsets[Bone::LeftToeBase];
         Vec3::new(toe.x, 0.0, toe.z).normalize_or_zero()
     }
 

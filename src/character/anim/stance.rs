@@ -221,22 +221,48 @@ pub fn sway_over_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift
 /// A walk rests on one foot while the other swings: averaged in, the
 /// swinging leg's need moved the planted foot 1.3 mm.
 pub fn sway_over_loaded_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry, shift: Vec3, loads: [f32; 2]) {
+    move_pelvis_over_feet(pose, rig, shift, 0.0, loads);
+}
+
+/// Carries the pelvis `shift` sideways/forward and rolls it by `roll` about
+/// the rig's forward (positive lifts the rig's left side), over feet that
+/// stay exactly where they are, with the trunk held upright.
+///
+/// - **Height.** The pelvis takes the vertical that keeps the loaded legs
+///   their length, each leg's need weighted by `loads` (left, right;
+///   normalized here). Averaged equally in a walk, the swinging leg's need
+///   moved the planted foot 1.2 mm in double support and put the swinging
+///   toe 0.6 mm into the floor.
+/// - **Roll.** About the hip carrying the body, as a walking pelvis drops
+///   on its swing side (Winter §7.4.5: the stance abductors brake the drop,
+///   then lift it back). Rolled about its own centre, the stance socket
+///   would rise, and this rig's legs have no length to spare for it.
+/// - **Legs.** Each is re-solved once onto its old ankle (`keep_ankle`), the
+///   foot turned back to its old attitude.
+pub fn move_pelvis_over_feet(
+    pose: &mut LocalPose,
+    rig: &super::rig::RigGeometry,
+    shift: Vec3,
+    roll: f32,
+    loads: [f32; 2],
+) {
     use super::rig::{delta_after_world_turn, offset_from};
-    let total = loads[0].max(0.0) + loads[1].max(0.0);
-    let loads = if total > 1.0e-6 { loads.map(|l| l.max(0.0) / total) } else { [0.5, 0.5] };
     let shift = Vec3::new(shift.x, 0.0, shift.z);
-    if shift.length_squared() < 1.0e-12 {
+    if shift.length_squared() < 1.0e-12 && roll.abs() < 1.0e-6 {
         return;
     }
-    // Each leg: its bones, its hip socket and the hip-to-ankle line. The
-    // socket stays put under the hips while its leg turns.
+    let total = loads[0].max(0.0) + loads[1].max(0.0);
+    let loads = if total > 1.0e-6 { loads.map(|l| l.max(0.0) / total) } else { [0.5, 0.5] };
+    // Each leg: its bones, its hip socket and the hip-to-ankle line.
     let legs = [(Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot), (Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot)]
         .map(|(socket, knee, ankle)| {
             let hip = offset_from(pose, rig, Bone::Hips, socket);
             ([socket, knee, ankle], hip, offset_from(pose, rig, Bone::Hips, ankle) - hip)
         });
     // How far the pelvis must drop (negative: rise) for each leg to keep
-    // its length under the shift: |leg − shift − v·Y| = |leg|.
+    // its length under the shift: |leg − shift − v·Y| = |leg|. The roll
+    // pivots on the loaded socket, so it asks nothing more of the loaded
+    // leg.
     let drop = legs
         .iter()
         .zip(loads)
@@ -246,20 +272,20 @@ pub fn sway_over_loaded_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry
             load * (shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt())
         })
         .sum::<f32>();
-    let moved = shift + Vec3::Y * drop;
-    for ([socket, _, ankle], _, leg) in legs {
-        let turn = Quat::from_rotation_arc(leg.normalize_or_zero(), (leg - moved).normalize_or_zero());
-        pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, turn);
-        pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, turn.inverse());
+    let pivot = legs[0].1 * loads[0] + legs[1].1 * loads[1];
+    let turn = Quat::from_axis_angle(rig.forward(), roll);
+    if roll.abs() >= 1.0e-6 {
+        pose.rotations[Bone::Hips] = delta_after_world_turn(pose, rig, Bone::Hips, turn);
+        pose.rotations[Bone::Spine] = delta_after_world_turn(pose, rig, Bone::Spine, turn.inverse());
     }
+    // Everything under the hips turned about the hips joint: the root moves
+    // so the pivot stays put, then by the shift.
+    let moved = shift + Vec3::Y * drop + (pivot - turn * pivot);
     pose.root_translation += moved;
-    // Turned whole, a leg keeps its length, and one pelvis height cannot
-    // suit two legs asking different things: measured in a walk, a planted
-    // foot 1.2 mm off in double support and a swinging toe 0.6 mm into the
-    // floor just after toe-off. Each knee takes up its leg's millimetres.
     for (bones, hip, leg) in legs {
-        let reached = hip + (leg - moved).normalize_or_zero() * leg.length();
-        keep_ankle(pose, rig, bones, hip, reached, hip + leg - moved);
+        // The leg rode the roll; its socket went with the pelvis.
+        let socket_now = turn * hip;
+        keep_ankle(pose, rig, bones, turn, socket_now, socket_now + turn * leg, hip + leg - moved);
     }
 }
 
@@ -267,48 +293,52 @@ pub fn sway_over_loaded_feet(pose: &mut LocalPose, rig: &super::rig::RigGeometry
 /// enough for the distance and turning the leg about its hip onto it, with
 /// the foot turned back so it keeps its attitude in the world.
 ///
-/// For millimetre corrections: it keeps the knee's hinge where it is and
-/// leaves an unreachable target short. `hip` and `ankle_at` are where the
-/// socket and ankle are now, hips-relative, known to the caller.
+/// It keeps the knee's hinge where it is and leaves an unreachable target
+/// short. `hip` and `ankle_at` are where the socket and ankle are now,
+/// hips-relative, known to the caller; `carried` is the world turn the leg
+/// has already been given (by its pelvis), which the foot also gives back.
 fn keep_ankle(
     pose: &mut LocalPose,
     rig: &super::rig::RigGeometry,
     [socket, knee, ankle]: [Bone; 3],
+    carried: Quat,
     hip: Vec3,
     ankle_at: Vec3,
     target: Vec3,
 ) {
     use super::rig::{delta_after_world_turn, offset_from};
-    let at = |pose: &LocalPose, bone| offset_from(pose, rig, Bone::Hips, bone);
-    if (ankle_at - target).length_squared() < 1.0e-12 {
+    if (ankle_at - target).length_squared() < 1.0e-12 && carried.dot(Quat::IDENTITY).abs() > 1.0 - 1.0e-9 {
         return;
     }
-    let knee_at = at(pose, knee);
+    let knee_at = offset_from(pose, rig, Bone::Hips, knee);
     let (femur, shin) = ((knee_at - hip).length(), (ankle_at - knee_at).length());
     let hinge = (knee_at - hip).cross(ankle_at - knee_at);
-    if hinge.length_squared() < 1.0e-12 {
-        return;
-    }
-    let hinge = hinge.normalize();
-    // Interior knee angles now and for the distance wanted.
-    let interior = |reach: f32| {
-        ((femur * femur + shin * shin - reach * reach) / (2.0 * femur * shin)).clamp(-1.0, 1.0).acos()
+    // A dead-straight leg has no hinge to bend about: it is only aimed.
+    let unfold = if hinge.length_squared() < 1.0e-12 {
+        Quat::IDENTITY
+    } else {
+        let hinge = hinge.normalize();
+        // Interior knee angles now and for the distance wanted.
+        let interior = |reach: f32| {
+            ((femur * femur + shin * shin - reach * reach) / (2.0 * femur * shin)).clamp(-1.0, 1.0).acos()
+        };
+        let bend = interior((ankle_at - hip).length()) - interior((target - hip).length());
+        // Whichever way about the hinge opens the knee by `bend`.
+        [bend, -bend]
+            .into_iter()
+            .map(|angle| Quat::from_axis_angle(hinge, angle))
+            .min_by(|a, b| {
+                let reach =
+                    |turn: &Quat| ((knee_at + *turn * (ankle_at - knee_at) - hip).length() - (target - hip).length()).abs();
+                reach(a).total_cmp(&reach(b))
+            })
+            .unwrap_or(Quat::IDENTITY)
     };
-    let bend = interior((ankle_at - hip).length()) - interior((target - hip).length());
-    // Whichever way about the hinge opens the knee by `bend`.
-    let unfold = [bend, -bend]
-        .into_iter()
-        .map(|angle| Quat::from_axis_angle(hinge, angle))
-        .min_by(|a, b| {
-            let reach = |turn: &Quat| ((knee_at + *turn * (ankle_at - knee_at) - hip).length() - (target - hip).length()).abs();
-            reach(a).total_cmp(&reach(b))
-        })
-        .unwrap_or(Quat::IDENTITY);
     pose.rotations[knee] = delta_after_world_turn(pose, rig, knee, unfold);
-    let reached = at(pose, ankle) - hip;
+    let reached = knee_at + unfold * (ankle_at - knee_at) - hip;
     let aim = Quat::from_rotation_arc(reached.normalize_or_zero(), (target - hip).normalize_or_zero());
     pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, aim);
-    pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, (aim * unfold).inverse());
+    pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, (aim * unfold * carried).inverse());
 }
 
 /// A walk's step width, as a fraction of the rig's hip-socket spacing:

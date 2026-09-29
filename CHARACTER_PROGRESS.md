@@ -42,6 +42,62 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The walking pelvis drops on its swing side, Winter's way
+
+Step 1.3 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in
+[the walking pelvis's roll](./docs/knowledge/character-animation/ik-and-locomotion/walking-pelvic-obliquity-from-hip-abductor-power.md).
+
+**The curve.** Winter has no pelvic angles, only frontal hip power and
+moment (Figs 7.4–7.5). Power over moment is angular velocity, and
+integrated through stance it gives the roll:
+
+- H1-F: the swing side drops to 3.9° at 17 % of the stride.
+- H2-F and H3-F: it is lifted back, to 0.74° low at its own heel contact.
+
+The curve is stored as odd harmonics 1, 3 and 5 (`pelvic_obliquity_at`),
+within 0.37° of the integration. It replaces the authored 0.05 rad Hips
+oscillator.
+
+**The move.** One pass, `stance::move_pelvis_over_feet`, now does both the
+pendulum sway and the roll. The roll pivots on the load-weighted hip socket,
+because rolling about the pelvis's centre would lift the stance socket past
+this rig's leg length. The Spine counter-rolls, and each leg is re-solved
+once. The target test pins the peak at 0.14–0.22 of the stride and
+3.0–4.5°; a sign-flip sabotage fails it.
+
+**A spring lag the target could not show.** `Bone::Spine` moved from 0.16 s
+to 0.015 s, the hips' spring. Slow, it delivered the counter-roll late, and
+the rendered trunk rolled with the pelvis. The new
+`the_rendered_trunk_stays_upright_while_the_pelvis_rolls` runs the springs:
+8.52° peak to peak with the old spring, under 1.5° now. `Spine1` and
+`Spine2` keep 0.16 s.
+
+| Measured | before | after |
+|---|---|---|
+| planted soles under the locomotion layer (headless) | 45–48 mm | ≤ 0.6 mm |
+| roll in left single support, live | −0.65° (stance side low) | +2.7° (swing side low), peak 3.55° |
+| root sideways weave, steady walk | 101 mm | 14–17 mm |
+| trunk lateral lean, peak to peak | 5.9° | 1.5° |
+| start, worst planted slide | 1.6 / 2.5 mm | 1.6 / 2.0 mm |
+
+Live figures come from BRP captures, A/B against the pre-1.2 build.
+
+The root weave in the previous entry, logged as predating the step-width
+work, was this authored roll: it moved the rendered contacts against the
+hips, and root motion followed. The last step's glide is unchanged: the
+"stop slide" metric reads 8–19 mm run to run.
+
+Front and Left gizmo views: the hip line is lower on the swinging side in
+single support, the shoulders level within a pixel, and the stride
+unchanged.
+
+**Cost.** `RigGeometry::forward` accumulated the whole skeleton's bind
+rotations on every call (120 ns); it now walks one chain (30 ns), which
+every caller gains. `anim_bench`, per character per frame: 3.8 µs after
+1.2, 4.8 µs with the roll as a second pass, 4.2 µs merged and with
+`forward` fixed. The baseline is 2.2 µs. 1006 tests pass.
+
+
 ### A human step width, and a walk that sways over its stance feet
 
 Steps 1.1–1.2 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled

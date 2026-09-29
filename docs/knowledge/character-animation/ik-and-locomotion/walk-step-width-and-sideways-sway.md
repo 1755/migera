@@ -98,11 +98,15 @@ frontal motion was an authored hips roll.
   sabotaged phase shift fails the test by 11.6 mm.
 - Live, 1.2 m/s: step width 230 → 134 mm; pelvis sway against the root
   0 → 36.8 mm peak to peak. Start planted slide unchanged, 1.4 / 2.3 mm.
-- Two issues predate this change (found by A/B on the same schedule): the
-  root weaves ~90–100 mm sideways over a steady walk, and the last step
-  glides ~8–10 cm near the floor after the root stops.
+- An A/B on the same schedule found two older issues. The root weaved
+  ~100 mm sideways over a steady walk; that was the authored pelvis roll,
+  replaced by the
+  [walking pelvic obliquity](./walking-pelvic-obliquity-from-hip-abductor-power.md)
+  (weave now 14 mm). The last step still glides ~7–9 cm near the floor
+  after the root stops.
 - `anim_bench` (switched to the rig-aware `apply_on` on a stance base,
-  same change in the baseline): 2.4 → 3.8 µs per character per frame.
+  same change in the baseline): 2.4 → 3.8 µs per character per frame for
+  the sway; 4.2 µs with the roll as well, both in one re-solve.
 
 ## Revisit when
 
@@ -110,8 +114,8 @@ frontal motion was an authored hips roll.
   inner border (3.8 cm inside the sole centreline on `puppet_base`).
 - Walks slower than 0.7 m/s matter: the sway grows as the stride slows,
   and 13 cm leaves only 4 mm at 0.7 m/s.
-- The pelvis roll and yaw (Winter §7.4.5) are made gait-driven: they move
-  the COM too, and the medial-margin test should then include them.
+- A pelvic yaw is added (Winter §7.4.5). The roll is already in the
+  medial-margin test, which runs the whole walking pelvis move.
 
 ## Related
 
@@ -119,4 +123,5 @@ frontal motion was an authored hips roll.
 - [11.2.1 Quiet standing](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.2-standing-balance-ml-and-ap/11.2.1-quiet-standing.md) — source: Eq. 11.3 and K.
 - [The walk's pelvis rides one sinusoid per step](./walk-pelvis-rides-one-sinusoid-per-step.md) — context: the vertical counterpart.
 - [A lagging pelvis rotation slides planted feet](./a-lagging-pelvis-rotation-slides-planted-feet.md) — context: why pelvis moves over planted feet are checked on the sprung pose.
+- [The walking pelvis's roll](./walking-pelvic-obliquity-from-hip-abductor-power.md) — applies: the roll applied in the same pass (`move_pelvis_over_feet`).
 - [Rig authored at critical extension](./rig-authored-at-critical-extension.md) — why the trailing leg cannot absorb the last fraction of a millimetre.

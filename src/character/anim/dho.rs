@@ -283,7 +283,14 @@ fn step_bone(
 pub fn default_springs() -> BoneSet<SpringParams> {
     BoneSet::from_fn(|bone| match bone {
         // The spine carries the most mass and should feel weighty.
-        Bone::Spine | Bone::Spine1 | Bone::Spine2 => SpringParams::critical(0.16),
+        Bone::Spine1 | Bone::Spine2 => SpringParams::critical(0.16),
+        // Except its first bone, which carries the trunk's counter-roll to
+        // the pelvis's (the walk's obliquity, a weight shift, the release):
+        // the target holds the trunk upright only if both arrive together.
+        // On the spine's 0.16 s against the hips' 0.015 s, the rendered trunk
+        // rolled with the walking pelvis, 8.1 degrees peak to peak where
+        // the target kept it upright.
+        Bone::Spine => SpringParams::critical(0.015),
         // The hips are NOT weighty, for the legs' reason below: both legs
         // hang from them, so a lagging pelvis roll swings the feet about
         // the hip joints. A weight shift or the release before a first step

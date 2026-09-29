@@ -2250,6 +2250,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_walking_pelvis_drops_on_the_swing_side_with_the_trunk_upright() {
+        // Winter §7.4.5 on the real rig: the hip socket over the swinging
+        // leg drops in early stance (lowest ~17 % after the stance heel
+        // contact), about the stance hip, while the trunk stays upright.
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer, WalkSway};
+        use crate::character::anim::rig::{accumulate_world_rotations, offset_from};
+        let (stood, _, rig) = real_walk();
+        let layer = PhaseLayer { walk_sway: Some(WalkSway { gain: 1.0 }), ..PhaseLayer::none() };
+        let params = GaitParams::walking_on(1.2, &rig);
+        let distance = distance_per_cycle(&params, &stood, &rig);
+        let posed = |cycle: f32| {
+            let mut pose = walk_pose_on(cycle, &params, &stood, &rig);
+            let clock = GaitPhase {
+                gait: cycle * std::f32::consts::TAU,
+                speed: 1.2,
+                base_frequency_hz: 0.0,
+                speed_coefficient: 1.0 / distance,
+                ..Default::default()
+            };
+            layer.apply_on(&clock, &mut pose, &rig);
+            pose
+        };
+        // Left socket's height over the right's, as an angle across them.
+        let roll = |pose: &LocalPose| {
+            let across = offset_from(pose, &rig, Bone::Hips, Bone::LeftUpLeg) - offset_from(pose, &rig, Bone::Hips, Bone::RightUpLeg);
+            across.y.atan2(across.dot(rig.left()))
+        };
+        let bare = |cycle: f32| roll(&walk_pose_on(cycle, &params, &stood, &rig));
+        let (mut lowest_at, mut lowest) = (0.0, 0.0f32);
+        let mut trunk = 0.0f32;
+        for i in 0..100 {
+            let cycle = i as f32 / 200.0; // left stance, right swinging
+            let pose = posed(cycle);
+            let added = roll(&pose) - bare(cycle);
+            if added > lowest {
+                (lowest_at, lowest) = (cycle, added);
+            }
+            let (walked, rolled) = (
+                accumulate_world_rotations(&walk_pose_on(cycle, &params, &stood, &rig), &rig),
+                accumulate_world_rotations(&pose, &rig),
+            );
+            trunk = trunk.max(walked[Bone::Spine2].angle_between(rolled[Bone::Spine2]));
+        }
+        assert!((0.14..0.22).contains(&lowest_at), "the right (swing) side is lowest at {lowest_at:.3} of the stride");
+        assert!(
+            (3.0..4.5).contains(&lowest.to_degrees()),
+            "the right (swing) side drops {:.2}° against the left",
+            lowest.to_degrees()
+        );
+        assert!(trunk < 0.01, "the trunk tipped {:.2}° with the pelvis", trunk.to_degrees());
+    }
+
+    #[test]
+    fn the_rendered_trunk_stays_upright_while_the_pelvis_rolls() {
+        // The target counter-rolls the trunk against the pelvis; on screen
+        // that holds only if the springs deliver both together. With the
+        // first spine bone on the trunk's 0.16 s against the hips' 0.015 s,
+        // the sprung trunk rolled with the pelvis: 8.1° peak to peak live.
+        use crate::character::anim::dho::{default_springs, DhoState};
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer, WalkSway};
+        use crate::character::anim::rig::accumulate_world_rotations;
+        let (stood, _, rig) = real_walk();
+        let layer = PhaseLayer { walk_sway: Some(WalkSway { gain: 1.0 }), ..PhaseLayer::none() };
+        let params = GaitParams::walking_on(1.2, &rig);
+        let distance = distance_per_cycle(&params, &stood, &rig);
+        let springs = default_springs();
+        let mut clock =
+            GaitPhase { speed: 1.2, base_frequency_hz: 0.0, speed_coefficient: 1.0 / distance, ..Default::default() };
+        let target_at = |clock: &GaitPhase| {
+            let mut pose = walk_pose_on(clock.gait / std::f32::consts::TAU, &params, &stood, &rig);
+            layer.apply_on(clock, &mut pose, &rig);
+            pose
+        };
+        let mut dho = DhoState::settled_on(&target_at(&clock));
+        let dt = 1.0 / 60.0;
+        // Lateral lean of the chest's up axis, signed across the rig's left.
+        let lean = |pose: &LocalPose| {
+            let up = accumulate_world_rotations(pose, &rig)[Bone::Spine2] * (accumulate_world_rotations(&LocalPose::REST, &rig)[Bone::Spine2].inverse() * Vec3::Y);
+            up.dot(rig.left()).atan2(up.y)
+        };
+        let (mut rendered, mut target) = ((f32::MAX, f32::MIN), (f32::MAX, f32::MIN));
+        for frame in 0..240 {
+            clock.advance(dt);
+            let goal = target_at(&clock);
+            dho.advance(&goal, &springs, dt);
+            if frame >= 60 {
+                let (r, t) = (lean(&dho.pose(goal.root_translation)), lean(&goal));
+                rendered = (rendered.0.min(r), rendered.1.max(r));
+                target = (target.0.min(t), target.1.max(t));
+            }
+        }
+        let span = |(lo, hi): (f32, f32)| (hi - lo).to_degrees();
+        assert!(span(target) < 1.0, "the target trunk leans {:.2}° peak to peak", span(target));
+        assert!(span(rendered) < 1.5, "the rendered trunk leans {:.2}° peak to peak", span(rendered));
+    }
+
     // TEMPORARY PROBE (plan step 1.1) — remove after measuring.
     #[test]
     #[ignore]

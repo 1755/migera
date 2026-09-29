@@ -265,6 +265,33 @@ pub fn walk_sway_at(cycle: f32, stride_seconds: f32, duty_factor: f32, width: f3
 /// Gravity, m/s², for the pendulum constant `K = d / g`.
 const GRAVITY: f32 = 9.81;
 
+/// The walking pelvis's roll over a stride, as `(harmonic, cos, sin)`
+/// terms of the turn about the rig's forward: positive lifts the left side.
+///
+/// Derived from Winter §7.4.5 (Figs 7.4–7.5, intersubject averages, a
+/// ~1 s stride). The stance hip's frontal power over its abductor moment
+/// is the hip's frontal angular velocity; integrated through stance it
+/// gives the swing side of the pelvis dropping under H1-F absorption to
+/// 3.9° at 17 % of the stride, part-lifted by H2-F (17–30 %), held through
+/// midstance, then lifted back by H3-F (43–57 %) to within 0.7° of level
+/// at the swing foot's heel contact. The right side
+/// mirrors it half a stride later, so only odd harmonics appear; three fit
+/// the integrated curve within 0.37°. Read off the figures by eye, so
+/// ±20 % in size; the timing is firmer than the amplitude.
+const OBLIQUITY: [(f32, f32, f32); 3] =
+    [(1.0, -0.008_02, 0.055_89), (3.0, -0.015_02, 0.004_86), (5.0, 0.003_85, -0.005_33)];
+
+/// The walking pelvis's roll at stride position `cycle` (0 = left heel
+/// contact), radians about the rig's forward: positive lifts the left
+/// side. See [`OBLIQUITY`].
+pub fn pelvic_obliquity_at(cycle: f32) -> f32 {
+    use std::f32::consts::TAU;
+    OBLIQUITY
+        .iter()
+        .map(|&(k, cos, sin)| cos * (TAU * k * cycle).cos() + sin * (TAU * k * cycle).sin())
+        .sum()
+}
+
 /// The whole-body centre of mass's height above the ankles, as a multiple
 /// of the hips': 1.018 / 0.856 m on `puppet_base` standing
 /// (`anthropometry::centre_of_mass`). A ratio rather than the COM itself:
@@ -419,7 +446,14 @@ impl PhaseLayer {
             && phase.speed > 0.0
         {
             let (shift, loads) = walk_sway_now(phase, pose, rig);
-            super::stance::sway_over_loaded_feet(pose, rig, rig.left() * (walk.gain * shift), loads);
+            let cycle = phase.gait / std::f32::consts::TAU;
+            super::stance::move_pelvis_over_feet(
+                pose,
+                rig,
+                rig.left() * (walk.gain * shift),
+                walk.gain * pelvic_obliquity_at(cycle),
+                loads,
+            );
         }
     }
 
@@ -529,18 +563,22 @@ impl PhaseLayer {
         }
     }
 
-    /// Locomotion layering: spinal counter-twist, hip sway a quarter cycle
-    /// behind it, and a head bob at twice stride rate.
+    /// Locomotion layering: the pelvis's sway and roll over the stance
+    /// feet ([`WalkSway`]), a spinal counter-twist, and a head bob at twice
+    /// stride rate.
     ///
-    /// These are the three relationships the architecture calls out, and
-    /// each is a real bio-mechanical one: the spine twists against the hips
-    /// to conserve angular momentum, the hips sway over the planted foot,
-    /// and the head takes a vertical impulse at every footfall — hence
-    /// twice per stride, not once.
+    /// The spine twists against the hips to conserve angular momentum, and
+    /// the head takes a vertical impulse at every footfall — hence twice per
+    /// stride, not once. The pelvis's roll used to be an oscillator here too
+    /// (0.05 rad about the Hips' Z); it lowered the stance side through late
+    /// single support, the reverse of Winter's, and swung each planted sole
+    /// 45–48 mm. It is now [`pelvic_obliquity_at`], rolled over the stance
+    /// hip.
     pub fn locomotion() -> Self {
         Self {
             // A walking body's rise and fall come from its legs; its
-            // side-to-side sway from the pendulum over its stance feet.
+            // side-to-side sway and roll from the pendulum over its stance
+            // feet and the hip abductors holding it.
             sway: None,
             walk_sway: Some(WalkSway { gain: 1.0 }),
             oscillators: vec![
@@ -552,16 +590,6 @@ impl PhaseLayer {
                         amplitude: 0.09,
                         offset: 0.0,
                         axis: Vec3::Y,
-                    },
-                ),
-                (
-                    Bone::Hips,
-                    PhaseOscillator {
-                        clock: PhaseClock::Gait,
-                        harmonic: 1.0,
-                        amplitude: 0.05,
-                        offset: std::f32::consts::FRAC_PI_2,
-                        axis: Vec3::Z,
                     },
                 ),
                 (
@@ -932,22 +960,37 @@ mod tests {
     }
 
     #[test]
-    fn hip_sway_runs_a_quarter_cycle_behind_the_spinal_twist() {
-        // The two are 90 degrees out of phase, which is what makes the hips
-        // reach their extreme as the spine passes through centre — the
-        // counter-rotation that conserves angular momentum in a real walk.
-        let layer = PhaseLayer::locomotion();
-
-        let spine = layer.oscillators.iter().find(|(b, _)| *b == Bone::Spine1).unwrap().1;
-        let hips = layer.oscillators.iter().find(|(b, _)| *b == Bone::Hips).unwrap().1;
-
+    fn the_pelvis_drops_on_the_swing_side_then_is_lifted_back() {
+        // Winter §7.4.5: through left stance (0–0.5 of the stride here) the
+        // right side swings, and the pelvis drops on it under H1-F — lowest
+        // at ~17 % — then H2-F/H3-F lift it back past level by the next
+        // heel contact. Positive lifts the left side.
+        let samples: Vec<(f32, f32)> =
+            (0..400).map(|i| i as f32 / 400.0).map(|c| (c, pelvic_obliquity_at(c))).collect();
+        let (at, lowest_right) = samples
+            .iter()
+            .copied()
+            .filter(|(c, _)| *c < 0.5)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!((0.15..0.21).contains(&at), "the swing side is lowest at {at:.3} of the stride");
         assert!(
-            (hips.offset - spine.offset - FRAC_PI_2).abs() < 1.0e-5,
-            "hip sway should lead the spinal twist by a quarter cycle, got offsets \
-             {} and {}",
-            hips.offset,
-            spine.offset,
+            (0.059..0.074).contains(&lowest_right),
+            "the swing side drops {:.2}°, Winter's derived 3.9°",
+            lowest_right.to_degrees()
         );
+        // Lifted back: by its own heel contact the swing side is still
+        // 0.74° low in the integrated curve (it crosses level only at 56 %,
+        // once the other foot has the weight); the fit is within its 0.37°.
+        let at_contact = pelvic_obliquity_at(0.5).to_degrees();
+        assert!(
+            (at_contact - 0.74).abs() < 0.4,
+            "at the right heel contact the pelvis rolls {at_contact:.2}°, the derivation 0.74°"
+        );
+        // The right leg's stance mirrors the left's.
+        for (c, roll) in samples {
+            assert!((pelvic_obliquity_at(c + 0.5) + roll).abs() < 1.0e-6, "not mirrored at {c}");
+        }
     }
 
     #[test]
