@@ -90,6 +90,37 @@ use super::stance;
 /// swing starts from beside the planted foot, not from behind it.
 pub const FIRST_SWING_LIFT: f32 = 0.05;
 
+/// How high the last swing holds its toe at least, metres above where it
+/// will stand, while it is still more than [`LAND_REACH`] from there.
+///
+/// The last step fades a full swing (it leaves the floor ~0.66 m behind its
+/// spot at 1.2 m/s) into standing in ~0.4 s, and the blended foot came down
+/// on the way: 258 mm short at 13 mm up, 74 mm short at 5 mm INTO the floor,
+/// which the foot IK then slid along it. A real last step is set down onto
+/// its spot. The walk's own swing clears ~3 cm through most of its travel.
+pub const LAND_LIFT: f32 = 0.03;
+
+/// How close to its standing spot the last swing may descend from
+/// [`LAND_LIFT`], metres horizontally: the lift eases out over this, so the
+/// foot meets the floor only when it is over its spot.
+pub const LAND_REACH: f32 = 0.12;
+
+/// How long a landing stays active after the last step's fade ends,
+/// seconds: the rendered foot lags the target through the legs' springs,
+/// and has to finish arriving before the lift lets go.
+pub const LAND_HOLD: f32 = 0.25;
+
+/// How high a foot being set down is held above its spot, metres, when its
+/// toe is `away` metres from it horizontally: [`LAND_LIFT`], eased out over
+/// the last [`LAND_REACH`] — level where it joins the full lift, steepest
+/// where it meets the floor, so the foot comes DOWN onto its spot. A
+/// smoothstep flattens there too, and live the ball crept its last ~18 mm
+/// within 3 mm of the floor.
+pub fn landing_lift(away: f32) -> f32 {
+    let x = (away / LAND_REACH).clamp(0.0, 1.0);
+    LAND_LIFT * x * (2.0 - x)
+}
+
 /// How far the release tips the body forward over its feet at the
 /// recorded stride's speed, metres of pelvis travel.
 ///
@@ -221,6 +252,15 @@ pub struct Transition {
     /// zero outside a first step. Shapes the first swing's lift
     /// ([`Transition::blend`]).
     pub first_swing: f32,
+    /// How far through the last step's fade the character is, 0 to 1;
+    /// zero outside a last step. Ramps in the last swing's landing lift
+    /// ([`Transition::blend`]).
+    pub last_swing: f32,
+    /// The leg the last step swings, +1 the rig's left, −1 its right.
+    pub last_swing_leg: f32,
+    /// Seconds the last step's landing stays active after its fade ended
+    /// ([`LAND_HOLD`] at the end, counting down at rest).
+    pub landing_hold: f32,
     stage: Stage,
 }
 
@@ -257,10 +297,20 @@ impl Transition {
         config: &TransitionConfig,
         dt: f32,
     ) -> Option<TransitionEvent> {
+        // Counted before the stage advances, so the frame a last step ends
+        // starts the hold at its full length.
+        self.landing_hold = (self.landing_hold - dt.max(0.0)).max(0.0);
         let event = self.advance_stage(speed, phase, config, dt);
-        // Only a first step lifts its swing; its own branch set the progress.
+        if self.stage != Stage::Standing {
+            self.landing_hold = 0.0;
+        }
+        // Only a first or last step lifts its swing; their own branches set
+        // the progress.
         if !matches!(self.stage, Stage::FirstStep { .. }) {
             self.first_swing = 0.0;
+        }
+        if !matches!(self.stage, Stage::LastStep { .. }) {
+            self.last_swing = 0.0;
         }
         event
     }
@@ -378,10 +428,15 @@ impl Transition {
                 // The legs keep the stride's cadence to finish the step. The
                 // fade waits out the double support after the footfall and
                 // runs from the other foot's toe-off to its mid-swing.
-                self.weight = self.weight.min(1.0 - smoothstep(through(from, config.toe_off())));
+                self.last_swing = through(from, config.toe_off());
+                // The foot that just landed stands; the other swings: the
+                // left lands at 0, the right at 0.5.
+                self.last_swing_leg = if from < 0.25 { -1.0 } else { 1.0 };
+                self.weight = self.weight.min(1.0 - smoothstep(self.last_swing));
                 if self.weight <= 0.0 {
                     self.stage = Stage::Standing;
                     self.stride_speed = speed;
+                    self.landing_hold = LAND_HOLD;
                     return Some(TransitionEvent::AtRest);
                 }
                 return None;
@@ -431,7 +486,40 @@ impl Transition {
                 solve_leg_on(&mut pose, chain, toe + Vec3::Y * short, &LegIkConfig::default(), rig);
             }
         }
+        // The last swing is set down onto its spot: held at least
+        // `LAND_LIFT` up until it is within `LAND_REACH` of where it will
+        // stand, ramped in over the fade's first fifth so a toe just off the
+        // floor is not yanked up.
+        if self.last_swing > 0.0 {
+            let chain = if self.last_swing_leg > 0.0 { LegChain::LEFT } else { LegChain::RIGHT };
+            let stood = forward_kinematics_on(standing, rig)[chain.toe];
+            let toe = forward_kinematics_on(&pose, rig)[chain.toe];
+            let away = Vec3::new(toe.x - stood.x, 0.0, toe.z - stood.z).length();
+            let lift = smoothstep(self.last_swing / 0.2) * landing_lift(away);
+            let short = stood.y + lift - toe.y;
+            if short > 0.0 {
+                solve_leg_on(&mut pose, chain, toe + Vec3::Y * short, &LegIkConfig::default(), rig);
+            }
+        }
         pose
+    }
+
+    /// The foot the last step is setting down, and where, for the foot IK
+    /// (`plugin::AnimFootIk::landing`): through the last step's fade, ramped
+    /// in over its first fifth, and for [`LAND_HOLD`] after, while the
+    /// rendered foot catches up with the target through the springs.
+    /// `standing` is the pose the character comes to rest in.
+    pub fn landing(&self, standing: &LocalPose, rig: &RigGeometry) -> Option<super::plugin::Landing> {
+        let strength = if self.last_swing > 0.0 {
+            smoothstep(self.last_swing / 0.2)
+        } else if self.landing_hold > 0.0 {
+            1.0
+        } else {
+            return None;
+        };
+        let left = self.last_swing_leg > 0.0;
+        let chain = if left { LegChain::LEFT } else { LegChain::RIGHT };
+        Some(super::plugin::Landing { left, spot: forward_kinematics_on(standing, rig)[chain.toe], strength })
     }
 
     /// Poses the release on `pose` (a standing one), on `rig`: the weight
@@ -969,6 +1057,109 @@ mod tests {
         }
         assert_eq!(transition.stance, 1.0, "test setup: the left leg stands");
         out
+    }
+
+    /// The gallery's stop, headless, like [`first_step`]: walking steadily,
+    /// then asked to stand. Returns the swinging foot's ball per frame from
+    /// the footfall that starts the last step until well after rest: how far
+    /// it still has to go to where it ends, horizontally, and its height
+    /// above where it ends.
+    fn last_step() -> Vec<(f32, f32)> {
+        use bevy::math::Vec3;
+        use super::super::gait::{walk_pose_on, GaitParams};
+        use super::super::locomotion::{distance_per_cycle, root_displacement_between};
+        use super::super::rig::forward_kinematics_on;
+        use crate::character::skeleton::Bone;
+
+        let rig = super::super::gltf_rig::puppet_base_as_rendered();
+        let stood =
+            stance::stance_on_rig(&super::super::poses::relaxed_stand(), stance::DEFAULT_KNEE_FLEX, &rig);
+        let speed = 1.2;
+        let params = GaitParams::walking_on(speed, &rig);
+        let cadence = speed / distance_per_cycle(&params, &stood, &rig);
+        let config = TransitionConfig { mid_swing: params.duty_factor * 0.5, ..Default::default() };
+
+        // Walking, just before the left footfall; the right leg swings last.
+        let mut transition = Transition { stance: 1.0, ..Transition::walking(cadence) };
+        let mut cycle = 0.95_f32;
+        let mut previous = walk_pose_on(cycle, &params, &stood, &rig);
+        let mut previous_cycle = cycle;
+        let mut body = Vec3::ZERO;
+        let mut path = Vec::new();
+        for _ in 0..240 {
+            transition.advance(0.0, cycle, &config, DT);
+            let weight = transition.weight;
+            let pose = if weight <= 0.0 {
+                stood
+            } else {
+                transition.blend(&stood, &walk_pose_on(cycle, &params, &stood, &rig), &rig)
+            };
+            if weight > 0.0 || previous_cycle != cycle {
+                let middle = previous_cycle + 0.5 * (cycle - previous_cycle).rem_euclid(1.0);
+                body += root_displacement_between(&previous, &pose, middle, &params, &rig).unwrap_or(Vec3::ZERO);
+            }
+            path.push(forward_kinematics_on(&pose, &rig)[Bone::RightToeBase] + body);
+            (previous, previous_cycle) = (pose, cycle);
+            cycle = (cycle + transition.cadence_hz.max(0.0) * DT * f32::from(weight > 0.0)).rem_euclid(1.0);
+            let _ = cadence;
+        }
+        let end = *path.last().unwrap();
+        path.iter()
+            .map(|p| (Vec3::new(p.x - end.x, 0.0, p.z - end.z).length(), p.y - end.y))
+            .collect()
+    }
+
+    #[test]
+    fn a_stop_publishes_its_landing_through_the_fade_and_a_hold_after() {
+        // The foot IK sets the last swing down on the RENDERED foot, which
+        // lags the target through the springs: the landing has to outlast
+        // the fade by `LAND_HOLD`, then let go.
+        let rig = RigGeometry::default();
+        let stood = LocalPose::REST;
+        let config = TransitionConfig::default();
+        let mut transition = Transition { stance: 1.0, ..Transition::walking(1.0) };
+        let mut phase = 0.95_f32;
+        let (mut faded_at, mut released_at, mut during_fade) = (None, None, false);
+        for frame in 0..240 {
+            let event = transition.advance(0.0, phase, &config, DT);
+            let landing = transition.landing(&stood, &rig);
+            if transition.last_swing > 0.0 {
+                during_fade |= landing.is_some_and(|l| !l.left);
+            }
+            if matches!(event, Some(TransitionEvent::AtRest)) {
+                faded_at = Some(frame);
+            }
+            if faded_at.is_some() && released_at.is_none() && landing.is_none() {
+                released_at = Some(frame);
+            }
+            phase = (phase + transition.cadence_hz * DT * f32::from(transition.weight > 0.0)).rem_euclid(1.0);
+        }
+        assert!(during_fade, "through the fade the swinging (right) foot should be landing");
+        let (faded, released) = (faded_at.expect("the stop comes to rest"), released_at.expect("the landing lets go"));
+        let held = (released - faded) as f32 * DT;
+        assert!((held - LAND_HOLD).abs() <= DT + 1.0e-4, "the landing was held {held} s after the fade, not {LAND_HOLD}");
+    }
+
+    #[test]
+    fn the_last_swing_is_set_down_onto_its_spot() {
+        // The last step fades a whole swing into standing in ~0.4 s. The
+        // blended foot used to come down on the way — 258 mm short at 13 mm
+        // up, 74 mm short 5 mm INTO the floor — and live the foot IK slid it
+        // along the floor to its spot (the stop's "glide"). Now it meets the
+        // floor only over its spot.
+        let path = last_step();
+        for &(away, up) in &path {
+            assert!(up > -1.0e-3, "the last swing's ball went {:.1} mm into the floor, {:.0} mm short", up * 1e3, away * 1e3);
+            if up < 0.003 {
+                assert!(
+                    away < 0.02,
+                    "the last swing's ball was down ({:.1} mm up) {:.0} mm short of its spot",
+                    up * 1e3,
+                    away * 1e3
+                );
+            }
+        }
+        assert!(path.iter().any(|&(away, _)| away > 0.5), "test setup: the swing should start well behind its spot");
     }
 
     /// What [`first_step`] measured.

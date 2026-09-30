@@ -1,12 +1,12 @@
 ---
 title: Fade a gait only through single support
-description: "A blend weight changing while both feet are down slips one (12.5 mm/frame): the walk fixes their spacing, the blend scales it. Fades run in single support; root motion must include the hips' root_translation; a first swing must be lifted. Read before changing transition.rs or blending a gait."
+description: "A blend weight changing in double support slips a foot (12.5 mm/frame). Fades run in single support; root motion includes the hips' root_translation; a first swing is lifted; a last swing is set down by the foot IK on the rendered foot (springs lag it ~10 cm). Read before changing transition.rs or blending a gait."
 type: lesson
 status: current
 tags:
   - locomotion
   - correctness
-updated: 2026-09-29
+updated: 2026-09-30
 verified: 2026-09-29
 code:
   - src/character/anim/transition.rs
@@ -59,6 +59,32 @@ still skimmed 9 cm, because the walk itself is lowest there.
 `Transition::blend` holds the swinging toe ≥ 5 cm above its standing spot
 early in the fade and solves the leg to it.
 
+## 4. A last swing has to be set down, on the RENDERED foot
+
+The last step fades a whole swing into standing: the foot leaves the floor
+~0.66 m behind its spot and arrives ~0.4 s later. Blended, it came down on
+the way: 74 mm short at 5 mm into the floor. Live, the foot IK slid it
+along the floor to its spot, the stop's "glide" (up to 27 mm within 5 mm of
+the floor).
+
+A lift on the target alone was not enough. The legs' 0.015 s springs lag a
+foot moving at 2–3 m/s by over 100 mm. When the target reached its spot,
+the rendered foot was still 38 mm behind at 6 mm up, and crept the rest in
+along the floor.
+
+So the landing is judged in the foot IK, which sees the sprung pose:
+
+- `Transition::landing` publishes the swinging foot and its standing spot
+  (`AnimFootIk::landing`), through the fade and for `LAND_HOLD` (0.25 s)
+  after it.
+- The IK holds that toe up by `landing_lift(distance)`, measured on the
+  rendered foot: 3 cm, eased out over the last 12 cm.
+- The lift is shaped `x(2 − x)`, not a smoothstep. A smoothstep is also
+  flat at the floor, and the ball crept its last ~18 mm within 3 mm of it.
+
+The target keeps the same lift too, so the target pose never goes into the
+floor.
+
 ## Measured
 
 Headless, stance slip over the first step is held to the steady walk's
@@ -66,6 +92,15 @@ over the same stretch of stride. Sabotaged: 73 mm with no hips term, 32 mm
 fading into double support, against 16.9 mm steady. Live worst planted
 slide: 1.5/2.2 mm at the start, 2.9/1.1 mm at the stop, where before it was
 17.6 mm at the start and 73/77 mm at the stop.
+
+Stop landing, live at 1.2 m/s (2026-09-30): the last swing's ball travels
+2.9 mm (`puppet_base`) and 2.7 mm (`character.glb`) while within 2 mm of
+the floor, where before it travelled 9.4 and 14.9 mm. It comes down onto
+its spot (28.6 mm to go at 19 mm up, then 6.9 at 5.2) and settles within
+0.2 mm, with no pop when the hold lets go. Tests:
+`transition::tests::the_last_swing_is_set_down_onto_its_spot`,
+`..::a_stop_publishes_its_landing_through_the_fade_and_a_hold_after`,
+`plugin::tests::a_landing_foot_is_held_up_until_it_is_over_its_spot`.
 
 ## Related
 

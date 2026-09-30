@@ -64,6 +64,12 @@ the length in different segments.
   symmetry, bone-length invariance). It is actively misleading for visible
   leg shape.
 - Read segment lengths from the data, never from bone names.
+- The same goes for leg IK. Folding to ground raised 25 cm under a body
+  held still, the synthetic leg's two-bone chain (its `LeftUpLeg` at the
+  knee, a 0.07 m ankle stub as the "shin") flipped the stub 180° and
+  pitched the foot, heel ~13 cm under the floor. On `puppet_base` the
+  whole sole rests on the plane (`plugin::tests::a_real_foot_stands_whole_on_raised_ground`,
+  on the real-rig fixture `app_with_real_rig`).
 
 ## Related
 

@@ -42,6 +42,45 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A stop sets its last foot down; raised ground was a synthetic-rig artifact
+
+**The stop's glide.** The last step fades a whole swing into standing: the
+foot leaves ~0.66 m behind its spot and arrives ~0.4 s later. The target
+brought the foot down on the way (74 mm short at 5 mm into the floor), and
+live the foot IK slid it in along the floor.
+
+A lift on the target alone did not carry to the screen. The legs' 0.015 s
+springs lag a 2–3 m/s foot by over 100 mm: when the target reached its
+spot, the rendered foot was still 38 mm behind at 6 mm up and crept the
+rest in, measured headless by running the stop through `DhoState`.
+
+So the landing is judged on the rendered foot:
+
+- `Transition::landing` publishes the swinging foot and its standing spot
+  (`AnimFootIk::landing`), through the fade and a 0.25 s hold after it.
+- The foot IK holds that toe up by `landing_lift` of its own distance from
+  the spot: 3 cm, eased out over the last 12 cm as `x(2 − x)`. A smoothstep
+  first let it creep ~18 mm within 3 mm of the floor.
+- The target keeps the same lift.
+
+| Live, 1.2 m/s, last ball's travel within 2 mm of the floor | before | after |
+|---|---|---|
+| `puppet_base` | 9.4 mm | 2.9 mm |
+| `character.glb` | 14.9 mm | 2.7 mm |
+
+The foot comes down onto its spot (28.6 mm to go at 19 mm up, 6.9 mm at
+5.2 mm), settles within 0.2 mm, and does not pop when the hold ends. Three
+new tests; the two that exercise a lift fail with it disabled.
+
+**The heel on raised ground was the synthetic rig.** Its leg joints are
+shifted by one: `LeftUpLeg` is the knee, and the IK's "shin" is a 0.07 m
+ankle stub. Folding 25 cm, that stub flipped 180° and pitched the foot,
+heel ~13 cm under the plane. A new real-rig fixture (`app_with_real_rig`,
+`puppet_base` driven by the plugin as the game does) shows heel, ball and
+tip all exactly on the plane at 0 / 0.10 / 0.25 m. The synthetic test now
+checks the ball and says why. 1014 tests pass.
+
+
 ### The foot IK plants the walk's own sole: feet stand at the asset's height
 
 **The mismatch.** The foot IK planted the toe at "the toe joint's height

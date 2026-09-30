@@ -139,6 +139,27 @@ pub struct AnimFootIk {
     /// synthetic proxy while solving on a real rig scales the body's
     /// vertical motion to the wrong leg.
     pub rig: Option<RigGeometry>,
+    /// A foot being set down onto a spot, if any: the last step of a stop
+    /// (`transition::Transition::landing`).
+    ///
+    /// Judged here, on the sprung pose, and not on the target: the legs'
+    /// springs lag a fast-swinging foot by ~10 cm, so a target that set the
+    /// foot down onto its spot left the RENDERED foot creeping its last
+    /// ~2 cm within 3 mm of the floor. The IK holds that toe up by
+    /// [`super::transition::landing_lift`] of the rendered foot's own
+    /// distance from its spot.
+    pub landing: Option<Landing>,
+}
+
+/// A foot being set down onto a spot. See [`AnimFootIk::landing`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Landing {
+    /// Which foot: `true` the rig's left.
+    pub left: bool,
+    /// Where its toe joint will stand, in the pose's frame.
+    pub spot: Vec3,
+    /// How much of the lift applies, 0 to 1.
+    pub strength: f32,
 }
 
 /// Where one character's hands are reaching, in world space.
@@ -548,6 +569,7 @@ fn solve_foot_ik(
         let lock_config = foot_ik.lock;
         let ik_config = foot_ik.ik;
         let turn = foot_ik.turn;
+        let landing = foot_ik.landing;
 
         // The rig this pose is actually driving. Ground height is a
         // property of the world, so solving against it on a proxy rig gives
@@ -718,6 +740,15 @@ fn solve_foot_ik(
 
             // Never let the sole sink below the surface, even mid-release.
             target.y = target.y.max(surface);
+
+            // A foot being set down clears the floor until it is over its
+            // spot, measured on the rendered (sprung) foot.
+            if let Some(landing) = landing
+                && landing.left == matches!(side, Side::Left)
+            {
+                let away = Vec3::new(animated.x - landing.spot.x, 0.0, animated.z - landing.spot.z).length();
+                target.y = target.y.max(surface + landing.strength * super::transition::landing_lift(away));
+            }
 
             resolved[slot] = Some((chain, target, hit));
         }
@@ -1404,6 +1435,101 @@ mod tests {
         (sole(LegChain::LEFT.ankle), sole(LegChain::RIGHT.ankle))
     }
 
+    /// [`app_with_grounded_rig`] on the real rig, `puppet_base`: one entity
+    /// per bone at the asset's own local translation, and its skeleton, so
+    /// the IK solves on the live rig geometry as the game does. The
+    /// synthetic rig's leg joints are shifted by one (its `LeftUpLeg` is the
+    /// knee), so a leg folding on it is not a leg folding.
+    fn app_with_real_rig(ground: impl GroundProbe) -> (App, Entity, RigGeometry) {
+        use crate::character::anim::gltf_rig::{parsed_rig, puppet_base, real_skeleton};
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let mut app = App::new();
+        app.add_plugins(AnimPlugin);
+        app.init_resource::<Time>();
+        let asset = puppet_base();
+        let world = app.world_mut();
+        let entities: std::collections::HashMap<Bone, Entity> = Bone::ALL
+            .iter()
+            .map(|&bone| (bone, world.spawn(Transform::from_translation(asset.offsets[bone])).id()))
+            .collect();
+        let skeleton = real_skeleton(&parsed_rig(), entities);
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &asset);
+        let rig = world
+            .spawn((
+                AnimTarget::new(stood),
+                AnimSprings::default(),
+                AnimFootIk::default(),
+                AnimGround(Box::new(ground)),
+                skeleton,
+            ))
+            .id();
+        (app, rig, asset)
+    }
+
+    /// Each foot's heel, ball and tip contacts, world heights, on the rig
+    /// the IK solved on.
+    fn real_soles(app: &App, rig: Entity) -> [[f32; 3]; 2] {
+        use crate::character::anim::foot::Sole;
+        let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+        let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
+        let hips = forward_kinematics_on(&pose, &geometry)[Bone::Hips].y;
+        [Bone::LeftFoot, Bone::RightFoot].map(|ankle| Sole::of(&geometry, ankle).points(&pose, &geometry).map(|p| hips + p.y))
+    }
+
+    #[test]
+    fn a_real_foot_stands_whole_on_raised_ground() {
+        // The synthetic fixture's heel sank ~13 cm into ground raised 25 cm
+        // under a body held still: its "knee" is an ankle stub, which flips
+        // 180° and pitches the foot. A real leg just bends its knee — so on
+        // the real rig the whole sole, heel to tip, rests on the plane.
+        for height in [0.0, 0.1, 0.25] {
+            let (mut app, rig, _) = app_with_real_rig(FlatGround { height });
+            step(&mut app, 120);
+            for (side, [heel, ball, tip]) in ["left", "right"].into_iter().zip(real_soles(&app, rig)) {
+                let lowest = heel.min(ball).min(tip);
+                assert!(
+                    (lowest - height).abs() < 0.005,
+                    "on ground at {height} m the {side} sole's lowest contact is at {lowest:.4} \
+                     (heel {heel:.4}, ball {ball:.4}, tip {tip:.4})"
+                );
+                assert!(heel > height - 0.005, "on ground at {height} m the {side} heel sank to {heel:.4}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_landing_foot_is_held_up_until_it_is_over_its_spot() {
+        // A stop's last swing, judged on the rendered foot: the legs'
+        // springs lag a fast swing by ~10 cm, and a foot set down by its
+        // TARGET crept its last ~2 cm along the floor.
+        use crate::character::anim::transition::landing_lift;
+        let toe_after = |landing: Option<Landing>| {
+            let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
+            step(&mut app, 60);
+            app.world_mut().get_mut::<AnimFootIk>(rig).unwrap().landing = landing;
+            step(&mut app, 1);
+            let pose = app.world().get::<AnimFootIk>(rig).and_then(|ik| ik.corrected).unwrap();
+            let animated = app.world().get::<AnimPose>(rig).unwrap().pose();
+            (forward_kinematics(&pose)[Bone::LeftToeBase], forward_kinematics(&animated)[Bone::LeftToeBase])
+        };
+        let (planted, animated) = toe_after(None);
+
+        // 6 cm short of its spot: held up by the lift for 6 cm.
+        let spot = animated + Vec3::new(0.0, 0.0, 0.06);
+        let (held, _) = toe_after(Some(Landing { left: true, spot, strength: 1.0 }));
+        let raised = held.y - planted.y;
+        assert!(
+            (raised - landing_lift(0.06)).abs() < 1.0e-3,
+            "6 cm from its spot the toe rose {:.1} mm, the lift is {:.1}",
+            raised * 1e3,
+            landing_lift(0.06) * 1e3
+        );
+
+        // Over its spot: down.
+        let (landed, _) = toe_after(Some(Landing { left: true, spot: animated, strength: 1.0 }));
+        assert!((landed.y - planted.y).abs() < 1.0e-4, "over its spot the toe stayed {:.2} mm up", (landed.y - planted.y) * 1e3);
+    }
+
     #[test]
     fn foot_ik_plants_both_toes_on_flat_ground() {
         let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
@@ -1431,11 +1557,13 @@ mod tests {
         step(&mut app, 120);
 
         // The BALL contact, which is what the IK plants. The whole sole is
-        // not on the plane here: with the body held at the origin the legs
-        // fold past their reach, the foot pitches, and the heel contact
-        // sinks ~13 cm into the raised floor (0.119 against 0.25). That
-        // was always so; the old measure — toe joint and tip — could not
-        // see the heel.
+        // not on the plane here, and that is this SYNTHETIC rig, not the
+        // IK: its leg joints are shifted by one (its `LeftUpLeg` is the
+        // knee, its "shin" a 0.07 m ankle stub), so folding 25 cm flips the
+        // stub 180° and pitches the foot, heel ~13 cm under the plane. A
+        // real leg bends its knee: on `puppet_base` the whole sole rests on
+        // the plane at every height — see
+        // `a_real_foot_stands_whole_on_raised_ground`.
         let (left, right) = {
             use crate::character::anim::foot::Sole;
             let pose = app.world().get::<AnimFootIk>(rig).and_then(|ik| ik.corrected).unwrap();

@@ -167,9 +167,10 @@ Order: **1 → 2 → 3a → 4 → 3b.**
   and the synthetic hips height. It now walks at 1.18 m/s with a 5 mm
   slide, and step 1's motion checks out on it. The foot IK's toe contact
   now uses the walk's `Sole` (it was 15 mm off on `puppet_base`); standing
-  feet rest at the assets' bind heights. Still open: the last step of a
-  stop glides ~4–9 cm near the floor after the root stops. Check every
-  later step on both rigs.
+  feet rest at the assets' bind heights. The stop's last foot is set down
+  onto its spot by the foot IK on the rendered foot (glide 9–15 → ~3 mm);
+  the "heel under raised ground" was the synthetic rig (real rig: whole
+  sole on the plane). Check every later step on both rigs.
 - **1.5 as planned:** Live check. BRP capture with `--anim-speed-schedule` (start and
   stop). Front + Left, `--gizmos on --show-real-mesh off`. Claim: "the
   pelvis moves toward each stance foot and drops on the swing side, and the

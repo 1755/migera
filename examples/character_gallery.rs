@@ -1660,6 +1660,9 @@ fn drive_walk_cycle(
         // pose, and the release changes every frame.
         let mut prepared = stood;
         transition_state.0.apply_release(&mut prepared, &gait_rig);
+        // A stop's last swing is set down onto where it will stand, judged
+        // by the foot IK on the rendered foot (`AnimFootIk::landing`).
+        foot_ik.landing = transition_state.0.landing(&prepared, &gait_rig);
         let rendered = |cycle: f32| {
             if weight <= 0.0 {
                 prepared
