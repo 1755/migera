@@ -118,6 +118,13 @@ pub struct Ragdoll {
     pub displayed: Option<LocalPose>,
     /// Let go to fall, if it has been. See [`Ragdoll::fall`].
     pub fall: Option<Fall>,
+    /// Each body's centre in its bone's own frame, as spawned: a bone is
+    /// rigid, so this places a body on its bone in any pose (a rise's end
+    /// sets the bodies back onto the animation with it).
+    pub body_offsets: BoneSet<Vec3>,
+    /// The poses a rise passes through, built on the rig when it starts
+    /// ([`super::getup::keys`]).
+    pub rise_keys: Vec<super::getup::GetUpKey>,
 }
 
 /// A ragdoll let go to fall: its root is no longer pinned, gravity acts on
@@ -139,6 +146,32 @@ pub struct Fall {
     pub still_for: f32,
     /// Set once the body has come to rest, and is asleep.
     pub at_rest: bool,
+    /// Getting back up, once asked ([`Ragdoll::get_up`]).
+    pub rise: Option<Rise>,
+    /// A velocity every body is given at release, m/s, world: the momentum
+    /// of what knocked it over ([`Ragdoll::fall_moving`]).
+    pub launch: Vec3,
+}
+
+/// A fallen body being handed back to animation. The bodies stay asleep
+/// where they lie; the screen blends from them through the get-up keys
+/// ([`Ragdoll::rise_keys`], chosen by how the body lies) to the animation,
+/// and then the bodies are set onto the animated pose and the root is
+/// pinned again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rise {
+    /// Seconds since the rise was asked for, less its delay: negative
+    /// while still lying.
+    pub elapsed: f32,
+    /// How the body lies, once read (the first frame of the rise).
+    pub lying: Option<super::getup::Lying>,
+    /// The turn about `+Y` the character should make, radians, to face the
+    /// way it rises: toward its head face down, its feet face up.
+    pub turn: f32,
+    /// Set with `turn` for whatever owns the character's heading to apply
+    /// once and clear. (The character's rotation is not the ragdoll's to
+    /// write: in the gallery a facing controller rewrites it every frame.)
+    pub turn_pending: bool,
 }
 
 /// How much pose-controller strength a falling body keeps by default: none.
@@ -169,6 +202,8 @@ impl Default for Ragdoll {
             stun_response: StunResponse::default(),
             displayed: None,
             fall: None,
+            body_offsets: BoneSet::splat(Vec3::ZERO),
+            rise_keys: Vec::new(),
         }
     }
 }
@@ -206,7 +241,36 @@ impl Ragdoll {
     /// where the controller no longer enforces the animation, and all of
     /// it while falling, when the body is the character.
     pub fn shown(&self, bone: Bone) -> f32 {
-        if self.fall.is_some() { 1.0 } else { 1.0 - self.effective_strength(bone).0 }
+        match self.fall {
+            Some(_) => 1.0,
+            None => 1.0 - self.effective_strength(bone).0,
+        }
+    }
+
+    /// Where a rise is: the segment (0 from lying to the first key, then
+    /// key to key, the last up to standing) and how far through it, eased.
+    /// `None` unless a rise has started moving.
+    pub fn rise_segment(&self) -> Option<(usize, f32)> {
+        let rise = self.fall?.rise?;
+        if rise.elapsed <= 0.0 || rise.lying.is_none() {
+            return None;
+        }
+        let mut left = rise.elapsed;
+        let durations = self.rise_keys.iter().map(|key| key.seconds).chain([super::getup::STAND_SECONDS]);
+        let count = self.rise_keys.len() + 1;
+        for (segment, seconds) in durations.enumerate() {
+            if left < seconds || segment + 1 == count {
+                let t = if seconds > 0.0 { (left / seconds).clamp(0.0, 1.0) } else { 1.0 };
+                return Some((segment, t * t * (3.0 - 2.0 * t)));
+            }
+            left -= seconds;
+        }
+        None
+    }
+
+    /// How long a rise takes once moving, seconds.
+    pub fn rise_seconds(&self) -> f32 {
+        self.rise_keys.iter().map(|key| key.seconds).sum::<f32>() + super::getup::STAND_SECONDS
     }
 
     /// How much of its own weight `bone`'s body carries against gravity,
@@ -221,8 +285,39 @@ impl Ragdoll {
     /// keeps `tone` of its strength (see [`Fall`]). A second call while
     /// already falling changes nothing.
     pub fn fall(&mut self, tone: f32, damping: f32) {
+        self.fall_moving(tone, damping, Vec3::ZERO);
+    }
+
+    /// [`Ragdoll::fall`], the whole body moving at `velocity` (m/s, world)
+    /// as it is let go: the push that toppled it. Without it a fall judged
+    /// at the start of a push began from rest, and every push, whatever
+    /// its direction, dropped the body the same way onto its back.
+    pub fn fall_moving(&mut self, tone: f32, damping: f32, velocity: Vec3) {
         if self.fall.is_none() {
-            self.fall = Some(Fall { tone, damping, root_offset: None, still_for: 0.0, at_rest: false });
+            self.fall = Some(Fall {
+                tone,
+                damping,
+                root_offset: None,
+                still_for: 0.0,
+                at_rest: false,
+                rise: None,
+                launch: velocity,
+            });
+        }
+    }
+
+    /// Hands a fallen body back to animation (see [`Rise`]): after `delay`
+    /// seconds lying, it rises through the get-up keys for how it lies.
+    /// Only once it is at rest ([`Fall::at_rest`]); returns whether the
+    /// rise began.
+    pub fn get_up(&mut self, delay: f32) -> bool {
+        match self.fall.as_mut() {
+            Some(fall) if fall.at_rest && fall.rise.is_none() => {
+                fall.rise = Some(Rise { elapsed: -delay.max(0.0), lying: None, turn: 0.0, turn_pending: false });
+                self.rise_keys.clear();
+                true
+            }
+            _ => false,
         }
     }
 

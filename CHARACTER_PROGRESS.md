@@ -42,6 +42,109 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Getting up through key poses; hits topple; sideways stumbles really caught
+
+Follow-ups to H2/H3 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).
+Distilled in
+[getting up goes through key poses](./docs/knowledge/character-animation/ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md),
+[a stumble is a capture-point step](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md)
+and
+[a fall hands the body to physics](./docs/knowledge/character-animation/ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
+
+**Get-up keys** (`getup.rs`):
+- Face up: sit → squat. This is VanSant's (1988) most common adult
+  pattern.
+- Face down: hands and knees → half-kneel.
+- Each key is sagittal angles about the rig's measured `left`, solved so
+  its contacts meet the floor together.
+- Tests (both fixtures): contacts ≤ 15 mm from the floor, nothing under
+  it; the centre of mass inside the contacts; facing checked signed; the
+  symmetric keys mirror.
+- Seen statically via `--anim-pose getup:<key>`, Front and Left, gizmos.
+- Sitting had to be reclined and propped: with the thighs level no shin
+  reached the floor, and upright the hands hung 27 cm short.
+
+**The rise:**
+- It reads face up or down from the chest body against its standing
+  target, and asks for the turn that faces it along its body; the gallery
+  applies that to its `Facing`.
+- It blends per bone in world space: local blending flung an arm out
+  while sitting up.
+- It rises within 1 mm of where it lay. Before, the gallery's own
+  locomotion position slid it 0.45 m back to where it fell from
+  (`follow_the_fallen_body`).
+
+**Hits topple.** A `RagdollHit` pushes the `Balance` by the struck body's
+mass share (thorax 21.6%): a chest blow steps from about 3 m/s and falls
+from about 5.5.
+
+**Sideways, the step catches:**
+- The planner stands the COP at the stance foot's nearest point (the
+  middle asked ~2× too long a step).
+- The leg that just stepped never steps again (re-stepping walked the
+  foot away).
+- The step is judged and planned on the whole push (a frame's delay made
+  it 17% longer).
+- `MAX_STEP` is 0.6 m.
+- The far leg crosses over when that step is shorter: 91 mm of pelvis
+  sink against 266 for the side lunge. Young adults mostly side-step
+  instead; this is the model's choice.
+- Caught on `puppet_base`: forward to 1.0 m/s, sideways to 1.0, back to
+  1.2, nothing lost to the bound. First steps asking over `MAX_CATCH`
+  (0.77 m) fall.
+
+**Falls carry the push** (`Ragdoll::fall_moving`). Judged at the push's
+start, all eight test falls had dropped identically onto the back. Now
+forward lands face down and backward face up.
+
+**Measured live:**
+- 0.8 m/s left: a crossover, then a join; planted balls ≤ 1.7 mm on both
+  rigs.
+- Rise: within 1 mm of where it lay; feet ≥ 0 mm; standing at full height.
+
+**Open:**
+- A 12.8 mm touchdown V in the pelvis after a full-reach step.
+- A leg once caught lifted high between lying and hands-and-knees.
+- Sideways `MAX_CATCH` is conservative (1.2 m/s falls, though four
+  crossovers would catch it).
+
+1036 tests pass.
+
+### Getting up: a timed blend from the fallen body back to the animation
+
+H3, the last item of the re-scoped step 4 in
+[WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in
+[getting up is a timed blend, then a re-pin](./docs/knowledge/character-animation/ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md).
+
+`Ragdoll::get_up(delay, duration)` starts once a fall is at rest; the
+gallery waits 1 s and rises over 1.5 s.
+- While rising, the bodies stay asleep. The drawn skeleton blends from them
+  to the animation: rotations per bone, and the hips from the body to the
+  animated hips.
+- It's lifted so no toe, foot, hand or head joint goes below the ground
+  (the entity's height). Without that, a ball went 17 cm under the floor.
+- The foot locks are kept free, since the entity moved during the fall.
+- The frame after the blend completes, every body is set onto its drawn
+  bone (`Ragdoll::body_offsets`, recorded at spawn), still and awake. The
+  root is pinned again, the fall's joint damping removed, and the fall
+  cleared.
+
+**Measured.**
+- Headless, `a_fallen_ragdoll_gets_up_and_is_pinned_again`: no movement
+  through the delay (< 1 mm), no drawn-hips jump over 3 cm a frame, and
+  it ends within 1 cm of where it stood. Every body is within 2 cm and 3°
+  of its bone at once and 2 s later. Without setting the bodies back it
+  fails (Spine 7 cm, 22° off).
+- Live on both rigs (`--push-schedule 3:1.5:0,11:0.6:0`): fall, rest,
+  rise, and standing at full height (hips 0.94 / 1.12 m, balls 15 / 5 mm).
+  Feet ≥ 0 mm through the rise, hips climbing 12–20 mm a frame. The push
+  at 11 s is stumbled normally.
+
+**Seen.** Mesh on, Left view, four runs: mid-rise half up with no foot
+below the floor and nothing torn, then standing with feet flat. The
+in-between pose is a blend, not a get-up (arched backward from kneeling);
+authored get-up clips are the real answer. 1031 tests pass.
+
 ### A fall: the body goes to physics when no step can catch it
 
 H2 of the re-scoped step 4 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).

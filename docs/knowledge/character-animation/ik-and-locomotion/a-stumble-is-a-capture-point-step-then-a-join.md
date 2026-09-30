@@ -1,6 +1,6 @@
 ---
 title: A stumble is a capture-point step, then a join the body's momentum carries
-description: "balance::Balance steps to the predicted capture point; the trailing foot joins once the capture point is inside the stepped foot. The swinging leg holds the pelvis; a rear foot rolls onto its toes. Sideways the clamp, not the step, catches. Feet ≤ 1 mm live. Read before changing stepping in balance.rs."
+description: "balance::Balance steps to the predicted capture point (COP at the stance foot's nearest point, ≤ 0.6 m), never re-using the leg just stepped, crossing over sideways; the trailing foot joins once the capture point is inside the stepped foot; a rear foot rolls onto its toes. Read before changing stepping in balance.rs."
 type: decision
 status: current
 tags:
@@ -18,8 +18,15 @@ code:
 sources:
   - "Winter, Biomechanics and Motor Control of Human Movement, 4th ed. (2009), §11.2.1 (Eq. 11.3); Appendix A frames 63-70 (pre-swing roll onto the toes)"
   - "tests balance::tests::a_stumble_steps_cleanly_on_the_real_rig, a_stumble_plans_the_same_steps_at_uneven_frame_times"
-  - "live BRP, character_gallery --push-schedule 3:0.6:0,8:0:0.7,13:-0.8:0, puppet_base and character.glb"
+  - "live BRP, character_gallery --push-schedule 3:0.6:0,8:0:0.7,13:-0.8:0 and 3:0:0.8, puppet_base and character.glb"
+  - "Maki & McIlroy (1997), The role of limb movements in maintaining upright stance: the 'change-in-support' strategy, Phys Ther 77(5)"
+  - "Postural reactions to external mediolateral perturbations: a review, Applied Sciences 13(3):1696 (2023), https://www.mdpi.com/2076-3417/13/3/1696 — loaded side step, unloaded crossover, unloaded medial step; young adults favour the loaded side step"
+  - "Untangling biomechanical differences in perturbation-induced stepping strategies for lateral balance stability in older individuals, https://pmc.ncbi.nlm.nih.gov/articles/PMC7778461/"
+  - "probe balance::tests::probe_catch_table (ignored)"
 aliases:
+  - crossover step
+  - CROSSOVER_AHEAD
+  - MAX_STEP
   - stumble step
   - recovery step
   - join step
@@ -52,10 +59,32 @@ and physics takes over only for a fall.
 - **Landing: the predicted capture point.** During the swing the COP
   stands on the other foot, and the capture point runs away from it as
   `e^{t/√K}`. So the foot goes to `p + (cp − p)·e^{T/√K}`, with
-  `STEP_SECONDS` = 0.3. Travel is clamped to `MAX_STEP` = 0.4 m. The
-  sideways component is kept only for a sideways push. The stepping leg
-  is on the side the capture point left through; straight ahead or back,
-  it is the unloaded leg.
+  `STEP_SECONDS` = 0.3. `p` is the stance foot's point **nearest the
+  capture point**, where `step`'s law pins the COP, not its middle; the
+  middle asked for steps ~2× too long (0.48 m where 0.26 m caught a
+  0.5 m/s push). Travel is clamped to `MAX_STEP` = 0.6 m, about 0.65 of
+  `puppet_base`'s leg length. The sideways component is kept only for a
+  sideways push.
+- **Judged and planned on the whole push**, the part not yet delivered
+  too. Judged on what had landed, a frame's delay (50 ms live) put a
+  0.7 m/s side push's step 17% further out, past `MAX_STEP`.
+- **Which leg.** Straight ahead or back, the unloaded one. **Never the
+  foot that just stepped**: stepping it again lifts it before it takes
+  the weight, and a sideways push walked the stepping foot out 0.4 m at a
+  time with the COM running after it. **Sideways, whichever leg needs the
+  shorter step**, and in this model that is usually the far leg
+  **crossing over** in front. The near leg's side step stands on the far
+  foot, whose pressure drives the body on. The crossover stands on the near
+  foot, whose pressure brakes it. A 0.8 m/s side-step lunge sank the
+  pelvis 266 mm; the crossover sinks it 91 mm. People use both: the
+  literature names the loaded side step, the unloaded crossover and the
+  unloaded medial step (Maki & McIlroy's change-in-support strategy).
+  **Young adults mostly take the loaded side step**, which starts faster;
+  older adults cross over more. So the choice here is the model's
+  dynamics, not the typical young adult's. A crossover lands `CROSSOVER_AHEAD` (0.12 m)
+  forward and bows out that far mid-swing, so the legs pass rather than
+  through each other. The join uncrosses them, because the joining foot
+  goes to the stood width beside the stepped one.
 - **The join starts when the capture point is inside the stepped foot**,
   not when the COM is over it. Both feet are down first (`transfer`), so
   the COM moves toward the stepped foot. Waiting until it was over that
@@ -104,43 +133,46 @@ and physics takes over only for a fall.
 
 ## Consequences
 
-Measured headless on `puppet_base` (`a_stumble_steps_cleanly_on_the_real_rig`):
-
-| push | steps | pelvis sank | note |
-|---|---|---|---|
-| 0.6 m/s forward | 0.40 m, join | 46 mm | 69 mm without the heel rise; rear heel rises 9 mm |
-| 0.7 m/s left | 0.40 m (0.39 sideways), join | 115 mm | feet 0.63 m apart; leg length alone asks ~10 cm |
-| 0.8 m/s back | 0.40 m, join | 44 mm | 0.6 m/s back needs no step: the real soles reach 0.18 m behind the COM, 0.11 m ahead |
-
-Live on both rigs, same pushes: every planted ball stayed within
-≤ 1.0 mm (`character.glb` catches the 0.6 m/s forward push without a
-step). No vertical pop outside the swing arc, and the pelvis sank at most
-123 mm (`puppet_base`, sideways). The planned steps are identical under
-frame times cycling 5–50 ms.
-
-**The sideways row is not a real catch** (found 2026-09-30, building H2).
-The balance's 8° validity clamp holds the COM at its bound with its
-velocity zeroed, and sideways it fires during the swing, because stepping
-off the far foot starts the COM at that bound. So the side step is posed,
-but the clamp, not the step, stops the body. Forward and back the steps
-catch without it up to 0.8 m/s and 1.0 m/s. A push asking for a step over
-`MAX_CATCH` now falls: see
+Every catch is the step's, not the validity bound's: nothing lost to the
+bound (`Balance::lost`), settled within 6 s. Caught on `puppet_base`:
+forward to 1.0 m/s, sideways to 1.0 (a crossover then a join), back to
+1.2 (`a_push_past_a_catchable_step_falls`). Harder pushes fall; see
 [a fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
+
+Near-full-reach steps, headless (`a_stumble_steps_cleanly_on_the_real_rig`):
+
+| push | pelvis sank | note |
+|---|---|---|
+| 1.0 m/s forward | 52 mm | rear heel rises 84 mm onto the toes |
+| 0.8 m/s left | 91 mm | crossover; the side-step lunge was 266 mm |
+| 1.2 m/s back | 79 mm | rear heel rises 48 mm |
+
+Live, 0.8 m/s left on both rigs: the right foot crosses over (0.52 m),
+the left joins (0.51 m), planted balls slide ≤ 1.7 mm. The planned steps
+are identical under frame times cycling 5–50 ms.
+
+**A hard landing remains.** At a long step's touchdown the pelvis height
+follows the leg's reach through a V: its per-frame move changes by up to
+12.8 mm (≈ 5 g at 60 Hz). The pops fixed earlier were 60–132 mm; this is a
+landing, but a real one decelerates over 50–100 ms of knee flexion.
+
+Until 2026-09-30 the sideways catch was the clamp's: the 8° bound, from
+the stance foot alone, held the COM with its velocity zeroed, and every
+side step was posed over a body the clamp had stopped.
 
 ## Revisit when
 
 - Pushes while walking: the balance only runs on the standing side of the
   blend.
-- Sideways catches should be real: a crossover or loaded side step, or a
-  validity bound measured with the landing foot.
-- A sideways lunge looks too deep: a crossover step, or the trailing foot
-  rolling onto its inner edge, are the human alternatives. The leg-length
-  floor of ~10 cm stays either way.
+- The touchdown V: plan the pelvis height across the swing (smooth descent
+  to the landing's need) instead of following the reach frame by frame.
+- Young-adult sideways stepping: a loaded side step would need the
+  side-step lunge made shallow (a narrower join, or two shorter steps).
 
 ## Related
 
 - [Push recovery is Winter's pendulum](./push-recovery-is-winters-pendulum.md) — prerequisite: the sway, COP law and support this steps from.
-- [A fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md) — deeper: what happens when no step catches the push, and why the sideways catch is the clamp's.
+- [A fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md) — deeper: what happens when no step catches the push.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — deeper: why the gallery passes `planted` to the foot IK.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — applies: the join's travelled distance becomes root motion the locks must be given.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — context: why a wide stance leaves the legs no reach to spare.

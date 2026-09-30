@@ -247,9 +247,20 @@ a stable PD, research-grade (see the 4b finding). Instead:
   trigger a fall yet. Sideways the balance can't tell a catch from a
   fall (the clamp catches). See
   [the note](./docs/knowledge/character-animation/ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
-- [ ] **H3 After a fall.** Detect that it has settled, then hand back to
-  animation. A timed blend to standing is the stand-in until there is
-  authored get-up motion.
+- [x] **H3 After a fall, done 2026-09-30.** Settled is `Fall::at_rest`.
+  `Ragdoll::get_up(delay)` reads face up or down, turns the character to
+  rise along its body, and blends through solved key poses (`getup.rs`):
+  sit → squat (VanSant 1988) or hands and knees → half-kneel. It then sets
+  every body on its bone and pins the root again. See
+  [the note](./docs/knowledge/character-animation/ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md).
+- [x] **H2 follow-ups, done 2026-09-30.**
+  - A hit is a push on the balance (by the struck body's mass share), so a
+    strong enough blow steps or falls.
+  - Sideways stumbles are real catches: the stance foot's pressure is at
+    its nearest point, the leg that just stepped never steps again,
+    `MAX_STEP` is 0.6 m, and the far leg crosses over when that is the
+    shorter step.
+  - A fall carries the push's velocity.
 
 Already built and kept: hits with a stun-and-recover strength dial, the
 pinned ragdoll following the animation, sole feet (4a).

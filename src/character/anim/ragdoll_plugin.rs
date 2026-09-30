@@ -170,7 +170,14 @@ impl RagdollHit {
 fn add_hit_systems(app: &mut App) {
     app.add_message::<RagdollHit>().add_systems(
         Update,
-        (apply_ragdoll_hits, release_falling_roots, rest_fallen_ragdolls, recover_from_hits, support_own_weight)
+        (
+            apply_ragdoll_hits,
+            release_falling_roots,
+            rest_fallen_ragdolls,
+            rise_fallen_ragdolls,
+            recover_from_hits,
+            support_own_weight,
+        )
             .chain()
             .in_set(RagdollSet::Hit),
     );
@@ -232,6 +239,109 @@ fn rest_fallen_ragdolls(
     }
 }
 
+/// Advances every rise ([`Ragdoll::get_up`], H3), and ends it.
+///
+/// While rising the foot locks are kept free: the character entity followed
+/// the body across the floor without them knowing, and locked they would
+/// pull the standing feet back to where the fall began.
+///
+/// A rise ends the frame after its blend reached 1, so the skeleton has been
+/// drawn in the animated pose: each body is set onto its drawn bone (at its
+/// [`Ragdoll::body_offsets`]), still and awake; the root is pinned again;
+/// the fall's joint damping and sleep bounds go; the ragdoll is no longer
+/// falling.
+#[allow(clippy::too_many_arguments)]
+fn rise_fallen_ragdolls(
+    mut commands: Commands,
+    mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton, Option<&mut AnimFootIk>)>,
+    joints: Query<(Entity, &SphericalJoint)>,
+    bodies: Query<(&Position, &Rotation, &JointTarget)>,
+    transforms: Query<&Transform>,
+    live: TransformHelper,
+    time: Res<Time>,
+) {
+    for (mut ragdoll, skeleton, foot_ik) in &mut characters {
+        let Some(super::ragdoll::Fall { rise: Some(rise), .. }) = ragdoll.fall else { continue };
+        if let Some(mut foot_ik) = foot_ik {
+            foot_ik.left = Default::default();
+            foot_ik.right = Default::default();
+        }
+        // First frame: how it lies, which way it will face, and the keys.
+        if rise.lying.is_none() {
+            let (Some(Ok((hips_at, _, _))), Some(Ok((head_at, _, _))), Some(Ok((_, chest, chest_target)))) = (
+                ragdoll.bodies[Bone::Hips].map(|b| bodies.get(b)),
+                ragdoll.bodies[Bone::Head].map(|b| bodies.get(b)),
+                ragdoll.bodies[Bone::Spine2].map(|b| bodies.get(b)),
+            ) else {
+                continue;
+            };
+            let world = rig_geometry(skeleton, &transforms, &live);
+            let forward = world.forward();
+            // The chest's forward now: the standing pose's, carried by the
+            // turn from its target to where its body lies.
+            let chest_forward = chest.0 * chest_target.target.inverse() * forward;
+            let lying = if chest_forward.y > 0.0 { super::getup::Lying::FaceUp } else { super::getup::Lying::FaceDown };
+            // Face down it rises toward its head; face up, sitting up, toward
+            // its feet.
+            let spine = Vec3::new(head_at.0.x - hips_at.0.x, 0.0, head_at.0.z - hips_at.0.z).normalize_or_zero();
+            let heading = if lying == super::getup::Lying::FaceUp { -spine } else { spine };
+            let flat = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+            let turn = if heading == Vec3::ZERO || flat == Vec3::ZERO {
+                0.0
+            } else {
+                flat.cross(heading).y.atan2(flat.dot(heading))
+            };
+            let rig = super::plugin::live_rig_geometry(skeleton, |bone| {
+                transforms.get(skeleton.entity(bone)).ok().map(|transform| transform.translation)
+            });
+            ragdoll.rise_keys = super::getup::keys(lying, &rig);
+            if let Some(fall) = ragdoll.fall.as_mut()
+                && let Some(rise) = fall.rise.as_mut()
+            {
+                rise.lying = Some(lying);
+                rise.turn = turn;
+                rise.turn_pending = true;
+            }
+        }
+        if rise.elapsed < ragdoll.rise_seconds() + time.delta_secs() {
+            if let Some(fall) = ragdoll.fall.as_mut()
+                && let Some(rise) = fall.rise.as_mut()
+            {
+                rise.elapsed += time.delta_secs();
+            }
+            continue;
+        }
+        let ours: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
+        for &bone in Bone::ALL.iter() {
+            let Some(body) = ragdoll.bodies[bone] else { continue };
+            let Ok(drawn) = live.compute_global_transform(skeleton.entity(bone)) else { continue };
+            let rotation = drawn.rotation();
+            let position = drawn.translation() + rotation * ragdoll.body_offsets[bone];
+            commands.entity(body).insert((
+                Position(position),
+                Rotation(rotation),
+                Transform::from_translation(position).with_rotation(rotation),
+                LinearVelocity::ZERO,
+                AngularVelocity::ZERO,
+                SleepThreshold::default(),
+            ));
+            if bone == Bone::Hips {
+                commands.entity(body).insert((
+                    RigidBody::Kinematic,
+                    KinematicRoot { offset: ragdoll.body_offsets[bone], position, rotation },
+                ));
+            }
+            commands.queue(WakeBody(body));
+        }
+        for (joint, spherical) in &joints {
+            if ours.contains(&spherical.body2) {
+                commands.entity(joint).remove::<JointDamping>();
+            }
+        }
+        ragdoll.fall = None;
+    }
+}
+
 /// Lets go of the root of every ragdoll set falling ([`Ragdoll::fall`]):
 /// a pinned (kinematic) root becomes dynamic, keeping the velocity it was
 /// following the hips with, so the body falls with the momentum the
@@ -245,6 +355,7 @@ fn release_falling_roots(
     mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton)>,
     roots: Query<&KinematicRoot>,
     bodies: Query<(&Position, &Rotation)>,
+    mut velocities: Query<&mut LinearVelocity>,
     joints: Query<(Entity, &SphericalJoint)>,
     live: TransformHelper,
 ) {
@@ -256,6 +367,11 @@ fn release_falling_roots(
         let ours: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
         for &body in &ours {
             commands.entity(body).insert(FALLEN_SLEEP);
+            if fall.launch != Vec3::ZERO
+                && let Ok(mut velocity) = velocities.get_mut(body)
+            {
+                velocity.0 += fall.launch;
+            }
         }
         if fall.damping > 0.0 {
             for (joint, spherical) in &joints {
@@ -327,13 +443,15 @@ fn support_own_weight(
 /// step, so it lands exactly once however many substeps follow.
 fn apply_ragdoll_hits(
     mut hits: MessageReader<RagdollHit>,
-    mut characters: Query<&mut Ragdoll>,
+    mut characters: Query<(&mut Ragdoll, Option<&mut super::balance::Balance>, Option<&HumanoidSkeleton>)>,
     // `ComputedMass` alongside `Forces` is legal: `Forces` only reads it.
     // (Its own mass accessor is on a private avian trait.)
     mut bodies: Query<(&RigidBody, &ComputedMass, Forces)>,
+    transforms: Query<&Transform>,
+    live: TransformHelper,
 ) {
     for hit in hits.read() {
-        let Ok(mut ragdoll) = characters.get_mut(hit.character) else { continue };
+        let Ok((mut ragdoll, balance, skeleton)) = characters.get_mut(hit.character) else { continue };
 
         // The bone that actually receives the blow. The stun centres here
         // too rather than on `hit.bone`, so the joint that visibly moves is
@@ -349,6 +467,22 @@ fn apply_ragdoll_hits(
         ragdoll.stun(struck, hit.stun);
 
         let Some(body) = ragdoll.bodies[struck] else { continue };
+
+        // The blow moves the whole body too: the struck body's momentum
+        // change, spread over all of it, is a push on the standing balance
+        // (`Balance::push`), which absorbs it, steps, or falls. Without
+        // this the pinned root held the character up through any blow.
+        if let (Some(mut balance), Some(skeleton)) = (balance, skeleton)
+            && !ragdoll.is_falling()
+        {
+            let mass = |body: Entity| bodies.get(body).map_or(0.0, |(_, mass, _)| mass.value());
+            let total: f32 = ragdoll.bodies.iter().filter_map(|(_, body)| *body).map(mass).sum();
+            if total > 0.0 {
+                let moved = hit.velocity * (mass(body) / total);
+                let rig = rig_geometry(skeleton, &transforms, &live);
+                balance.push(Vec2::new(moved.dot(rig.forward()), moved.dot(rig.left())));
+            }
+        }
         let Ok((rigid_body, mass, mut forces)) = bodies.get_mut(body) else { continue };
 
         // Only a dynamic body can be shoved. This is not a formality: a
@@ -644,6 +778,35 @@ fn read_back_simulated_pose(
             displayed.rotations[bone] = animated_local.slerp(simulated_local, show_simulation).normalize();
         }
 
+        // Rising: from the pose it lies in, through the get-up keys, to the
+        // animation. The root's first leg, off the lying body, is
+        // `write_simulated_pose`'s.
+        //
+        // Blended per bone in the WORLD, then turned back into local
+        // rotations: each segment takes the shortest way from where it is to
+        // where the next key has it. Blended locally, a limb rode its
+        // parents' swing as well as its own, and sitting up flung an arm out
+        // sideways, palm up, on its way to the floor.
+        if let Some((segment, t)) = ragdoll.rise_segment() {
+            let keys = &ragdoll.rise_keys;
+            let lying = displayed;
+            let from = if segment == 0 { lying } else { keys[segment - 1].pose };
+            let to = keys.get(segment).map_or(animated, |key| key.pose);
+            let (a, b) = (super::rig::accumulate_world_rotations(&from, &rig), super::rig::accumulate_world_rotations(&to, &rig));
+            let mut world = BoneSet::splat(Quat::IDENTITY);
+            for &bone in Bone::ALL.iter() {
+                world[bone] = a[bone].slerp(neighborhood(a[bone], b[bone]), t).normalize();
+                let parent_world = bone.parent().map_or(rig.root_rotation, |parent| world[parent]);
+                let local = delta_from_world(bone, parent_world, world[bone], &rig, &accumulated_bind);
+                displayed.rotations[bone] = neighborhood(from.rotations[bone], local).normalize();
+            }
+            displayed.root_translation = if segment == 0 {
+                to.root_translation
+            } else {
+                from.root_translation.lerp(to.root_translation, t)
+            };
+        }
+
         ragdoll.displayed = Some(displayed);
     }
 }
@@ -677,22 +840,68 @@ fn write_simulated_pose(
         let Some(displayed) = &ragdoll.displayed else { continue };
         super::retarget::write_pose_to_skeleton(skeleton, displayed, &mut transforms.p0());
 
-        let Some(offset) = ragdoll.fall.and_then(|fall| fall.root_offset) else { continue };
+        let Some(fall) = ragdoll.fall else { continue };
+        let Some(offset) = fall.root_offset else { continue };
         let Some(Ok((position, rotation))) = ragdoll.bodies[Bone::Hips].map(|body| bodies.get(body)) else { continue };
-        let hips_world = position.0 - rotation.0 * offset;
-        if let Ok(mut entity) = transforms.p0().get_mut(character) {
-            entity.translation.x = hips_world.x;
-            entity.translation.z = hips_world.z;
+        let lying = position.0 - rotation.0 * offset;
+        // Rising, the character stays where it is and the hips blend from
+        // the body up to where the animation just put them.
+        // Rising, the character stays where it is, and the hips leave the
+        // body for the first key's over the first segment; after that the
+        // keys' own root (the written pose) places them.
+        let rising = ragdoll.rise_segment();
+        if rising.is_none()
+            && let Ok(mut entity) = transforms.p0().get_mut(character)
+        {
+            entity.translation.x = lying.x;
+            entity.translation.z = lying.z;
         }
         let hips = skeleton.entity(Bone::Hips);
         let Ok(parent) = parents.get(hips).map(ChildOf::parent) else { continue };
         let Ok(parent_world) = transforms.p1().compute_global_transform(parent) else { continue };
+        let Ok(written) = transforms.p0().get(hips).map(|transform| parent_world.affine().transform_point3(transform.translation)) else { continue };
+        let hips_world = match rising {
+            Some((0, t)) => lying.lerp(written, t),
+            Some(_) => written,
+            None => lying,
+        };
         let local = parent_world.affine().inverse().transform_point3(hips_world);
         if let Ok(mut transform) = transforms.p0().get_mut(hips) {
             transform.translation = local;
         }
+        // Blending the lying pose's rotations up to standing swings the
+        // feet through the floor (a ball 17 cm under it, live): rising, the
+        // whole skeleton is lifted so no end joint goes below the ground,
+        // the character entity's height.
+        if rising.is_some()
+            && let Ok(ground) = transforms.p0().get(character).map(|entity| entity.translation.y)
+        {
+            let lowest = RISE_CLEARANCE_BONES
+                .iter()
+                .filter_map(|&bone| transforms.p1().compute_global_transform(skeleton.entity(bone)).ok())
+                .map(|joint| joint.translation().y)
+                .fold(f32::MAX, f32::min);
+            let lift = ground - lowest;
+            if lift > 0.0 && lift.is_finite() {
+                let local = parent_world.affine().inverse().transform_point3(hips_world + Vec3::Y * lift);
+                if let Ok(mut transform) = transforms.p0().get_mut(hips) {
+                    transform.translation = local;
+                }
+            }
+        }
     }
 }
+
+/// The joints a rise keeps above the ground: the body's ends.
+const RISE_CLEARANCE_BONES: [Bone; 7] = [
+    Bone::LeftToeBase,
+    Bone::RightToeBase,
+    Bone::LeftFoot,
+    Bone::RightFoot,
+    Bone::LeftHand,
+    Bone::RightHand,
+    Bone::Head,
+];
 
 /// The world rotation each joint's body is driven toward under `pose`:
 /// exactly where the renderer draws that bone.
@@ -1107,6 +1316,7 @@ pub fn spawn_ragdoll(
         }
 
         ragdoll.bodies[bone] = Some(body);
+        ragdoll.body_offsets[bone] = joint.rotation().inverse() * (body_position - joint.translation());
     }
 
     // Pass two: connect each body to its nearest simulated ancestor. Not
@@ -2909,6 +3119,132 @@ mod tests {
             let error = rotation_of(&app, body).angle_between(drawn).to_degrees();
             assert!(error < 1.0, "{} is drawn {error:.1}° off its body", bone.name());
         }
+    }
+
+    #[test]
+    fn a_blow_pushes_the_standing_balance_by_its_share_of_the_body() {
+        // A hit on the chest moves the whole body by the chest's share of
+        // the momentum, in the rig's own forward/left: that push is what
+        // lets the balance absorb it, step, or fall. A blow straight up
+        // pushes nothing.
+        let mut app = physics_app();
+        let (character, ragdoll, _root, _) = spawn_real_rig_ragdoll(&mut app);
+        app.world_mut().entity_mut(character).insert(crate::character::anim::balance::Balance::default());
+        app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+        step(&mut app, 3);
+        let mass = |app: &App, body: Entity| app.world().get::<ComputedMass>(body).unwrap().value();
+        let total: f32 = ragdoll.bodies.iter().filter_map(|(_, body)| *body).map(|body| mass(&app, body)).sum();
+        let share = mass(&app, ragdoll.bodies[Bone::Spine2].unwrap()) / total;
+        let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+        let forward = {
+            let mut state = bevy::ecs::system::SystemState::<(Query<&Transform>, TransformHelper)>::new(app.world_mut());
+            let (transforms, live) = state.get(app.world()).unwrap();
+            rig_geometry(&skeleton, &transforms, &live).forward()
+        };
+        let pushed = |app: &App| {
+            let balance = app.world().get::<crate::character::anim::balance::Balance>(character).unwrap();
+            balance.velocity + balance.pending_push()
+        };
+
+        app.world_mut().write_message(RagdollHit::new(character, Bone::Spine2, Vec3::Y * 5.0));
+        step(&mut app, 1);
+        assert!(pushed(&app).length() < 1.0e-5, "a blow straight up pushed {}", pushed(&app));
+
+        app.world_mut().write_message(RagdollHit::new(character, Bone::Spine2, forward * 5.0));
+        step(&mut app, 1);
+        let push = pushed(&app);
+        assert!(
+            (push.x - 5.0 * share).abs() < 1.0e-3 && push.y.abs() < 1.0e-3,
+            "a 5 m/s blow forward on the chest ({:.0}% of the body) pushed {push}, not ({:.3}, 0)",
+            share * 100.0,
+            5.0 * share
+        );
+    }
+
+    #[test]
+    fn a_fallen_ragdoll_gets_up_and_is_pinned_again() {
+        // H3: fallen and at rest, `get_up` lies still through its delay,
+        // blends the skeleton smoothly up to the animation, then sets every
+        // body back onto its bone and pins the root; the ragdoll then holds.
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+        app.add_systems(Update, publish_joint_targets);
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+        let (character, ragdoll, _root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+        // The character stands on its ground at its entity's height (the
+        // rise keeps the body's ends above it).
+        app.world_mut()
+            .entity_mut(character)
+            .insert((AnimPose::settled_on(&crate::character::anim::poses::rest()), Transform::default()));
+        step(&mut app, 10);
+        let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+        let drawn_hips = |app: &App| app.world().get::<GlobalTransform>(skeleton.entity(Bone::Hips)).unwrap().translation();
+        let stood = drawn_hips(&app);
+
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+        let mut frames = 0;
+        while !app.world().get::<Ragdoll>(character).unwrap().fall.unwrap().at_rest {
+            app.update();
+            frames += 1;
+            assert!(frames < (8.0 / TIMESTEP) as usize, "never came to rest");
+        }
+        assert!(app.world_mut().get_mut::<Ragdoll>(character).unwrap().get_up(0.5), "get_up refused a body at rest");
+        let lying = drawn_hips(&app);
+        assert!(stood.y - lying.y > 0.4, "it should have been lying: hips {:.2} m, stood {:.2}", lying.y, stood.y);
+
+        // The delay: still lying.
+        step(&mut app, (0.45 / TIMESTEP) as usize);
+        assert!(drawn_hips(&app).distance(lying) < 1.0e-3, "moved {:.1} mm during the delay", drawn_hips(&app).distance(lying) * 1e3);
+        // How it lies has been read, and its keys chosen.
+        let stored = app.world().get::<Ragdoll>(character).unwrap().clone();
+        let rise = stored.fall.unwrap().rise.unwrap();
+        assert!(rise.lying.is_some() && stored.rise_keys.len() == 2, "no get-up keys chosen: {rise:?}");
+        // The rise: through its keys, smoothly, no end joint under the floor.
+        let mut previous = drawn_hips(&app);
+        let mut frames = 0;
+        while app.world().get::<Ragdoll>(character).unwrap().is_falling() {
+            app.update();
+            let now = drawn_hips(&app);
+            assert!(now.distance(previous) < 0.03, "the hips jumped {:.1} mm in a frame", now.distance(previous) * 1e3);
+            for bone in [Bone::LeftToeBase, Bone::RightToeBase, Bone::LeftHand, Bone::RightHand, Bone::Head] {
+                let y = app.world().get::<GlobalTransform>(skeleton.entity(bone)).unwrap().translation().y;
+                assert!(y > -0.01, "{} went {:.0} mm under the floor while rising", bone.name(), -y * 1e3);
+            }
+            previous = now;
+            frames += 1;
+            assert!(frames < ((stored.rise_seconds() + 0.5) / TIMESTEP) as usize, "the rise never ended");
+        }
+        assert!(
+            frames as f32 * TIMESTEP > stored.rise_seconds() - 0.1,
+            "the rise took {:.2} s, its keys {:.2} s",
+            frames as f32 * TIMESTEP,
+            stored.rise_seconds()
+        );
+        assert!(drawn_hips(&app).distance(stood) < 0.01, "stood up {:.1} cm from where it stood", drawn_hips(&app).distance(stood) * 100.0);
+
+        // Pinned again, every body on its bone, and it holds.
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        step(&mut app, 2);
+        assert!(app.world().get::<KinematicRoot>(hips).is_some(), "the root is not pinned again");
+        for seconds in [0.0, 2.0] {
+            step(&mut app, (seconds / TIMESTEP) as usize);
+            for &bone in Bone::ALL.iter() {
+                let Some(body) = ragdoll.bodies[bone] else { continue };
+                let drawn = app.world().get::<GlobalTransform>(skeleton.entity(bone)).unwrap();
+                let wanted = drawn.translation() + drawn.rotation() * ragdoll.body_offsets[bone];
+                let at = app.world().get::<Position>(body).unwrap().0;
+                let turned = rotation_of(&app, body).angle_between(drawn.rotation()).to_degrees();
+                assert!(
+                    at.distance(wanted) < 0.02 && turned < 3.0,
+                    "{}: {:.1} cm and {turned:.1}° off its bone {seconds} s after getting up",
+                    bone.name(),
+                    at.distance(wanted) * 100.0
+                );
+            }
+        }
+        assert!(drawn_hips(&app).distance(stood) < 0.01, "the standing ragdoll drifted {:.1} cm", drawn_hips(&app).distance(stood) * 100.0);
     }
 
     #[test]

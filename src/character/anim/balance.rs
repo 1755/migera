@@ -71,20 +71,31 @@ pub const STEP_SECONDS: f32 = 0.3;
 /// unhurried step, once the body is caught.
 pub const JOIN_SECONDS: f32 = 0.45;
 
-/// The longest recovery step, metres of foot travel: a long walking step on
-/// `puppet_base`'s legs is ~0.6 m, but the step starts from standing.
-pub const MAX_STEP: f32 = 0.4;
+/// The longest recovery step, metres of foot travel: ~0.65 of
+/// `puppet_base`'s leg length. A choice; 0.4 m clamped side steps short of
+/// where a 0.6 m/s push needed them (0.54 m), and the body shuffled
+/// sideways 3 cm short at every step until it ran away.
+pub const MAX_STEP: f32 = 0.6;
 
-/// The longest step a push may ask for and still be caught, metres: past
-/// it the body falls ([`Balance::falls`]).
+/// The longest first recovery step a push may ask for and still be caught,
+/// metres: past it the body falls ([`Balance::falls`]).
 ///
-/// The model's own verdict, measured on `puppet_base`
-/// (`a_push_past_a_catchable_step_falls`). Forward and back, a push is
-/// caught while its planned step (from the whole push) asks ≤ 0.73 m, and
-/// runs away past 0.87 m once the validity clamp is lifted. Sideways the
-/// pendulum cannot tell: stepping off the far foot, the COM starts at the
-/// 8° bound, and every side step there is caught by the clamp.
-pub const MAX_CATCH: f32 = 0.8;
+/// The model's own verdict, measured on `puppet_base` with nothing lost to
+/// the validity bound (`a_push_past_a_catchable_step_falls`): every push
+/// whose first step asked ≤ 0.73 m was caught (forward 1.0 m/s, sideways
+/// 0.9 in two steps, back 1.2), every one asking ≥ 0.81 m ran away
+/// (sideways 1.0, forward 1.2).
+pub const MAX_CATCH: f32 = 0.77;
+
+/// How much outward velocity the validity bound may take before the body
+/// counts as falling anyway, m/s ([`Balance::lost`]): a catch that failed
+/// after it began.
+pub const LOST_FALLS: f32 = 0.1;
+
+/// How far ahead a crossover step lands, and bows out at mid-swing, metres:
+/// the swinging leg passes in front of the stance leg. A choice, about a
+/// foot's breadth and a half.
+pub const CROSSOVER_AHEAD: f32 = 0.12;
 
 /// How high a stepping foot is lifted at mid-swing, metres.
 pub const STEP_LIFT: f32 = 0.05;
@@ -209,6 +220,9 @@ pub struct Swing {
     pub duration: f32,
     /// Whether this is the trailing foot joining the stepped one.
     pub joining: bool,
+    /// How far forward the foot bows out at mid-swing, metres: a
+    /// crossover goes round the front of the stance leg.
+    pub ahead: f32,
 }
 
 impl Swing {
@@ -221,6 +235,7 @@ impl Swing {
     pub fn at(&self) -> Vec2 {
         let t = self.progress();
         self.from + (self.to - self.from) * (t * t * (3.0 - 2.0 * t))
+            + Vec2::X * self.ahead * (std::f32::consts::PI * t).sin()
     }
 
     /// How high the foot is lifted now, metres: an arc peaking at
@@ -268,6 +283,11 @@ pub struct Balance {
     /// stumbles; one with a ragdoll hands it over (H2). Cleared by
     /// [`Balance::default`].
     pub falls: bool,
+    /// The fastest outward velocity the model's validity bound has taken
+    /// away, m/s: momentum no foot absorbed and no step caught.
+    pub lost: f32,
+    /// The leg whose recovery step landed last, until the feet join.
+    stepped_last: Option<usize>,
     /// The last swing to land, and the seconds since, for
     /// [`transition::LAND_HOLD`](super::transition::LAND_HOLD): see
     /// [`Balance::landing_spot`].
@@ -284,6 +304,11 @@ impl Balance {
     pub fn push(&mut self, velocity: Vec2) {
         self.shove += velocity;
         self.shove_rate = self.shove / PUSH_SECONDS;
+    }
+
+    /// The part of the pushes given that has not been delivered yet, m/s.
+    pub fn pending_push(&self) -> Vec2 {
+        self.shove
     }
 
     /// Whether the body is at rest over its feet as they stood, within
@@ -361,6 +386,14 @@ impl Balance {
         let damping = 2.0 * RECOVERY_DAMPING * RECOVERY_FREQUENCY * k;
         let area = support.under(self.bearing());
         let rest = self.rest(support);
+        // What a lean is measured from: the feet down, and where a recovery
+        // step is landing. From the stance foot alone, stepping off the far
+        // foot of a sideways push started the COM at the bound, and every
+        // side step was caught by the clamp instead.
+        let reach = match self.swing {
+            Some(swing) if !swing.joining => area.union(&support.feet[swing.leg].shifted(swing.to)),
+            _ => area,
+        };
         let h = dt / SUBSTEPS as f32;
         for _ in 0..SUBSTEPS {
             // The push under way, a step's worth of it, never past what is left.
@@ -383,17 +416,25 @@ impl Balance {
             // bearing weight — held at its bound. Measured from the rest
             // point instead, it jumped when the rest moved onto a stepped
             // foot, and threw the COM 6 cm in a frame.
-            let inside = self.offset.clamp(area.min, area.max);
+            let inside = self.offset.clamp(reach.min, reach.max);
             for axis in 0..2 {
                 let lean = self.offset[axis] - inside[axis];
                 if lean.abs() > support.valid {
                     self.offset[axis] = inside[axis] + lean.clamp(-support.valid, support.valid);
+                    if self.velocity[axis] * lean > 0.0 {
+                        self.lost = self.lost.max(self.velocity[axis].abs());
+                    }
                     self.velocity[axis] = 0.0;
                 }
             }
         }
-        let capture = self.offset + self.velocity * k.sqrt();
+        // Judged on the whole push, the part still to come too, as the
+        // step is planned. On what had landed so far, a frame's delay (50 ms
+        // live) put a 0.7 m/s side push's step 17% further out, past
+        // `MAX_STEP`, and the body shuffled away.
+        let capture = self.offset + (self.velocity + self.shove) * k.sqrt();
         self.needs_step = !area.contains(capture);
+        self.falls |= self.lost > LOST_FALLS;
 
         // A swing under way lands when it is done.
         if let Some(mut swing) = self.swing {
@@ -403,6 +444,7 @@ impl Balance {
                 self.feet[swing.leg] = swing.to;
                 self.swing = None;
                 self.landed = Some((swing, 0.0));
+                self.stepped_last = (!swing.joining).then_some(swing.leg);
                 if swing.joining && self.feet[0].distance(self.feet[1]) < 1.0e-4 {
                     self.transfer = None;
                     self.travelled = Some(self.feet[0]);
@@ -429,10 +471,10 @@ impl Balance {
         };
         if self.needs_step {
             self.transfer = None;
-            // Planned for the whole push, the part still to come too:
-            // planned mid-push, a 1.2 m/s shove asked no longer a step
-            // than 0.8 m/s.
-            self.plan_recovery_step(support, k, capture + self.shove * k.sqrt());
+            // Planned for the whole push, the part still to come too (as
+            // `capture` is): planned mid-push, a 1.2 m/s shove asked no
+            // longer a step than 0.8 m/s.
+            self.plan_recovery_step(support, k, capture);
         } else if self.feet[0] != self.feet[1] && (caught || self.transfer.is_some() && carried) {
             if self.transfer.is_none() {
                 // Caught between the feet: the weight moves onto the
@@ -447,6 +489,7 @@ impl Balance {
                     elapsed: 0.0,
                     duration: JOIN_SECONDS,
                     joining: true,
+                    ahead: 0.0,
                 });
             }
         }
@@ -458,27 +501,60 @@ impl Balance {
         let both = support.under(self.feet.map(Some));
         // The foot on the side the capture point left through; straight
         // ahead or back, the one not carrying the weight.
-        let leg = if capture.y > both.max.y {
+        let side = if capture.y > both.max.y {
             0
         } else if capture.y < both.min.y || self.offset.y >= both.centre().y {
             1
         } else {
             0
         };
-        let stance = 1 - leg;
-        // Through the swing the COP stands on the other foot, and the
-        // capture point runs away from it: `cp − p` grows as `e^{t/√K}`.
-        let pressure = support.feet[stance].shifted(self.feet[stance]).centre();
-        let landing = pressure + (capture - pressure) * (STEP_SECONDS / k.sqrt()).exp();
-        // Put the swinging foot's middle there, keeping its side unless the
-        // push is sideways.
-        let foot = support.feet[leg].shifted(self.feet[leg]);
-        let mut wanted = landing - foot.centre();
-        if capture.y <= both.max.y && capture.y >= both.min.y {
-            wanted.y = 0.0;
-        }
+        let sideways = capture.y > both.max.y || capture.y < both.min.y;
+        // The step `leg` would need: through its swing the COP stands on the
+        // other foot, at its point nearest the capture point (where `step`'s
+        // law pins it, not its middle), and the capture point runs away from
+        // it as `e^{t/√K}`. The swinging foot's middle goes there, keeping
+        // its side unless the push is sideways.
+        let needed = |leg: usize| {
+            let stance_area = support.feet[1 - leg].shifted(self.feet[1 - leg]);
+            let pressure = capture.clamp(stance_area.min, stance_area.max);
+            let landing = pressure + (capture - pressure) * (STEP_SECONDS / k.sqrt()).exp();
+            let mut wanted = landing - support.feet[leg].shifted(self.feet[leg]).centre();
+            if !sideways {
+                wanted.y = 0.0;
+            }
+            wanted
+        };
+        // Never the foot that just stepped: it has to take the weight. On
+        // the same side again, it lifted before it was loaded, the body
+        // stayed on the far foot, and a sideways push walked the stepping
+        // foot out 0.4 m at a time with the COM running after it.
+        //
+        // Sideways, whichever leg needs the shorter step: the near leg's
+        // side step stands on the far foot, whose pressure drives the body
+        // on, while the far leg's crossover stands on the near foot, whose
+        // pressure brakes it. At 0.8 m/s the side step was a 0.6 m lunge
+        // that sank the pelvis 27 cm. (Both are human strategies; young
+        // adults mostly take the loaded side step, older adults cross over
+        // more. This is the model's choice, not the young adult's.)
+        let leg = match (self.stepped_last, sideways) {
+            (Some(last), _) if last == side => 1 - side,
+            (None, true) => {
+                if needed(1 - side).length() < needed(side).length() { 1 - side } else { side }
+            }
+            _ => side,
+        };
+        let mut wanted = needed(leg);
+        // A crossover lands a little ahead and bows out round the front of
+        // the stance leg, so the legs pass rather than through each other.
+        let crossing = sideways && leg != side;
+        let ahead = if crossing { CROSSOVER_AHEAD } else { 0.0 };
         self.wanted_step = wanted.length();
-        self.falls |= self.wanted_step > MAX_CATCH;
+        wanted.x += ahead;
+        // Judged on the first step only: a caught push's second step may ask
+        // for more (0.91 m after 0.73 m, sideways at 0.9 m/s) and still catch.
+        if self.stepped_last.is_none() {
+            self.falls |= self.wanted_step > MAX_CATCH;
+        }
         let travel = wanted.clamp_length_max(MAX_STEP);
         self.swing = Some(Swing {
             leg,
@@ -487,6 +563,7 @@ impl Balance {
             elapsed: 0.0,
             duration: STEP_SECONDS,
             joining: false,
+            ahead,
         });
     }
 
@@ -679,7 +756,10 @@ mod tests {
     }
 
     #[test]
-    fn a_sideways_shove_steps_with_the_foot_on_that_side() {
+    fn a_sideways_shove_crosses_the_far_foot_over() {
+        // Stood on the near foot, whose pressure brakes the body, the far
+        // leg crosses over in front and needs a shorter step than the near
+        // leg stepping out off the far foot.
         let mut balance = Balance::default();
         balance.push(Vec2::new(0.0, 0.7));
         let mut first = None;
@@ -689,9 +769,11 @@ mod tests {
             }
         });
         let first = first.expect("a 0.7 m/s sideways shove needs a step");
-        assert_eq!(first.leg, 0, "pushed to its left, the left foot steps out");
-        assert!(first.to.y > 0.05, "out to the left, went {}", first.to);
+        assert_eq!(first.leg, 1, "pushed to its left, the right foot crosses over");
+        assert!(first.to.y > 0.05 && first.to.x > 0.05, "over to the left and ahead, went {}", first.to);
+        assert!(first.ahead > 0.0, "a crossover bows out round the front");
         assert!(balance.is_settled(0.005), "caught and at rest: at {} moving {}", balance.offset, balance.velocity);
+        assert!(balance.lost < 1.0e-3, "caught by the step, not the bound: lost {}", balance.lost);
     }
 
     #[test]
@@ -759,7 +841,7 @@ mod tests {
         // Mid-step on the real rig: the stance foot exactly where it stood,
         // the stepping foot at its displacement, lifted by the arc.
         let (stood, rig) = real_stood();
-        let swing = Swing { leg: 1, from: Vec2::ZERO, to: Vec2::new(0.25, 0.0), elapsed: 0.15, duration: 0.3, joining: false };
+        let swing = Swing { leg: 1, from: Vec2::ZERO, to: Vec2::new(0.25, 0.0), elapsed: 0.15, duration: 0.3, joining: false, ahead: 0.0 };
         let balance = Balance { offset: Vec2::new(0.05, 0.0), swing: Some(swing), feet: [Vec2::ZERO, swing.at()], ..Default::default() };
         let mut pose = stood;
         balance.apply(&mut pose, &rig);
@@ -807,31 +889,88 @@ mod tests {
         frames
     }
 
+    // Per push direction and speed: steps taken, the first and longest step
+    // asked for, velocity the validity bound took, and whether it settled —
+    // what `MAX_STEP`/`MAX_CATCH` were measured from.
+    // `cargo test --release -- --ignored --nocapture probe_catch_table`.
     #[test]
-    fn a_push_past_a_catchable_step_falls() {
-        // Measured with the validity clamp lifted: forward 0.8 m/s and back
-        // 1.0 m/s are caught by their step (nothing discarded), forward
-        // 1.0 and back 1.2 run away. `MAX_CATCH` sits between the steps
-        // they ask for (0.73 / 0.71 caught, 0.90 / 0.87 not).
+    #[ignore]
+    fn probe_catch_table() {
         let (stood, rig) = real_stood();
         let support = Support::of(&stood, &rig);
         let k = pendulum_k(&stood, &rig);
-        let falls = |push: Vec2| {
+        for dir in [Vec2::X, Vec2::Y, -Vec2::X] {
+            for speed in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2] {
+                let mut b = Balance::default();
+                b.push(dir * speed);
+                let (mut swings, mut last, mut wanted, mut far) = (0, None::<Swing>, 0.0f32, 0.0f32);
+                let (mut first, mut lost_at, mut fall_at) = (None, None, None);
+                for i in 0..(8.0 / DT) as usize {
+                    if first.is_none() && b.swing.is_some() {
+                        first = Some((b.wanted_step * 100.0).round() / 100.0);
+                    }
+                    if lost_at.is_none() && b.lost > LOST_FALLS {
+                        lost_at = Some((i as f32 * DT * 100.0).round() / 100.0);
+                    }
+                    if fall_at.is_none() && b.falls {
+                        fall_at = Some((i as f32 * DT * 100.0).round() / 100.0);
+                    }
+                    b.step(&support, k, DT);
+                    if b.travelled.is_some() {
+                        b.rebase();
+                    }
+                    if let Some(s) = b.swing
+                        && last.is_none_or(|l| l.to != s.to || l.leg != s.leg)
+                    {
+                        swings += 1;
+                        if !s.joining {
+                            wanted = wanted.max(b.wanted_step);
+                        }
+                    }
+                    last = b.swing;
+                    far = far.max(b.offset.length());
+                }
+                println!("{dir} {speed}: steps {swings}, first wanted {first:?}, max wanted {wanted:.2}, lost {:.2} (>0.1 at {lost_at:?} s), falls at {fall_at:?} s, settled {}", b.lost, b.is_settled(1e-3));
+            }
+        }
+    }
+
+    #[test]
+    fn a_push_past_a_catchable_step_falls() {
+        // A catch is the step's, not the validity bound's: nothing lost to
+        // it and settled (sideways, the bound used to catch every push).
+        // `MAX_CATCH` sits between the first steps asked by the hardest
+        // pushes caught (≤ 0.73 m) and the lightest that ran away (≥ 0.81 m).
+        let (stood, rig) = real_stood();
+        let support = Support::of(&stood, &rig);
+        let k = pendulum_k(&stood, &rig);
+        let run = |push: Vec2| {
             let mut balance = Balance::default();
             balance.push(push);
-            for _ in 0..(3.0 / DT) as usize {
+            for _ in 0..(6.0 / DT) as usize {
                 balance.step(&support, k, DT);
                 if balance.travelled.is_some() {
                     balance.rebase();
                 }
             }
-            balance.falls
+            balance
         };
-        for caught in [Vec2::new(0.6, 0.0), Vec2::new(0.8, 0.0), Vec2::new(0.0, 0.7), Vec2::new(-0.8, 0.0), Vec2::new(-1.0, 0.0)] {
-            assert!(!falls(caught), "{caught} should be caught by a step");
+        for caught in [
+            Vec2::new(0.6, 0.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 0.6),
+            Vec2::new(0.0, 0.9),
+            Vec2::new(0.0, -1.0),
+            Vec2::new(-0.8, 0.0),
+            Vec2::new(-1.2, 0.0),
+        ] {
+            let balance = run(caught);
+            assert!(!balance.falls, "{caught} should be caught by a step");
+            assert!(balance.lost < 1.0e-3, "{caught}: the validity bound took {:.2} m/s", balance.lost);
+            assert!(balance.is_settled(1.0e-3), "{caught}: not settled after 6 s");
         }
-        for falling in [Vec2::new(1.0, 0.0), Vec2::new(-1.2, 0.0), Vec2::new(0.0, 1.0), Vec2::new(2.0, 0.0)] {
-            assert!(falls(falling), "{falling} should fall");
+        for falling in [Vec2::new(1.2, 0.0), Vec2::new(0.0, 1.2), Vec2::new(0.0, -1.3), Vec2::new(2.0, 0.0), Vec2::new(-1.8, 0.0)] {
+            assert!(run(falling).falls, "{falling} should fall");
         }
     }
 
@@ -860,7 +999,8 @@ mod tests {
         // (21 cm sideways) and it sprang up 132 mm when that foot lifted.
         // Backward needs the harder push: the real soles reach 0.18 m behind
         // the COM and 0.11 m ahead, so 0.6 m/s back is caught in place.
-        for (push, deepest) in [(Vec2::new(0.6, 0.0), 0.06), (Vec2::new(0.0, 0.7), 0.13), (Vec2::new(-0.8, 0.0), 0.06)] {
+        // Each push asks for close to the longest step (`MAX_STEP`).
+        for (push, deepest) in [(Vec2::new(1.0, 0.0), 0.07), (Vec2::new(0.0, 0.8), 0.12), (Vec2::new(-1.2, 0.0), 0.1)] {
             let frames = replay(push, 7.0);
             let floor = frames[0].0.iter().flatten().map(|p| p.y).fold(f32::MAX, f32::min);
             let mut stepped = false;
@@ -868,6 +1008,7 @@ mod tests {
             // highest since.
             let mut tips: [Option<Vec3>; 2] = frames[0].0.map(|foot| Some(foot[2]));
             let mut risen: f32 = 0.0;
+            let mut last_move = Vec3::ZERO;
             for (frame, pair) in frames.windows(2).enumerate() {
                 let ((before, pelvis_before, _), (after, pelvis_after, swing)) = (&pair[0], &pair[1]);
                 for leg in 0..2 {
@@ -887,7 +1028,9 @@ mod tests {
                             (frame + 1) as f32 * DT
                         );
                         for (a, b) in before[leg].iter().zip(after[leg]) {
-                            assert!((b - *a).length() < 5.0e-3, "{push}: a planted foot jumped {:.1} mm", (b - *a).length() * 1e3);
+                            // The heel and ball rise about the tip as the body
+                            // passes over: ≤ 12.5 mm a frame after a full step.
+                            assert!((b - *a).length() < 0.015, "{push}: a planted foot jumped {:.1} mm", (b - *a).length() * 1e3);
                         }
                         risen = risen.max(after[leg][0].y - floor);
                     }
@@ -895,24 +1038,32 @@ mod tests {
                         assert!(b.y > floor - 1.0e-3, "{push}: a foot went {:.1} mm into the floor", (floor - b.y) * 1e3);
                     }
                 }
+                // A pop is a jump in velocity: the frame's move against the
+                // last one's. (A plain 20 mm bound on the move could not tell
+                // a pop from a 1 m/s stumble.) The pops fixed were 60-132 mm;
+                // what remains is ≤ 12.8 mm at a long step's touchdown, where
+                // the pelvis height follows the leg's reach through a V.
+                let moved = *pelvis_after - *pelvis_before;
+                let jolt = (moved - last_move).length();
                 assert!(
-                    (*pelvis_after - *pelvis_before).length() < 0.02,
-                    "{push}: the pelvis jumped {:?} mm at {:.2} s (swing {:?})",
-                    ((*pelvis_after - *pelvis_before) * 1e3).round(),
+                    frame == 0 || jolt < 0.015,
+                    "{push}: the pelvis jolted {:.1} mm at {:.2} s (moved {:?} mm, swing {:?})",
+                    jolt * 1e3,
                     (frame + 1) as f32 * DT,
+                    (moved * 1e3).round(),
                     swing
                 );
+                last_move = moved;
             }
             assert!(stepped, "{push}: should need a step");
-            // Measured: 46 mm forward, 44 back, 115 in a 0.4 m side lunge
-            // (feet 0.63 m apart, where leg length alone asks ~10 cm).
-            // Without the heel rise, forward sank 69 mm.
+            // Measured: 52 mm forward, 79 back, 91 sideways (a crossover;
+            // the 0.6 m side-step lunge it replaced sank 266 mm).
             let sank = frames[0].1.y - frames.iter().map(|f| f.1.y).fold(f32::MAX, f32::min);
             assert!(sank < deepest, "{push}: the pelvis sank {:.0} mm", sank * 1e3);
             if push.x > 0.0 {
-                // A lunge's rear foot rolls onto its toes (9 mm) rather
-                // than squatting the body over it.
-                assert!(risen > 0.005, "{push}: the rear heel rose only {:.1} mm", risen * 1e3);
+                // A lunge's rear foot rolls onto its toes (84 mm after a
+                // full step) rather than squatting the body over it.
+                assert!(risen > 0.03, "{push}: the rear heel rose only {:.1} mm", risen * 1e3);
             }
             // At rest, feet side by side as they stood.
             let (end, _, swing) = frames.last().unwrap();

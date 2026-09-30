@@ -1616,6 +1616,21 @@ fn drive_walk_cycle(
             Some(rig) => stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig),
             None => stance_on(&base, DEFAULT_KNEE_FLEX),
         };
+        // `--anim-pose getup:sit|squat|quadruped|half_kneel`: hold one get-up
+        // key, to verify it on its own.
+        let stood = match (choice.0.strip_prefix("getup:"), &foot_ik.rig) {
+            (Some(name), Some(rig)) => {
+                use migera::character::anim::getup::Key;
+                let key = match name {
+                    "sit" => Key::Sit,
+                    "squat" => Key::Squat,
+                    "quadruped" => Key::Quadruped,
+                    _ => Key::HalfKneel,
+                };
+                key.pose(rig)
+            }
+            _ => stood,
+        };
 
         // The speed has to reach the LEG clock, as the cadence that makes
         // this gait's stride travel at exactly this speed.
@@ -1984,10 +1999,10 @@ fn fall_when_uncaught(
     config: Res<RagdollConfig>,
     frame: Res<FrameCount>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut rigs: Query<(&mut balance::Balance, &mut Ragdoll, &mut AnimFootIk)>,
+    mut rigs: Query<(&mut balance::Balance, &mut Ragdoll, &mut AnimFootIk, &GalleryFacing)>,
 ) {
     let asked = config.fall_at_frame == Some(frame.0) || keys.just_pressed(KeyCode::KeyF);
-    for (mut balance, mut ragdoll, mut foot_ik) in &mut rigs {
+    for (mut balance, mut ragdoll, mut foot_ik, facing) in &mut rigs {
         if ragdoll.is_falling() || !(asked || balance.falls) {
             continue;
         }
@@ -1996,10 +2011,52 @@ fn fall_when_uncaught(
             frame.0,
             if balance.falls { format!("a push asked for a {:.2} m step", balance.wanted_step) } else { "asked".into() }
         );
-        ragdoll.fall(FALL_TONE, config.fall_damping);
+        // The push goes with it, the part not yet delivered too: judged at
+        // the push's start, the body has barely moved.
+        let pushed = balance.velocity + balance.pending_push();
+        let launch = foot_ik.rig.as_ref().map_or(Vec3::ZERO, |rig| {
+            facing.0.rotation() * (rig.forward() * pushed.x + rig.left() * pushed.y)
+        });
+        ragdoll.fall_moving(FALL_TONE, config.fall_damping, launch);
         *balance = balance::Balance::default();
         foot_ik.planted = [false; 2];
         foot_ik.landing = None;
+    }
+}
+
+/// H3: a fallen character that has come to rest lies for `GETUP_DELAY` (a
+/// choice), then rises through the get-up keys for how it lies
+/// (`Ragdoll::get_up`). The turn the rise asks for, to face the way it
+/// gets up, is applied to the gallery's own heading: the character's
+/// rotation is `GalleryFacing`'s to write.
+fn get_up_when_rested(mut ragdolls: Query<(&mut Ragdoll, &mut GalleryFacing)>, frame: Res<FrameCount>) {
+    const GETUP_DELAY: f32 = 1.0;
+    for (mut ragdoll, mut facing) in &mut ragdolls {
+        if ragdoll.fall.is_some_and(|fall| fall.at_rest && fall.rise.is_none()) && ragdoll.get_up(GETUP_DELAY) {
+            info!("character_gallery: at rest at frame {}, getting up", frame.0);
+        }
+        if let Some(rise) = ragdoll.fall.as_mut().and_then(|fall| fall.rise.as_mut())
+            && rise.turn_pending
+        {
+            facing.0.yaw += rise.turn;
+            facing.0.target_yaw = facing.0.yaw;
+            rise.turn_pending = false;
+            info!("character_gallery: lying {:?}, turning {:.0}° to get up", rise.lying, rise.turn.to_degrees());
+        }
+    }
+}
+
+/// While the ragdoll falls it moves the character entity after its body
+/// (`AnimRagdollPlugin`); the gallery's own position has to take that up,
+/// or `ride_rendered_feet` writes the old one back the moment the body stops
+/// being followed. It did: every rise slid the character 0.45 m back to
+/// where it had fallen from.
+fn follow_the_fallen_body(mut rigs: Query<(&Ragdoll, &Transform, &mut GalleryLocomotion)>) {
+    for (ragdoll, transform, mut locomotion) in &mut rigs {
+        if ragdoll.is_falling() {
+            locomotion.0.position.x = transform.translation.x;
+            locomotion.0.position.z = transform.translation.z;
+        }
     }
 }
 
@@ -2448,6 +2505,8 @@ fn main() {
                     draw_ragdoll_gizmos,
                     deliver_ragdoll_hits.before(RagdollSet::Hit),
                     fall_when_uncaught.after(drive_walk_cycle).before(RagdollSet::Hit),
+                    get_up_when_rested.before(RagdollSet::Hit),
+                    follow_the_fallen_body.before(ride_rendered_feet),
                 ),
             );
     }

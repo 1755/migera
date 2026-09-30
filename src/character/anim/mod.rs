@@ -56,6 +56,7 @@ pub mod footlock;
 pub mod ground;
 pub mod facing;
 pub mod gait;
+pub mod getup;
 /// A [`rig::RigGeometry`] parsed from a real glTF, for tests.
 ///
 /// Test-only: it embeds a 31 KB asset and exists so tests can measure
@@ -92,7 +93,7 @@ pub use plugin::{
 };
 pub use poses::{relaxed_stand, rest, wave};
 pub use ragdoll::{
-    default_joint_limits, Fall, JointLimits, Ragdoll, RagdollStrength, Stun, StunResponse, FALL_DAMPING, FALL_TONE,
+    default_joint_limits, Fall, JointLimits, Ragdoll, RagdollStrength, Rise, Stun, StunResponse, FALL_DAMPING, FALL_TONE,
 };
 pub use ragdoll_plugin::{
     spawn_ragdoll, AnimRagdollPlugin, RagdollHit, RagdollSet, RagdollSpawnConfig,
