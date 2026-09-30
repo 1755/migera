@@ -61,7 +61,14 @@ pub fn foot_bones(ankle: Bone) -> (Bone, Bone) {
 }
 
 impl Sole {
-    /// Measured on the rig's bind pose, standing flat on the ground at `y = 0`.
+    /// Measured on the rig's bind pose, standing flat on the ground at `y = 0`
+    /// — or on its foot's lowest joint, if one dips below that.
+    ///
+    /// A real asset binds its foot joints above its floor (`puppet_base`'s
+    /// toe 15.2 mm, `character.glb`'s 4.9 mm), and the sole is the floor
+    /// under them. The synthetic rig is stylised: its ankle sits exactly on
+    /// `y = 0` with the toe 2 cm below it, so the floor there would put the
+    /// "sole" above the toe; its sole is the plane of its lowest joint.
     pub fn of(rig: &RigGeometry, ankle: Bone) -> Self {
         let (ankle, toe) = foot_bones(ankle);
         let rest = LocalPose::REST;
@@ -73,7 +80,8 @@ impl Sole {
 
         let forward = rig.forward();
         let ahead = (toe_at - ankle_at).dot(forward);
-        let ground = |p: Vec3| Vec3::new(p.x, 0.0, p.z);
+        let floor = ankle_at.y.min(toe_at.y).min(tip_at.y).min(0.0);
+        let ground = |p: Vec3| Vec3::new(p.x, floor, p.z);
         let heel = ground(ankle_at) - forward * (HEEL_BEHIND_ANKLE * ahead);
 
         let into_foot = |p: Vec3| ankle_rotation.inverse() * (p - ankle_at);

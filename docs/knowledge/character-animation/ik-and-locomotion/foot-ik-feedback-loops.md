@@ -49,10 +49,15 @@ decisive bug was solving on a proxy rig instead of the real one.
 
 Both loops are fixed in `anim::plugin::solve_foot_ik`.
 
-**The toe JOINT is not the contact point.** On this rig `LeftToeBase` sits at
-y = -0.02 in the bind pose, inside the foot. Forcing it to the surface lifted
-the whole leg by that offset every frame and produced a visible forward
-lunge. Read the offset from the bind pose (`rest_toe_height`) and keep it.
+**The toe JOINT is not the contact point.** On the synthetic rig
+`LeftToeBase` sits at y = -0.02 in the bind pose, inside the foot. Forcing
+it to the surface lifted the whole leg by that offset every frame and
+produced a visible forward lunge. The offset is now the toe joint's height
+above the walk's own sole (`foot::Sole`) in the animated pose
+(`toe_contact_offset`): 15.2 mm for `puppet_base`'s flat foot, and larger as
+the foot rolls. Between these two it was measured against the joints alone
+and came out 0, planting the joint on the floor 15 mm too low (see
+[the live rig geometry must match the rendered rig](../rig-and-retargeting/live-rig-geometry-must-match-the-rendered-rig.md)).
 
 ## Why it matters
 

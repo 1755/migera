@@ -8,7 +8,7 @@ tags:
   - biomechanics
   - ik
   - correctness
-updated: 2026-09-29
+updated: 2026-09-30
 verified: 2026-09-29
 code:
   - src/character/anim/foot.rs
@@ -39,7 +39,10 @@ ankle still cannot roll, and a rolling foot then has to slide.
 ## The model
 
 `foot::Sole` carries three points rigidly in the ankle bone's frame,
-measured on the rig's bind pose standing on `y = 0`:
+measured on the rig's bind pose standing on `y = 0`, or on the foot's lowest
+joint if one dips below it (the synthetic rig's toe does). The runtime foot
+IK plants the same sole (`plugin::toe_contact_offset`), so a standing foot
+rests at the asset's own bind height:
 
 | Point | Where | Source |
 |---|---|---|
@@ -91,4 +94,5 @@ made the slow walk's root velocity step 0.15 m/s per heel strike, so it is
 - [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — applies: how the body is moved over these contacts.
 - [Recorded pelvis path and recorded leg angles cannot both be kept](./recorded-pelvis-path-and-leg-angles-conflict.md) — deeper: why the pelvis rides the legs.
 - [Foot IK on uneven ground has two feedback loops](./foot-ik-feedback-loops.md) — contrast: the runtime foot IK's own toe-joint contact offset.
+- [The live rig geometry must match the rendered rig](../rig-and-retargeting/live-rig-geometry-must-match-the-rendered-rig.md) — applies: the IK's contact offset moved onto this sole, and why it had drifted 15 mm off it.
 - [Winter 11.3.1 — inverted pendulum in steady walking](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.3-dynamic-balance-during-walking/11.3.1-inverted-pendulum-in-steady-walking.md) — prerequisite: the heel-strike pitch and toe-supported trailing foot this models.

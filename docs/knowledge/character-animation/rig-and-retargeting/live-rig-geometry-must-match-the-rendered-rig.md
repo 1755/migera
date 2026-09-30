@@ -16,6 +16,7 @@ code:
   - src/character/skeleton.rs
   - src/character/anim/stance.rs
   - src/character/anim/gltf_rig.rs
+  - src/character/anim/foot.rs
 sources:
   - "test gltf_rig::tests::the_live_rig_geometry_stands_where_the_asset_does_in_metres"
   - "test gltf_rig::tests::a_stance_keeps_the_soles_where_the_asset_stands_them"
@@ -93,18 +94,31 @@ it gone, the foot IK pitched each foot 4.5° toe-down to reach the floor.
 | steady planted slide | 3.4 / 3.5 mm | 5.1 / 3.7 mm (~200) |
 | pelvis–chest correlation | −0.97 | −0.97 (walking sideways) |
 
-## Still open
+## The foot contact, fixed next (2026-09-30)
 
-The foot IK and the walk define the sole differently:
+With the geometry right, one mismatch was left. The foot IK and the walk
+defined the sole differently:
 
-- The IK's `toe_contact_offset` is the toe joint's height above the lower
-  of joint and tip. On `puppet_base` the two are level, so it plants the
-  toe joint itself on the floor.
-- The walk's `Sole` puts the contacts at the bind pose's floor, 15 mm below
-  that joint.
+- The IK's `toe_contact_offset` was the toe joint's height above the lower
+  of joint and tip. Those are joints, and on `puppet_base` they are level
+  15.2 mm above the bind floor, so the offset was 0: the IK planted the
+  joint itself on the floor.
+- The walk's `Sole` puts the contacts on the bind floor, under the joints.
 
-Standing, the ball renders at 0.0016 m where the asset binds it at
-0.0152 m. That predates this fix: the ball stood at 0.0102 m before it.
+The IK now measures against `Sole`. Standing, every foot joint rests at the
+asset's bind height:
+
+| Standing | `puppet_base` | `character.glb` |
+|---|---|---|
+| ankle | 0.0865 m (bind 0.0865; before 0.0788) | 0.1216 (0.1216; before 0.1183) |
+| ball | 0.0152 m (0.0152; before 0.0016) | 0.0049 (0.0049; before 0.0013) |
+
+`Sole::of` also no longer assumes every rig binds its joints above its
+floor. The synthetic rig's ankle sits exactly on `y = 0` with its toe 2 cm
+below, so its sole is the plane of its lowest joint. Measured over the
+whole sole, the raised-ground fixture showed a heel sinking ~13 cm when the
+floor rises past the legs' reach. The old toe-only measure could never see
+that, and it remains open.
 
 ## Related
 

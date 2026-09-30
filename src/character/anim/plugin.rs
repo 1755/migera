@@ -34,7 +34,7 @@ use super::legik::{solve_leg_grounded, LegChain, LegIkConfig};
 use super::pelvis::{apply_pelvis_drop, solve_pelvis_drop, PelvisConfig};
 use super::math::spring::SpringParams;
 use super::phase::{GaitPhase, PhaseLayer};
-use super::rig::{forward_kinematics_on, toe_end_positions, RigGeometry};
+use super::rig::{forward_kinematics_on, RigGeometry};
 use crate::character::skeleton::Bone;
 use super::retarget::write_pose_to_skeleton;
 use super::rig::{BoneSet, LocalPose};
@@ -871,20 +871,25 @@ enum Side {
 /// [`AnimFootIk::corrected`]), so this frame's offset cannot depend on last
 /// frame's solve. It is also a difference WITHIN the foot rather than an
 /// absolute height, so translating the whole character changes it by zero.
+///
+/// # The sole, not the joints
+///
+/// "Lowest point of the foot" is the walk's own sole ([`Sole`]: heel, ball
+/// and tip where the bind pose stands them on the floor), carried in the
+/// foot's frame. It used to be the lower of the toe joint and the toe tip,
+/// which are joints, not sole: on `puppet_base` both sit 15.2 mm above the
+/// bind floor, so the offset came out 0 and the IK planted the joint itself
+/// on the floor, 15 mm lower than the walk plants the same foot. Standing,
+/// the ball rendered at 1.6 mm against the asset's 15.2.
 fn toe_contact_offset(pose: &LocalPose, chain: LegChain, rig: &RigGeometry) -> f32 {
-    let positions = forward_kinematics_on(pose, rig);
-    let joint = positions[chain.toe].y;
+    use super::foot::{lowest, Sole};
+    use super::rig::offset_from;
+    let joint = offset_from(pose, rig, Bone::Hips, chain.toe).y;
+    let sole = lowest(&Sole::of(rig, chain.ankle).points(pose, rig));
 
-    let (left_tip, right_tip) = toe_end_positions(pose, rig);
-    let tip = match chain.toe {
-        Bone::LeftToeBase => left_tip.y,
-        _ => right_tip.y,
-    };
-
-    // The joint's height above whichever part of the foot is lowest. Never
-    // negative: if the joint IS the lowest point, the offset is zero and
-    // the joint plants on the surface itself.
-    (joint - joint.min(tip)).max(0.0)
+    // Never negative: a toe joint below its own sole would mean the foot is
+    // inverted, and the joint then plants on the surface itself.
+    (joint - sole).max(0.0)
 }
 
 /// Writes each rig's solved pose onto its skeleton's `Transform`s.
@@ -912,7 +917,7 @@ fn write_poses(
 mod tests {
     use super::*;
     use crate::character::anim::ground::SlopedGround;
-    use crate::character::anim::rig::forward_kinematics;
+    use crate::character::anim::rig::{forward_kinematics, toe_end_positions};
     use crate::character::skeleton::Bone;
     use std::f32::consts::FRAC_PI_2;
 
@@ -1391,14 +1396,12 @@ mod tests {
             .and_then(|ik| ik.corrected)
             .unwrap_or_else(|| app.world().get::<AnimPose>(rig).unwrap().pose());
 
+        // The walk's sole, the same one the IK plants (`toe_contact_offset`).
+        use crate::character::anim::foot::{lowest, Sole};
         let geometry = RigGeometry::default();
-        let positions = forward_kinematics(&pose);
-        let (left_tip, right_tip) = toe_end_positions(&pose, &geometry);
-
-        (
-            positions[LegChain::LEFT.toe].y.min(left_tip.y),
-            positions[LegChain::RIGHT.toe].y.min(right_tip.y),
-        )
+        let hips = forward_kinematics_on(&pose, &geometry)[Bone::Hips].y;
+        let sole = |ankle| hips + lowest(&Sole::of(&geometry, ankle).points(&pose, &geometry));
+        (sole(LegChain::LEFT.ankle), sole(LegChain::RIGHT.ankle))
     }
 
     #[test]
@@ -1427,7 +1430,20 @@ mod tests {
         let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.25 });
         step(&mut app, 120);
 
-        let (left, right) = sole_heights(&app, rig);
+        // The BALL contact, which is what the IK plants. The whole sole is
+        // not on the plane here: with the body held at the origin the legs
+        // fold past their reach, the foot pitches, and the heel contact
+        // sinks ~13 cm into the raised floor (0.119 against 0.25). That
+        // was always so; the old measure — toe joint and tip — could not
+        // see the heel.
+        let (left, right) = {
+            use crate::character::anim::foot::Sole;
+            let pose = app.world().get::<AnimFootIk>(rig).and_then(|ik| ik.corrected).unwrap();
+            let geometry = RigGeometry::default();
+            let hips = forward_kinematics_on(&pose, &geometry)[Bone::Hips].y;
+            let ball = |ankle| hips + Sole::of(&geometry, ankle).points(&pose, &geometry)[1].y;
+            (ball(LegChain::LEFT.ankle), ball(LegChain::RIGHT.ankle))
+        };
         let expected = 0.25;
 
         // 2 cm, not 1.
@@ -1572,13 +1588,21 @@ mod tests {
             highest - lowest,
         );
 
-        // The rest pose is inside the range rather than at one end, which
-        // is why the old fixed value was wrong in BOTH directions rather
-        // than merely biased.
+        // Measured against the sole (`foot::Sole`), a flat foot is where the
+        // toe joint sits lowest above it: rolling onto the heel or the toes
+        // only raises it. So the rest attitude sits at the bottom of the
+        // cycle's range (15.2 mm, the asset's own joint-above-floor; the
+        // walk's flattest foot 15.5), and a fixed rest value would have been
+        // wrong by up to ~95 mm the other way. Against the old joints-only
+        // "sole" the rest value landed mid-range instead, and the IK planted
+        // the joint itself on the floor.
         assert!(
-            rest >= lowest && rest <= highest,
-            "the rest-pose offset {rest} sits outside the cycle's range \
-             ({lowest} to {highest})",
+            (rest - 0.0152).abs() < 5.0e-4,
+            "a flat foot's toe joint should sit at the asset's 15.2 mm above its sole, got {rest}",
+        );
+        assert!(
+            rest <= lowest + 1.0e-3,
+            "the flat rest foot ({rest}) should be the cycle's lowest offset ({lowest} to {highest})",
         );
     }
 

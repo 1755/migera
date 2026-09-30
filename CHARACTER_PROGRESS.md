@@ -42,6 +42,48 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The foot IK plants the walk's own sole: feet stand at the asset's height
+
+**The mismatch.** The foot IK planted the toe at "the toe joint's height
+above the lower of toe joint and tip". Those are both joints, and on
+`puppet_base` they are level, 15.2 mm above the asset's bind floor. So the
+offset was 0 and the IK put the joint itself on the floor, 15 mm lower than
+the walk's `Sole`. A flat foot's rest value had once been right (+0.0152);
+it was replaced to follow the foot's roll, and lost the sole's thickness.
+
+**The fix.** `toe_contact_offset` now measures the toe joint above the
+lowest `Sole` contact in the animated pose, which gives both the thickness
+and the roll.
+
+`Sole::of` also stops assuming a rig binds its foot above `y = 0`. The
+synthetic rig's ankle sits on it with its toe 2 cm below, so its sole is
+the plane of its lowest joint. Real assets are unchanged by that.
+
+**Standing, live (BRP):**
+
+| | before | after | asset bind |
+|---|---|---|---|
+| `puppet_base` ankle / ball | 0.0788 / 0.0016 m | 0.0865 / 0.0152 | 0.0865 / 0.0152 |
+| `character.glb` ankle / ball | 0.1183 / 0.0013 m | 0.1216 / 0.0049 | 0.1216 / 0.0049 |
+
+**Walking, 1.2 m/s, steady planted slide:** `puppet_base` 3.4 / 4.1 mm
+(was 3.4 / 3.5); `character.glb` 5.8 / 6.4 mm (was 5.1 / 3.7). Start slide
+2.3 / 3.1 mm. The stop window now reads 41 mm, but the trace shows the
+last step's pre-existing glide, 4 cm of it now inside the metric's "planted"
+height band. It is not a planted foot.
+
+**Tests.** Three plugin tests measured the "sole" as the joints; they now
+use `Sole`:
+- The contact-offset test pins a flat foot at the asset's 15.2 mm (the old
+  code gives 0) and as the cycle's lowest.
+- Measured over the whole sole, the raised-ground fixture showed a heel
+  sinking ~13 cm where the floor rises past the legs' reach. That was
+  always so and stays open; the test checks the ball the IK plants.
+
+Left view, mesh on, standing: both rigs' soles on the floor. 1010 tests
+pass.
+
+
 ### `character.glb` walks: the live rig geometry was in centimetres and at the wrong hips height
 
 Distilled in [the live rig geometry must match the rendered rig](./docs/knowledge/character-animation/rig-and-retargeting/live-rig-geometry-must-match-the-rendered-rig.md).
