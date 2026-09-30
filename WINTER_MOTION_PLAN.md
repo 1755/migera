@@ -209,6 +209,13 @@ bounded to Winter's 8° per plane. Tests in `balance::tests`.
 
 ## 3a. Per-character knee style (§11.1)
 
+**Premise withdrawn (2026-09-30).** §11.1 shows hip/knee *moment* splits
+varying day to day at near-identical *angles* (rms s.d. < 2°). That
+supports no knee-angle style for the walk; the KB note that said so was
+wrong and is corrected. A standing-stance knee setting would be a plain
+style choice, not Winter's. The split's real use is step 4: an active
+ragdoll may trade stance hip and knee torque as long as their sum holds.
+
 - [ ] A per-character knee-flex setting (`stance_on(base, knee_flex)`,
   `DEFAULT_KNEE_FLEX`) passed into the stance, the release and the walk's
   pelvis envelope. One test swept over 0.1–0.3 rad: feet planted, pelvis

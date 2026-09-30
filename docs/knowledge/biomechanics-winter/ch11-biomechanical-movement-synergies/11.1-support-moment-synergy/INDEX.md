@@ -9,7 +9,7 @@ tags:
   - locomotion
   - ragdoll
   - verification
-updated: 2026-09-28
+updated: 2026-09-30
 verified: 2026-09-28
 sources:
   - "Winter, Biomechanics and Motor Control of Human Movement, 4th ed. (2009), §11.1, pp. 282–286 (PDF pp. 295–299)"
@@ -116,12 +116,14 @@ are much smaller over minutes than over days.
   through stance. It should not pin each joint's torque. Before summing,
   convert every joint to extensor-positive. Hardcoded signs have already bitten
   this project (see the knee-axis and unsigned-measurement lessons below).
-- **Knee bend is a style knob, not a support knob.** The bent-knee stance
-  (`stance.rs`) and the gait's stance-knee curve (`gait.rs`) can vary between
-  characters. Real people carry the same load with different hip/knee splits,
-  day to day, with nearly identical joint angles. A procedural personality
-  variation can move flexion between hip and knee and keep pelvis height and
-  support.
+- **What varies is the moment split, not the knee angle.** Real people carry
+  the same load with different hip/knee *moment* splits day to day, while
+  their joint *angles* stay within ~2° rms. So this section does NOT support
+  a per-character knee-bend style for the walk; if anything, it says the
+  recorded angles are the stable part. (An earlier version of this note
+  claimed it did, and plan step 3a was built on that; corrected 2026-09-30.)
+  Where the split does matter is torques: an active ragdoll's stance hip and
+  knee may trade torque freely as long as the sum holds (below).
 - **Honest limit:** the kinematic stack computes no torques, so Ms applies
   only to the physics side (ragdoll) or to deriving motion shapes
   (§11.1.1's vertical-force profile).
