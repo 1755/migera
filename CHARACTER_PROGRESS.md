@@ -42,6 +42,37 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Every test checked for the fixture that faces away
+
+Audit of the tests on plain `puppet_base()`, by swapping the fixtures
+for one run (`puppet_base()` returning the turned rig, so both helpers
+return the other). 17 of 1044 failed:
+
+- 8 already on the drawn rig: the balance tests, the pendulum ratio,
+  `the_relaxed_stand_stands_upright_and_balanced`. Correct.
+- 5 comparing against the asset or Bevy's render of the file
+  (`gltf_rig`, `retarget`): correct on plain.
+- 4 wrong, now fixed:
+  - **Joint limits:** the ragdoll's forearm twist stop, −95..85°, had
+    been fitted to the wave's −90.5° as the plain fixture reads it. On
+    the drawn character it is +90.7°: live, the waving right forearm
+    held 3.7° off its target against the stop. Now −85..95°; the waving
+    forearm tracks within the body's usual 2.2° on `puppet_base`, 0.1° on
+    `character.glb`. `every_pose_the_character_holds_sits_inside_its_joint_limits_on_a_real_rig`
+    now runs on the drawn rig.
+  - **Look-at (2):** the tests measured the head bone's own −Z, the back
+    of the head on the drawn rig. On plain it started at −Z, so they
+    passed while measuring the back of the head. The solver was right.
+    They now measure the face (the rig's forward carried by the head's
+    turn since rest) on the drawn rig, and the reachable look asserts it
+    lands (0.000°; 180° on plain) instead of "same side".
+  - **Foot on its sole:** `to_axis_angle` read a sign-flipped identity as
+    360°. Now the shortest angle.
+
+The 1027 that pass on either fixture don't depend on facing. Distilled in
+[the puppet_base fixture note](./docs/knowledge/character-animation/rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md).
+1044 tests pass.
+
 ### The walk's sway pendulum measured on the character as drawn
 
 Closes the open item below. `phase::COM_OVER_HIPS` (the COM's height

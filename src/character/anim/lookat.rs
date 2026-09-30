@@ -292,17 +292,26 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
+    /// `puppet_base` as it is drawn, facing −Z: a look is a world-axis
+    /// turn of the character's forward, so the fixture must face the way
+    /// the character does.
     fn setup() -> (LocalPose, RigGeometry) {
-        (stance(&LocalPose::REST), gltf_rig::puppet_base())
+        (stance(&LocalPose::REST), gltf_rig::puppet_base_as_rendered())
     }
 
-    /// Where the head is pointing, in world space, under `pose`.
+    /// Where the face is pointing, in world space, under `pose`: the rig's
+    /// forward carried by the head's turn since the rest pose.
     ///
     /// `Head` is a LEAF on both rigs, so there is no child joint whose
     /// position reveals the direction — it has to come from the bone's own
-    /// accumulated rotation, which is what the skinned mesh follows.
+    /// accumulated rotation, which is what the skinned mesh follows. Not
+    /// that rotation times −Z: the bone's own −Z is not the face. On the
+    /// drawn rig it points out of the back of the head, and on plain
+    /// `puppet_base()` (which faces away) it happened to start at −Z, so
+    /// these tests passed while measuring the back of the head.
     fn head_direction(pose: &LocalPose, rig: &RigGeometry) -> Vec3 {
-        accumulate_world_rotations(pose, rig)[Bone::Head] * Vec3::NEG_Z
+        let rest = accumulate_world_rotations(&LocalPose::REST, rig)[Bone::Head];
+        accumulate_world_rotations(pose, rig)[Bone::Head] * rest.inverse() * rig.forward()
     }
 
     // -----------------------------------------------------------------
@@ -416,19 +425,12 @@ mod tests {
         let mut pose = base;
         apply(&mut pose, wanted, &config, &rig);
 
+        // The face, carried from where it faced before the look.
+        let before = head_direction(&base, &rig);
         let achieved = head_direction(&pose, &rig);
-        let error = achieved.angle_between(head_direction(&base, &rig) + wanted * 0.0);
-
-        // Measured against the CHANGE rather than an absolute direction:
-        // the head's authored rest direction is the rig's, not `-Z`.
-        assert!(
-            error.is_finite(),
-            "a reachable look should produce a finite result, got {achieved:?}",
-        );
-        assert!(
-            achieved.dot(wanted) > 0.0,
-            "the head should end up on the same side as the target",
-        );
+        let turn = Quat::from_rotation_arc(rig.forward(), wanted);
+        let error = achieved.angle_between(turn * before).to_degrees();
+        assert!(error < 0.5, "a reachable look should arrive, but ended {error:.2} degrees off");
     }
 
     #[test]

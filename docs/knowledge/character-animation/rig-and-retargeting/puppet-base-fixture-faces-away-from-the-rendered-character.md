@@ -17,6 +17,8 @@ code:
   - src/character/anim/balance.rs
   - src/character/anim/phase.rs
   - src/character/anim/locomotion.rs
+  - src/character/anim/lookat.rs
+  - src/character/anim/ragdoll.rs
 sources:
   - "test gltf_rig::tests::the_rendered_rig_matches_the_live_character"
   - "BRP on character_gallery --anim-speed 0, 2026-09-29"
@@ -80,8 +82,21 @@ number gets trusted.
   reverse of the live character (`the_balance_fixture_stands_as_the_character_is_drawn`).
   The walk's pendulum ratio `COM_OVER_HIPS` was pinned on it too: 1.19
   (a COM 62% up the body) instead of 1.09.
+- **So does anything that reads a world-axis rotation's sign or a bone's
+  own axis**: the ragdoll's forearm twist stop was fitted to −90.5° for
+  the wave, which reads +90.7° on the drawn character, so the waving
+  forearm held 3.7° short against the stop live. And the look-at tests
+  measured the head bone's own −Z, which is the back of the head on the
+  drawn rig; on plain `puppet_base()` it started at −Z and the tests
+  passed while measuring the back of the head.
 - For gait and foot maths that never reads the arms or the COM (joint
   angles, sole contact), either fixture works.
+- **To find every test that cares, swap the fixtures.** Make
+  `puppet_base()` return the turned rig for one test run, so both
+  helpers return the other one. On 2026-10-01, 17 of 1044 failed: 8 on
+  the drawn rig (correct), 5 comparing against the asset or Bevy's
+  render of the file (correct on plain), and 4 that were wrong. The
+  1027 that pass either way don't depend on the facing.
 - If a posed measurement disagrees with a screenshot, check the facing
   before the maths: compare one BRP joint height.
 

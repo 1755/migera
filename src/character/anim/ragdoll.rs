@@ -694,9 +694,13 @@ pub fn default_joint_limits() -> BoneSet<Option<JointLimits>> {
 
         // Elbow: the bend is the swing cone (see the note above); the
         // asymmetric twist is real forearm pronation/supination, which
-        // reaches ~90 degrees — the wave measures 90.5.
+        // reaches ~90 degrees — the wave measures +90.7 on the character
+        // as drawn. Until 2026-10-01 this was -95..85, fitted to -90.5
+        // measured on plain `puppet_base()`, which faces away and reads
+        // the twist with its sign flipped: live, the waving forearm held
+        // 3.7 degrees short against the stop.
         Bone::LeftForeArm | Bone::RightForeArm => {
-            Some(JointLimits::degrees_asymmetric(85.0, -95.0, 85.0))
+            Some(JointLimits::degrees_asymmetric(85.0, -85.0, 95.0))
         }
 
         Bone::LeftHand | Bone::RightHand => Some(JointLimits::degrees(45.0, 25.0)),

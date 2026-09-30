@@ -2830,7 +2830,9 @@ mod tests {
         queue.apply(app.world_mut());
         step(&mut app, 128);
         let now = app.world().get::<Transform>(body).unwrap();
-        let turned = (rotation.inverse() * now.rotation).to_axis_angle().1.to_degrees();
+        // The shortest angle: `to_axis_angle` reads a sign-flipped
+        // identity as 360°, which it did on the turned fixture.
+        let turned = rotation.angle_between(now.rotation).to_degrees();
         let slid = Vec3::new(now.translation.x - centre.x, 0.0, now.translation.z - centre.z).length();
         (turned, slid)
     }
@@ -4112,11 +4114,16 @@ mod tests {
         //
         // Pure data, no physics: the joint frame makes swing and twist
         // exactly the pose delta, so this reads the pose alone.
+        //
+        // On the character as drawn: the poses are world-axis rotations,
+        // and on plain `puppet_base()` (which faces away) a twist reads
+        // with its sign flipped. The forearm's stop was once fitted to
+        // that flipped wave.
         use crate::character::anim::gait::{walk_pose_on, GaitParams};
         use crate::character::anim::gltf_rig;
         use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
 
-        let rig = gltf_rig::puppet_base();
+        let rig = gltf_rig::puppet_base_as_rendered();
         let limits = crate::character::anim::ragdoll::default_joint_limits();
         let layout = default_body_layout();
 
