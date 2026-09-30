@@ -47,6 +47,7 @@
 pub mod anthropometry;
 pub mod armik;
 pub mod asset;
+pub mod balance;
 pub mod clip;
 pub mod convert;
 pub mod dho;

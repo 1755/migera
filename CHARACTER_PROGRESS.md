@@ -42,6 +42,46 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A pushed standing character sways over its feet and recovers
+
+Step 2 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in
+[push recovery as Winter's pendulum](./docs/knowledge/character-animation/ik-and-locomotion/push-recovery-is-winters-pendulum.md).
+
+**The model.** `balance::Balance` is Winter's Eq. 11.3,
+`COM̈ = (COM − COP)/K`, with the COP law `COP = COM + s·x + b·ẋ`: his
+in-phase stiffness plus reactive damping. The COP is clamped to the feet
+(`Support`, from the `Sole` contacts, bounded to his 8° validity).
+
+**Posing it.** `Balance::apply` poses the offset over exactly-held feet:
+an ankle lean front to back, the load/unload shift and roll side to side.
+The pelvis moves `COM_PER_PELVIS = (0.863, 0.810)` further than the COM
+should; that ratio is measured with `centre_of_mass` and pinned by a test
+(the COM lands within 2 mm).
+
+**The gallery** takes `--push-schedule T:FORWARD:LEFT,...` and runs the
+balance on the standing side of the blend.
+
+**Two designs that failed first:**
+- **A one-frame push.** A 0.8 m/s push in one frame let the foot locks go:
+  the unsprung pelvis ran ahead of the 0.015 s leg springs, and the feet
+  re-planted 23 mm away. A push now takes 0.1 s.
+- **Holding an unabsorbable push at the support's edge.** The clamped COP
+  sat exactly under the COM there, an equilibrium, so the body hung
+  forever, and the clamp's jump moved the feet 32 mm. It is now flagged
+  (`needs_step`), and the COP is unclamped as a stand-in for the step.
+
+| Live push | `puppet_base` peak pelvis | `character.glb` |
+|---|---|---|
+| 0.25 m/s forward | +22.9 mm | +28.4 mm |
+| 0.2 m/s left | +21.8 mm | +26.7 mm |
+| 0.3 m/s back | −31.8 mm | −75.0 mm (needs a step) |
+| 0.8 m/s forward | +116.6 mm (needs a step) | +146.1 mm (needs a step) |
+
+Every push returns. Planted balls move ≤ 1.3 mm and ankles ≤ 4.9 mm over
+the whole capture. Left view: a lean from the ankles, trunk in line, feet
+flat. Front: symmetric and planted. Seven balance tests, 1021 in all.
+
+
 ### A stop sets its last foot down; raised ground was a synthetic-rig artifact
 
 **The stop's glide.** The last step fades a whole swing into standing: the

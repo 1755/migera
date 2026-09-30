@@ -179,6 +179,17 @@ Order: **1 → 2 → 3a → 4 → 3b.**
 
 ## 2. Push recovery while standing (§5.2.9, §11.2.1)
 
+**Done 2026-09-30** (2.1–2.3 below, as planned, with two changes):
+- A push is delivered over 0.1 s; in one frame it released the foot locks
+  (feet re-planted 23 mm away).
+- A push the feet cannot absorb is flagged (`needs_step`) and the COP is
+  unclamped as the step's stand-in. Held at the edge, the body hung there
+  forever.
+
+Live on both rigs: pushes of 0.2–0.3 m/s peak at 2–3 cm (`puppet_base`)
+and return; feet ≤ 1.3 mm (balls), ≤ 4.9 mm (ankles). The support is also
+bounded to Winter's 8° per plane. Tests in `balance::tests`.
+
 - [ ] **2.1 Balance state** (new `balance.rs`). `Balance` component: COM
   offset and velocity (A/P, M/L), pendulum `COM̈ = −(COP − COM)/K`. COP
   controller `COP = COM + gains·(offset, velocity)`, clamped to the support

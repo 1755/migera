@@ -33,6 +33,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 use migera::character::{Bone, BoneMarker, HumanoidSkeleton};
 use migera::character::anim::poses as anim_poses;
 use migera::character::anim::asset::AnimAssetPlugin;
+use migera::character::anim::balance;
 use migera::character::anim::facing;
 use migera::character::anim::gait::{cycle_of, walk_pose_on, GaitParams};
 use migera::character::anim::locomotion;
@@ -1235,6 +1236,41 @@ impl SpeedSchedule {
     }
 }
 
+/// `--push-schedule T:FORWARD:LEFT,...`: at T seconds, shove the standing
+/// character, changing its centre of mass's velocity by FORWARD and LEFT
+/// m/s along its own axes. Reproducible pushes for BRP captures.
+#[derive(Resource, Default)]
+struct PushSchedule {
+    steps: Vec<(f32, bevy::math::Vec2)>,
+    /// How many steps have already been delivered.
+    delivered: usize,
+}
+
+impl PushSchedule {
+    fn from_args() -> Self {
+        let mut args = std::env::args().skip_while(|arg| arg != "--push-schedule").skip(1);
+        let mut steps: Vec<(f32, bevy::math::Vec2)> = args
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|step| {
+                let mut parts = step.split(':').map(|part| part.trim().parse::<f32>().ok());
+                Some((parts.next()??, bevy::math::Vec2::new(parts.next()??, parts.next()??)))
+            })
+            .collect();
+        steps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Self { steps, delivered: 0 }
+    }
+
+    /// The pushes due by `now` and not yet delivered.
+    fn due(&mut self, now: f32) -> Vec<bevy::math::Vec2> {
+        let due: Vec<_> =
+            self.steps.iter().skip(self.delivered).take_while(|(at, _)| *at <= now).map(|(_, push)| *push).collect();
+        self.delivered += due.len();
+        due
+    }
+}
+
 /// Applies [`SpeedSchedule`]: the latest step already reached wins.
 fn follow_speed_schedule(time: Res<Time>, schedule: Res<SpeedSchedule>, mut idle: ResMut<AnimIdleConfig>) {
     let now = time.elapsed_secs();
@@ -1300,6 +1336,7 @@ fn attach_anim_backend(
             GalleryStride::default(),
             GalleryFacing::default(),
             GalleryTransition::default(),
+            balance::Balance::default(),
             GalleryLook(match idle.look_at {
                 Some(target) => lookat::LookAt::at(target),
                 None => lookat::LookAt::forward(),
@@ -1381,6 +1418,8 @@ type WalkingRig = (
     Option<&'static FacingCorrection>,
     &'static mut GalleryStride,
     &'static mut AnimPhaseLayer,
+    // Winter's standing pendulum: a push sways the body over its feet.
+    &'static mut balance::Balance,
 );
 
 impl Default for GalleryLocomotion {
@@ -1475,6 +1514,7 @@ fn drive_walk_cycle(
     time: Res<Time>,
     idle: Res<AnimIdleConfig>,
     choice: Res<AnimPoseChoice>,
+    mut pushes: ResMut<PushSchedule>,
     mut rigs: Query<WalkingRig>,
     // The stride the current speed's gait really takes, keyed by the speed
     // and whether the real rig has bound: measuring it costs a cycle of
@@ -1493,6 +1533,7 @@ fn drive_walk_cycle(
     // rotations onto the last frame's already-walked result, so the legs
     // wind up without bound. The base has to be a fixed reference.
     let base = anim_poses::by_name(&choice.0).unwrap_or_else(anim_poses::relaxed_stand);
+    let due_pushes = pushes.due(time.elapsed_secs());
 
     for (
         mut target,
@@ -1508,6 +1549,7 @@ fn drive_walk_cycle(
         correction,
         mut gait,
         mut layer,
+        mut balance,
     ) in &mut rigs
     {
         // `cycle_of` rather than `phase.gait`: the clock is in RADIANS and
@@ -1660,6 +1702,17 @@ fn drive_walk_cycle(
         // pose, and the release changes every frame.
         let mut prepared = stood;
         transition_state.0.apply_release(&mut prepared, &gait_rig);
+        // A push sways the standing body over its feet and it recovers
+        // (Winter's inverted pendulum, `balance`). Posed on the standing
+        // side of the blend, so a walk starting mid-sway fades it out.
+        for &push in &due_pushes {
+            balance.push(push);
+        }
+        if !balance.is_settled(1.0e-5) {
+            let support = balance::Support::of(&stood, &gait_rig);
+            balance.step(&support, balance::pendulum_k(&stood, &gait_rig), time.delta_secs());
+            balance.apply(&mut prepared, &gait_rig);
+        }
         // A stop's last swing is set down onto where it will stand, judged
         // by the foot IK on the rendered foot (`AnimFootIk::landing`).
         foot_ik.landing = transition_state.0.landing(&prepared, &gait_rig);
@@ -2245,6 +2298,7 @@ fn main() {
         .insert_resource(AnimPoseChoice::from_args())
         .insert_resource(AnimIdleConfig::from_args())
         .insert_resource(SpeedSchedule::from_args())
+        .insert_resource(PushSchedule::from_args())
         .insert_resource(DebugLogTimer::default())
         .add_systems(Startup, (spawn_camera, spawn_light, spawn_ground, spawn_real_mesh, spawn_camera_hud, spawn_skeleton_hud))
         .add_systems(Update, (camera_controller, draw_world_axis_gizmos, draw_joint_axis_gizmos, update_camera_hud, apply_real_mesh_visibility, build_real_mesh_skeleton))
