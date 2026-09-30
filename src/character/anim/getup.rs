@@ -51,14 +51,30 @@ pub const STAND_SECONDS: f32 = 0.8;
 /// The keys a body lying `lying` rises through, before standing. Timings are
 /// choices: about 2.5 s from lying to standing, a young adult's unhurried
 /// rise.
+///
+/// The keys are chained, each placed along the rig's forward so the contact
+/// it shares with the next stays where it is: the squat's and the
+/// half-kneel's front foot where the standing feet will be, the sitting
+/// feet where the squat's are, the knee on hands and knees where the
+/// half-kneel's is. Built each at the character's origin, the half-kneel's
+/// front foot slid 0.34 m back as it stood.
 pub fn keys(lying: Lying, rig: &RigGeometry) -> Vec<GetUpKey> {
-    match lying {
-        Lying::FaceUp => vec![GetUpKey { pose: sit(rig), seconds: 0.9 }, GetUpKey { pose: squat(rig), seconds: 0.8 }],
-        Lying::FaceDown => vec![
-            GetUpKey { pose: quadruped(rig), seconds: 0.9 },
-            GetUpKey { pose: half_kneel(rig), seconds: 0.8 },
-        ],
-    }
+    let standing = forward_kinematics_on(&LocalPose::REST, rig);
+    let (first, second, first_on, second_on) = match lying {
+        Lying::FaceUp => (sit(rig), squat(rig), Bone::LeftFoot, Bone::LeftFoot),
+        Lying::FaceDown => (quadruped(rig), half_kneel(rig), Bone::RightLeg, Bone::LeftFoot),
+    };
+    let second = placed(second, rig, second_on, standing[Bone::LeftFoot]);
+    let first = placed(first, rig, first_on, forward_kinematics_on(&second, rig)[first_on]);
+    vec![GetUpKey { pose: first, seconds: 0.9 }, GetUpKey { pose: second, seconds: 0.8 }]
+}
+
+/// `pose` moved along the rig's forward until `bone` is level with `at`.
+fn placed(mut pose: LocalPose, rig: &RigGeometry, bone: Bone, at: bevy::math::Vec3) -> LocalPose {
+    let forward = rig.forward();
+    let off = (forward_kinematics_on(&pose, rig)[bone] - at).dot(forward);
+    pose.root_translation -= forward * off;
+    pose
 }
 
 /// How far a contact's joint sits above the floor when it bears weight,
@@ -403,6 +419,28 @@ mod tests {
             assert!(ahead(&kneel, Bone::LeftFoot, Bone::RightLeg) > 0.2, "{name}: half-kneeling, the front foot should be ahead of the down knee");
             let at = forward_kinematics_on(&kneel, &rig);
             assert!(at[Bone::Head].y - at[Bone::Hips].y > 0.4, "{name}: half-kneeling, the trunk should be upright");
+        }
+    }
+
+    #[test]
+    fn chained_keys_keep_their_shared_contacts_in_place() {
+        // What stays planted from one key to the next does not slide: the
+        // front foot from half-kneeling to standing, the feet from squatting
+        // to standing and from sitting to squatting, the knee from hands and
+        // knees to half-kneeling. Measured along the rig's forward.
+        for (name, rig) in rigs() {
+            let forward = rig.forward();
+            let standing = forward_kinematics_on(&LocalPose::REST, &rig);
+            for (lying, first_on, second_on) in
+                [(Lying::FaceUp, Bone::LeftFoot, Bone::LeftFoot), (Lying::FaceDown, Bone::RightLeg, Bone::LeftFoot)]
+            {
+                let chain = keys(lying, &rig);
+                let (first, second) = (forward_kinematics_on(&chain[0].pose, &rig), forward_kinematics_on(&chain[1].pose, &rig));
+                let slid = (second[second_on] - standing[Bone::LeftFoot]).dot(forward).abs();
+                assert!(slid < 1.0e-3, "{name} {lying:?}: {} slides {:.0} mm up to standing", second_on.name(), slid * 1e3);
+                let slid = (first[first_on] - second[first_on]).dot(forward).abs();
+                assert!(slid < 1.0e-3, "{name} {lying:?}: {} slides {:.0} mm between the keys", first_on.name(), slid * 1e3);
+            }
         }
     }
 

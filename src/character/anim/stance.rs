@@ -263,7 +263,7 @@ pub fn move_pelvis_over_feet(
     turn: Quat,
     loads: [f32; 2],
 ) {
-    move_pelvis_and_feet(pose, rig, shift, turn, loads, [Vec3::ZERO; 2], 0.0);
+    move_pelvis_and_feet(pose, rig, shift, turn, loads, [Vec3::ZERO; 2], 0.0, [Vec3::ZERO; 2], [0.0; 2], |needed, _| needed);
 }
 
 /// How far a trailing foot's heel may rise about its ball, radians, when
@@ -284,6 +284,13 @@ pub const DROP_BEFORE_HEEL_RISE: f32 = 0.04;
 /// going, and each ankle is placed once under the moved pelvis. Placing a
 /// stepped foot first, under a pelvis not yet carried over it, left it out
 /// of reach (short, in the air) and the pelvis then kept that.
+///
+/// The pelvis height: `aims` (each foot's displacement to judge the need
+/// by: a swinging foot's point ahead on its arc) give the height `settle`
+/// is offered as a target; the ceiling is each loaded leg's need for where
+/// its foot is now, plus its `slack`. `settle(target, ceiling)` returns the
+/// drop to pose, held at or under the ceiling.
+#[allow(clippy::too_many_arguments)]
 pub fn move_pelvis_and_feet(
     pose: &mut LocalPose,
     rig: &super::rig::RigGeometry,
@@ -292,6 +299,9 @@ pub fn move_pelvis_and_feet(
     loads: [f32; 2],
     feet: [Vec3; 2],
     rise: f32,
+    aims: [Vec3; 2],
+    slack: [f32; 2],
+    settle: impl FnOnce(f32, f32) -> f32,
 ) {
     use super::rig::{delta_after_world_turn, offset_from};
     let shift = Vec3::new(shift.x, 0.0, shift.z);
@@ -340,35 +350,49 @@ pub fn move_pelvis_and_feet(
     });
     // Where leg `i`'s ankle goes, hips-relative before the move, with its
     // heel risen `angle` about the tip.
-    let ankle_for = |i: usize, angle: f32| {
+    let ankle_at = |i: usize, foot: Vec3, angle: f32| {
         let (_, hip, leg) = legs[i];
-        let flat = hip + leg + feet[i];
+        let flat = hip + leg + foot;
         if angle == 0.0 {
             return flat;
         }
         let (tip, axis) = heels[i];
         flat + tip - Quat::from_axis_angle(axis, angle) * tip
     };
-    // The root's rise at which leg `i` just reaches its ankle.
-    let reach = |i: usize, angle: f32| {
+    let ankle_for = |i: usize, angle: f32| ankle_at(i, feet[i], angle);
+    // The root's rise at which leg `i` just reaches its ankle with its foot
+    // displaced by `foot`.
+    let reach = |i: usize, foot: Vec3, angle: f32| {
         let (_, hip, leg) = legs[i];
-        let shifted = ankle_for(i, angle) - hip - shift;
+        let shifted = ankle_at(i, foot, angle) - hip - shift;
         let horizontal = Vec3::new(shifted.x, 0.0, shifted.z).length_squared();
         shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt()
     };
-    let asks = |i: usize| {
-        let flat = reach(i, 0.0);
+    let asks = |i: usize, foot: Vec3| {
+        let flat = reach(i, foot, 0.0);
         if !trailing[i] || flat >= -DROP_BEFORE_HEEL_RISE {
             return flat;
         }
-        let risen = (1..=8).map(|n| reach(i, rise * n as f32 / 8.0)).fold(flat, f32::max);
+        let risen = (1..=8).map(|n| reach(i, foot, rise * n as f32 / 8.0)).fold(flat, f32::max);
         risen.min(-DROP_BEFORE_HEEL_RISE).max(flat)
     };
-    let drop = (0..2)
-        .filter(|&i| loads[i] > 0.05)
-        .map(asks)
-        .fold(f32::MAX, f32::min)
-        .min(if loads.iter().all(|&l| l <= 0.05) { 0.0 } else { f32::MAX });
+    let lowest = |each: &dyn Fn(usize) -> f32| {
+        (0..2)
+            .filter(|&i| loads[i] > 0.05)
+            .map(each)
+            .fold(f32::MAX, f32::min)
+            .min(if loads.iter().all(|&l| l <= 0.05) { 0.0 } else { f32::MAX })
+    };
+    // What the legs will need with their feet where they are aiming (a
+    // swinging foot's landing): the height to settle toward.
+    let needed = lowest(&|i| asks(i, aims[i]));
+    // How high the pelvis may sit at most: each leg's need for where its
+    // foot is now, plus the slack the caller gives it (a swinging foot, in
+    // the air, may be left short of its arc that much).
+    let ceiling = lowest(&|i| asks(i, feet[i]) + slack[i].max(0.0));
+    // The caller may sit the pelvis lower than it must (`settle`), never
+    // above the ceiling: higher, a foot could not be reached.
+    let drop = settle(needed, ceiling).min(ceiling);
     let pivot = legs[0].1 * loads[0] + legs[1].1 * loads[1];
     if turned {
         pose.rotations[Bone::Hips] = delta_after_world_turn(pose, rig, Bone::Hips, turn);

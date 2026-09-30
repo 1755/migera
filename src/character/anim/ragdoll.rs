@@ -125,6 +125,9 @@ pub struct Ragdoll {
     /// The poses a rise passes through, built on the rig when it starts
     /// ([`super::getup::keys`]).
     pub rise_keys: Vec<super::getup::GetUpKey>,
+    /// Which feet (left, right) move in the rise's current segment; only
+    /// they may be tucked clear of the floor.
+    pub rise_moving: [bool; 2],
 }
 
 /// A ragdoll let go to fall: its root is no longer pinned, gravity acts on
@@ -204,6 +207,7 @@ impl Default for Ragdoll {
             fall: None,
             body_offsets: BoneSet::splat(Vec3::ZERO),
             rise_keys: Vec::new(),
+            rise_moving: [true; 2],
         }
     }
 }
