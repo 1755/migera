@@ -1,6 +1,6 @@
 ---
 title: A fall hands the body to physics; tone is joint damping, and rest must be declared
-description: "A push (or hit, as a push) whose first step would exceed MAX_CATCH 0.77 m falls: the root is released with the push's velocity, the simulation shown, the entity following. Tone is JointDamping 3/s; a fallen body needs 12 substeps and a declared rest or it creeps. Read before changing falls, hits or get-up."
+description: "A push (or hit, as a push) falls when the balance, run 3 s ahead at its first step, loses its lean; a hit with no balance falls when its capture point leaves the feet. The root is released with the push's velocity; tone is JointDamping 3/s; rest must be declared. Read before changing falls or hits."
 type: decision
 status: current
 tags:
@@ -8,22 +8,26 @@ tags:
   - ragdoll
   - physics
   - correctness
-updated: 2026-09-30
-verified: 2026-09-30
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/balance.rs
   - src/character/anim/ragdoll.rs
   - src/character/anim/ragdoll_plugin.rs
   - examples/character_gallery.rs
 sources:
-  - "tests: balance::tests::a_push_past_a_catchable_step_falls; ragdoll_plugin::tests::a_released_ragdoll_falls_with_its_momentum_and_is_drawn_where_it_lies, a_fallen_body_that_never_sleeps_by_itself_is_put_to_rest"
-  - "probes (ignored): ragdoll_plugin::tests::probe_fall_damping, probe_ragdoll_substep_cost"
+  - "tests: balance::tests::a_push_past_a_catchable_step_falls; ragdoll_plugin::tests::a_released_ragdoll_falls_with_its_momentum_and_is_drawn_where_it_lies, a_fallen_body_that_never_sleeps_by_itself_is_put_to_rest, a_blow_topples_a_character_with_no_balance_when_its_feet_cannot_take_it"
+  - "probes (ignored): ragdoll_plugin::tests::probe_fall_damping, probe_ragdoll_substep_cost; balance::tests::probe_forecast_cost, probe_catch_table"
   - "live BRP, character_gallery --ragdoll on --push-schedule 3:1.5:0 (and 3:0:1.2, 3:-1.5:0), puppet_base and character.glb"
 aliases:
   - H2
   - fall
   - Ragdoll::fall
   - MAX_CATCH
+  - fall forecast
+  - catches_ahead
+  - FORECAST_SECONDS
+  - LOST_FALLS
   - FALL_DAMPING
   - FALLEN_SLEEP
   - REST_SPEED
@@ -49,20 +53,29 @@ rotations only, and the gallery had no physics floor.
 
 ## Decision
 
-- **Trigger: the first recovery step asks for more than `MAX_CATCH`
-  (0.77 m)**, planned from the whole push (the undelivered part too).
-  This is capturability: no reachable step catches it. The value is the
-  model's own verdict with nothing lost to the validity bound: every push
-  whose first step asked ≤ 0.73 m was caught (forward 1.0 m/s, sideways
-  0.9 in two steps, back 1.2), every one asking ≥ 0.81 m ran away. As a
-  late safety net, momentum the bound has to take away also falls
-  (`Balance::lost` > `LOST_FALLS`, 0.1 m/s).
+- **Trigger: a forecast.** When the first recovery step is planned,
+  `Balance::catches_ahead` runs a copy of the balance (it is `Copy`)
+  `FORECAST_SECONDS` (3 s) ahead at 1/60 s, with every step it would take.
+  If the copy loses momentum to the validity bound (`lost` >
+  `LOST_FALLS`, 0.1 m/s), the push falls, known within 0.2 s of it. This
+  is capturability judged by the model itself, over all its steps: runaways
+  lost momentum 0.65–2.1 s in, and caught pushes settle well inside 3 s.
+  It costs about 43 µs, once per stumble (`probe_forecast_cost`, worst
+  frame). The live balance ticks at the same 1/60 s at most, so it takes
+  the steps the forecast did (see
+  [the stumble note](../ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md)).
+  `lost` stays a late safety net for anything the forecast missed.
 - **A hit is a push.** `apply_ragdoll_hits` pushes the character's
   `Balance` by the struck body's share of the momentum, (m_body/m_total)·v,
   horizontal, in the rig's axes. The balance then absorbs, steps or falls
   as for any push. The thorax is 21.6% of the body, so a chest blow steps
   from about 3 m/s and falls from about 5.5. Before this, the pinned root
   held the character up through any blow.
+- **A character with no `Balance` falls if its feet can't take the hit.**
+  The push has nowhere to go, so the rule is capturability without a
+  step: it falls when the capture point `Δv·√K` lies outside the support
+  under both feet (`Support::of(pose, live rig)`). Before this, only a
+  character with a balance controller could be toppled.
 - **Release keeps the momentum, the push's too.** The kinematic root moves
   with the hips' velocity (`follow_kinematic_roots`) and keeps it when
   turned `Dynamic`: carried at 1 m/s, the falling hips go on 6+ cm in the
@@ -106,8 +119,13 @@ rotations only, and the gallery had no physics floor.
   was "caught" by one 0.4 m step, with 1.98 m/s simply discarded. That was
   never a catch.
 - **Fall only when the bound discards momentum** (`lost`). This is right,
-  but it comes late: 0.65–2.1 s into a runaway of shuffling steps. It is
-  kept as the safety net, not the trigger.
+  but it comes late: 0.65–2.1 s into a runaway of shuffling steps. The
+  forecast asks the same question at once.
+- **A length rule on the first step** (`MAX_CATCH`, 0.77 m; the trigger
+  until 2026-09-30). Every push whose first step asked ≤ 0.73 m was
+  caught and every one asking ≥ 0.81 m ran away, forward and back. But
+  sideways it was too conservative: at 1.2 m/s the first step asks
+  0.85 m, and four crossovers catch it anyway.
 - **Body-level (air) damping.** This slows the fall itself. Joint
   damping resists only relative motion.
 - **Sleep thresholds alone.** This isn't enough: some resting poses creep
@@ -125,18 +143,19 @@ rotations only, and the gallery had no physics floor.
 - With the push carried: forward falls land face down on both rigs,
   backward face up. Sideways, `puppet_base` rolled face down both ways
   and `character.glb` ended face up.
-- Sideways, the model's `MAX_CATCH` is conservative: at 1.2 m/s its first
-  step asks 0.85 m, so it falls, though the pendulum would have caught it
-  in four crossover steps.
+- With the forecast, `puppet_base` in `relaxed_stand` catches 1.2 m/s
+  sideways in four crossovers; forward 1.2, sideways 1.6 and back 1.8
+  fall. Where the edge lies depends on the stance: live, the gallery's
+  `puppet_base` (k 0.095 s²) falls on 1.2 m/s sideways and
+  `character.glb` (k 0.104 s²) catches it.
 - Found on the way: the read-back's quaternions drifted off unit length
   through their own feedback (see
   [normalize what you read back from your own output](../../engineering-practice/debugging/normalize-what-you-read-back-from-your-own-output.md)).
 
 ## Revisit when
 
-- A character with no `Balance` (no standing controller): its hits can't
-  topple it, since the push has nowhere to go. It would need its own
-  rule.
+- A character with no `Balance` that is walking: its rule assumes both
+  feet down and a still body.
 - Moving targets: the launch is the balance's COM velocity; a character
   hit while walking needs the walk's velocity added.
 

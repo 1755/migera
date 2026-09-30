@@ -42,6 +42,68 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Falls forecast, touchdown cushioned, rising feet tucked, the ragdoll turned with its character
+
+Closes the four open items of the entry below, plus two found live.
+Commits feecaa8 and the one after it. Distilled in
+[a fall hands the body to physics](./docs/knowledge/character-animation/ragdoll-and-physics/a-fall-hands-the-body-to-physics.md),
+[a stumble is a capture-point step](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md),
+[getting up goes through key poses](./docs/knowledge/character-animation/ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md)
+and the new
+[a pose delta's world is the character's frame](./docs/knowledge/character-animation/rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md).
+
+**Falls are forecast** (`Balance::catches_ahead`). At the first recovery
+step a copy of the balance runs 3 s ahead at 1/60 s. It falls if the copy
+loses over 0.1 m/s to the validity bound. This replaces `MAX_CATCH`:
+1.2 m/s sideways is now caught in four crossovers on the test stance, and
+every falling push is known within 0.2 s. Cost 43 µs worst frame, once per
+stumble (`probe_forecast_cost`).
+
+**Touchdown is cushioned** (`balance::Sink`). The drop aims 0.04 s ahead
+on the swing arc, the swinging leg gets a fading 5 cm slack, and a
+critically damped 15 rad/s spring, solved exactly, follows. The pelvis
+jolt at a full-reach landing went from 12.8 mm to ≤ 4.8 mm. With the
+spring alone the jolt stayed at 12.8 mm, because the need itself jumped
+15 mm a frame. Softening the swing leg snapped the landing (18.7 mm).
+Aiming at the landing sank the pelvis 128 mm. An explicitly integrated
+spring blew up at ω 1000.
+
+**Rising feet are tucked** (`tuck_foot`). From lying to hands and knees,
+`LeftToeBase` dipped and the clearance lift raised the whole body up to
+209 mm. Now a moving foot's knee bends until it clears. Headless the
+worst overshoot is 48 mm; 88 mm with the tuck disabled, which fails the
+test. Planted feet are not tucked (`rise_moving`), and the keys are
+chained so shared contacts stay put. Tucking planted feet had made the
+lift jump 15 mm.
+
+**A hit topples a character with no balance** when the capture point
+`Δv·√K` leaves the support under both feet.
+
+**The ragdoll turned with its character.** Pose ↔ body conversions ran
+on a rig rooted at the live facing, reading every delta about a scene
+axis. They were right only facing the spawn direction. The rise's 86°
+turn swung the lying body 534 mm in a frame, and the standing bodies held
+their arms in a T. Now `character_frame` converts in the bind-rooted rig
+and applies the turn at the boundary. The old turning test used the rest
+pose and could not fail; now it uses `relaxed_stand` (fails 8.8° with
+the fix disabled), and a new read-back test fails 90° without it. Live,
+both rigs: bodies within 0.1–2.8° of their targets once standing, arms
+hanging 82° below horizontal.
+
+**Balance ticks at most 1/60 s** (`MAX_TICK`). Stepped a whole frame at a
+time, live frames of 4–52 ms landed each foot up to a frame late, and the
+1.2 m/s side catch asked ever-longer steps (0.74 → 1.39 m) and fell.
+`a_catch_does_not_depend_on_frame_times` fails without it.
+
+**Measured live, 2026-10-01:**
+- Planted balls during sideways catches of 0.8–1.2 m/s, after a forward
+  stumble: 12–28 mm at worst, a single frame at a landing. The 8–22 cm
+  slides seen earlier did not reproduce at feecaa8 or after it (A/B in
+  a worktree).
+- The catch limit depends on the stance. The gallery's `puppet_base`
+  (k 0.095 s²) falls on 1.2 m/s sideways; `character.glb` (0.104 s²) and
+  the test stance catch it.
+
 ### Getting up through key poses; hits topple; sideways stumbles really caught
 
 Follow-ups to H2/H3 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).

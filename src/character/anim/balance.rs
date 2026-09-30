@@ -138,6 +138,10 @@ pub const FORECAST_SECONDS: f32 = 3.0;
 /// The forecast's time step, seconds: the frame rate it is tuned at.
 const FORECAST_DT: f32 = 1.0 / 60.0;
 
+/// The longest tick [`Balance::step`] takes, seconds: the forecast's, so a
+/// live run sees the steps its forecast did, however long its frames.
+const MAX_TICK: f32 = FORECAST_DT;
+
 /// How much outward velocity the validity bound may take before the body
 /// counts as falling anyway, m/s ([`Balance::lost`]): a catch that failed
 /// after it began.
@@ -431,11 +435,24 @@ impl Balance {
 
     /// Advances the pendulum, and any step, by `dt` seconds on `support`,
     /// with constant `k` (s², [`pendulum_k`]).
+    ///
+    /// In ticks of at most [`MAX_TICK`]: a swing lands, and the next step
+    /// is planned, only between ticks. Taken a frame at a time, a 50 ms
+    /// frame landed a foot up to 50 ms late while the body kept falling off
+    /// the old support, and live frames (4-52 ms) turned a 1.2 m/s side
+    /// push that four crossovers catch into ever-longer steps and a fall.
     pub fn step(&mut self, support: &Support, k: f32, dt: f32) {
         if dt <= 0.0 || !dt.is_finite() || k <= 0.0 {
             return;
         }
         self.last_dt = dt;
+        let ticks = (dt / MAX_TICK).ceil().max(1.0);
+        for _ in 0..ticks as usize {
+            self.tick(support, k, dt / ticks);
+        }
+    }
+
+    fn tick(&mut self, support: &Support, k: f32, dt: f32) {
         if let Some((_, since)) = &mut self.landed {
             *since += dt;
             if *since >= super::transition::LAND_HOLD {
@@ -1000,6 +1017,35 @@ mod tests {
             frames.push((world, pelvis, balance.swing));
         }
         frames
+    }
+
+    #[test]
+    fn a_catch_does_not_depend_on_frame_times() {
+        // Live frames ran 4-52 ms, and a 1.2 m/s side push that four
+        // crossovers catch at 60 Hz fell there: taken a frame at a time,
+        // each step landed up to a frame late, and every next one had
+        // further to go (0.74 m asked for the second, then 0.85, 0.96,
+        // 1.39). See `Balance::step`.
+        let (stood, rig) = real_stood();
+        let support = Support::of(&stood, &rig);
+        let k = pendulum_k(&stood, &rig);
+        let uneven = [DT, 0.3 * DT, 2.5 * DT, DT, 0.6 * DT, 3.0 * DT];
+        for push in [Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.2), Vec2::new(0.0, -1.0), Vec2::new(-1.2, 0.0)] {
+            let mut balance = Balance::default();
+            balance.push(push);
+            let (mut time, mut frame) = (0.0, 0);
+            while time < 6.0 {
+                let dt = uneven[frame % uneven.len()];
+                (time, frame) = (time + dt, frame + 1);
+                balance.step(&support, k, dt);
+                if balance.travelled.is_some() {
+                    balance.rebase();
+                }
+            }
+            assert!(!balance.falls, "{push} is caught at 60 Hz, but fell at uneven frame times");
+            assert!(balance.lost < 1.0e-3, "{push}: the validity bound took {:.2} m/s", balance.lost);
+            assert!(balance.is_settled(1.0e-3), "{push}: not settled after 6 s");
+        }
     }
 
     // Per push direction and speed: steps taken, the first and longest step

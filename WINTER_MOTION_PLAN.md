@@ -239,7 +239,7 @@ a stable PD, research-grade (see the 4b finding). Instead:
   sideways, back); planted feet stay ≤ 1 mm live on both rigs. See
   [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md).
 - [x] **H2 Fall (physics), done 2026-09-30.** A push asking for a step
-  longer than `MAX_CATCH` (0.8 m), or a game call (`Ragdoll::fall`; `F`
+  longer than `MAX_CATCH` (0.8 m; now a forecast, see below), or a game call (`Ragdoll::fall`; `F`
   in the gallery), releases the pinned root with its velocity. Gravity
   acts in full, tone is joint damping (3/s), the screen shows the
   simulation with the skeleton on the hips body, and the entity follows.
@@ -261,6 +261,19 @@ a stable PD, research-grade (see the 4b finding). Instead:
     `MAX_STEP` is 0.6 m, and the far leg crosses over when that is the
     shorter step.
   - A fall carries the push's velocity.
+- [x] **Second follow-ups, done 2026-10-01.** See
+  [CHARACTER_PROGRESS.md](./CHARACTER_PROGRESS.md) for the numbers.
+  - Falls are forecast: the balance is run 3 s ahead at the first step,
+    replacing `MAX_CATCH`, so 1.2 m/s sideways is caught in four
+    crossovers.
+  - Touchdown is cushioned by a sprung pelvis drop (jolt 12.8 → ≤ 4.8 mm).
+  - Feet that dip while rising are tucked, not lifted over; keys are
+    chained so shared contacts hold.
+  - Hits topple a character with no balance when its capture point
+    leaves its feet.
+  - The ragdoll converts poses in the character's frame, so the rise's
+    turn no longer snaps the body or leaves the arms in a T.
+  - The balance ticks at most 1/60 s, so long frames don't lose a catch.
 
 Already built and kept: hits with a stun-and-recover strength dial, the
 pinned ragdoll following the animation, sole feet (4a).

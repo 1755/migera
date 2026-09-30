@@ -1,6 +1,6 @@
 ---
 title: Getting up goes through key poses chosen by how the body lies, then the bodies are set back on their bones
-description: "At rest, Ragdoll::get_up(delay) reads face up/down from the chest body, turns the character to rise along its body, and blends the drawn skeleton, per bone in world space, through solved key poses (sit→squat or hands-and-knees→half-kneel, getup.rs) to standing; then re-pins. Read before changing get-up."
+description: "At rest, Ragdoll::get_up reads face up/down from the chest body, turns the character along its body, and blends the drawn skeleton, per bone in world space, through chained, solved key poses (sit→squat or hands-and-knees→half-kneel, getup.rs) to standing, tucking dipping feet; then re-pins. Read before changing get-up."
 type: decision
 status: current
 tags:
@@ -8,8 +8,8 @@ tags:
   - physics
   - character-animation
   - correctness
-updated: 2026-09-30
-verified: 2026-09-30
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/getup.rs
   - src/character/anim/ragdoll.rs
@@ -18,7 +18,7 @@ code:
 sources:
   - "VanSant (1988), Rising from a supine position to erect stance, Phys Ther 68(2):185-192, https://pubmed.ncbi.nlm.nih.gov/3340655/ — 32 young adults; most common: symmetrical push, symmetrical trunk, symmetrical squat, through sitting to squatting"
   - "Floor-to-stand studies (quadruped push-up to half-kneel), e.g. The Biomechanics of Healthy Older Adults Rising from the Floor Independently, IJERPH 20(4):3507, https://doi.org/10.3390/ijerph20043507"
-  - "tests getup::tests (4), ragdoll_plugin::tests::a_fallen_ragdoll_gets_up_and_is_pinned_again"
+  - "tests getup::tests (incl. chained_keys_keep_their_shared_contacts_in_place), ragdoll_plugin::tests::a_fallen_ragdoll_gets_up_and_is_pinned_again, a_rise_moves_no_limb_far_above_where_its_keys_put_it"
   - "character_gallery --anim-pose getup:sit|squat|quadruped|half_kneel (static keys, Front and Left, gizmos)"
 aliases:
   - H3
@@ -29,6 +29,9 @@ aliases:
   - Lying
   - body_offsets
   - re-pin
+  - tuck_foot
+  - rise_moving
+  - chained keys
 ---
 
 # Getting up goes through key poses chosen by how the body lies, then the bodies are set back on their bones
@@ -69,14 +72,34 @@ end, when every body is set onto its bone and the root is pinned again.
   records that `turn`; the owner of the character's heading applies it
   once (`turn_pending`). The ragdoll doesn't write the rotation, because
   in the gallery a facing controller rewrites it every frame. The keys
-  are in the character's frame, so they turn with it.
+  are in the character's frame, so they turn with it, and so must every
+  conversion between the pose and the bodies: see
+  [a pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md).
+  Before that fix, the turn swung the lying body 534 mm in the frame it
+  was applied, and left the standing bodies with their arms out in a T.
 - **Blended per bone in the world.** Each bone's world rotation takes the
   shortest path, and is then turned back into a local rotation. Blended
   locally, a limb rode its parents' swing as well as its own, and sitting
   up flung an arm out sideways, palm up.
+- **Keys are chained, so shared contacts stay put.** Each key is placed
+  where the next one needs it (`placed`): face up, the squat's left foot
+  where the standing foot is and the sit's where the squat's is; face
+  down, the half-kneel's front foot where the standing foot is and the
+  hands-and-knees' knee where the half-kneel's is. Placed independently,
+  a planted foot slid between keys.
 - **Ground clearance.** The drawn skeleton is lifted so no toe, foot, hand
   or head joint goes below the ground, taken as the character entity's
   height.
+- **A foot that dips is tucked, not lifted over.** The world-space blend
+  can swing a foot through the floor between keys. Lifting the whole
+  body clear of it left a leg hanging high: from lying to hands and
+  knees, `LeftToeBase` lifted the body up to 209 mm. `tuck_foot` bends
+  that leg's knee (about the hinge axis, thigh × shin) until the foot
+  clears, and the lift then only has to clear what the tuck couldn't.
+  Only feet that **move** between the two keys are tucked
+  (`Ragdoll::rise_moving`, toe moving over 5 cm; all of them off the
+  lying body). Tucking planted feet folded them up from squatting to
+  standing, and the lift jumped 15 mm when the tuck let go.
 - **Bodies asleep during the rise; the end re-pins.** The frame after the
   last blend, each body is set onto its drawn bone at
   `Ragdoll::body_offsets` (recorded at spawn; a bone is rigid), still and
@@ -107,9 +130,13 @@ end, when every body is set onto its bone and the root is pinned again.
   stood, and every body is back on its bone and holds.
 - Live, `puppet_base`: face up, it sits up on its hands and squats on flat
   feet; face down, it pushes up to hands and knees and then a half-kneel.
-  Once, a leg was caught lifted well off the floor between lying and
-  hands-and-knees (unresolved). No limb flung out after the world-space
-  blend.
+  No limb flung out after the world-space blend.
+- Headless, both lying sides (`a_rise_moves_no_limb_far_above_where_its_keys_put_it`):
+  hips, knees and hands never rise more than 6 cm above where the keys
+  put them, feet 15 cm. The worst is 48 mm; with the tuck disabled,
+  88 mm, and the test fails.
+- Live, after the turn fix, both rigs: no per-frame neck move over 34 mm
+  after landing, and standing bodies within 0.1–2.8° of their targets.
 - **Found on the way:** the gallery rewrote the character's position from
   its own locomotion state every frame. The ragdoll's entity-follow only
   won while it wrote last, so every rise slid the character 0.45 m back to
@@ -130,5 +157,6 @@ end, when every body is set onto its bone and the root is pinned again.
 
 - [A fall hands the body to physics](./a-fall-hands-the-body-to-physics.md) — prerequisite: the fall, its rest signal and why the entity follows.
 - [A pose delta names a world axis](../rig-and-retargeting/a-pose-delta-names-a-world-axis.md) — prerequisite: why angles about `left` add down a chain.
+- [A pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md) — deeper: why the rise's turn broke the bodies, and the rule that fixed it.
 - [Foot locks need the body's travel](../ik-and-locomotion/foot-locks-need-the-bodys-travel.md) — same-trap: an entity moved behind the locks' back.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: a body's rotation is its bone's, which is what lets it be set back on its bone.

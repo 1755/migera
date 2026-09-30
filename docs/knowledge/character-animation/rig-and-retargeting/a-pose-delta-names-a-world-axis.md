@@ -26,7 +26,9 @@ aliases:
 # A pose delta names a world axis
 
 A `LocalPose` rotation is authored against the synthetic T-pose, where every
-bind is identity, so it names a **world** axis, not a local one. Forward
+bind is identity, so it names a **world** axis, not a local one. That world
+is the character's frame as bound, which turns with the character, not the
+scene's (see [a pose delta's world is the character's frame](./a-pose-deltas-world-is-the-characters-frame.md)). Forward
 kinematics must conjugate it into the bone's accumulated bind frame, and
 world-space corrections need their own frame.
 
@@ -70,6 +72,7 @@ Commit 026d9e8 (2026-09-27). `world_correction_frame` is used by
 
 ## Related
 
+- [A pose delta's world is the character's frame](./a-pose-deltas-world-is-the-characters-frame.md) — deeper: "world" here is the character as bound; it turns with the character, so scene conversions apply the turn at the boundary.
 - [Conjugate pose deltas by the bind rotation](./conjugate-pose-deltas-by-the-bind-rotation.md) — prerequisite: the same conjugation at write-back time.
 - [Same function both sides is a vacuous test](../../engineering-practice/testing/same-function-both-sides-is-a-vacuous-test.md) — same-trap: tests that could not distinguish right from wrong.
 - [Symptom is far from cause in the rig chain](../../engineering-practice/debugging/symptom-is-far-from-cause-in-the-rig-chain.md) — example: the frame bugs found right after this one.

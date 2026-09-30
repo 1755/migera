@@ -1,6 +1,6 @@
 ---
 title: A stumble is a capture-point step, then a join the body's momentum carries
-description: "balance::Balance steps to the predicted capture point (COP at the stance foot's nearest point, ≤ 0.6 m), never re-using the leg just stepped, crossing over sideways; the trailing foot joins once the capture point is inside the stepped foot; a rear foot rolls onto its toes. Read before changing stepping in balance.rs."
+description: "balance::Balance steps to the predicted capture point (≤ 0.6 m), never re-using the leg just stepped, crossing over sideways; the trailing foot joins once the capture point is inside the stepped foot; a rear foot rolls onto its toes; a sprung pelvis cushions touchdown. Read before changing stepping in balance.rs."
 type: decision
 status: current
 tags:
@@ -9,15 +9,15 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-09-30
-verified: 2026-09-30
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/balance.rs
   - src/character/anim/stance.rs
   - examples/character_gallery.rs
 sources:
   - "Winter, Biomechanics and Motor Control of Human Movement, 4th ed. (2009), §11.2.1 (Eq. 11.3); Appendix A frames 63-70 (pre-swing roll onto the toes)"
-  - "tests balance::tests::a_stumble_steps_cleanly_on_the_real_rig, a_stumble_plans_the_same_steps_at_uneven_frame_times"
+  - "tests balance::tests::a_stumble_steps_cleanly_on_the_real_rig, a_stumble_plans_the_same_steps_at_uneven_frame_times, a_catch_does_not_depend_on_frame_times"
   - "live BRP, character_gallery --push-schedule 3:0.6:0,8:0:0.7,13:-0.8:0 and 3:0:0.8, puppet_base and character.glb"
   - "Maki & McIlroy (1997), The role of limb movements in maintaining upright stance: the 'change-in-support' strategy, Phys Ther 77(5)"
   - "Postural reactions to external mediolateral perturbations: a review, Applied Sciences 13(3):1696 (2023), https://www.mdpi.com/2076-3417/13/3/1696 — loaded side step, unloaded crossover, unloaded medial step; young adults favour the loaded side step"
@@ -35,6 +35,11 @@ aliases:
   - MAX_HEEL_RISE
   - DROP_BEFORE_HEEL_RISE
   - move_pelvis_and_feet
+  - Sink
+  - SINK_LEAD
+  - SWING_SLACK
+  - touchdown V
+  - MAX_TICK
 ---
 
 # A stumble is a capture-point step, then a join the body's momentum carries
@@ -112,6 +117,29 @@ and physics takes over only for a fall.
   for where each loaded foot is going, and each ankle is placed once under
   the moved pelvis. Placing the stepped foot first, under a pelvis not yet
   over it, left that foot out of reach in the air.
+- **Touchdown is cushioned by a sprung pelvis drop** (`balance::Sink`).
+  Followed exactly, the pelvis height traced the leg's reach through a V
+  at a long step's landing: its per-frame move changed by up to 12.8 mm
+  (≈ 5 g at 60 Hz). A real landing decelerates over 50–100 ms of knee
+  flexion. Three parts, all needed:
+  1. The drop aims at the need with the swinging foot `SINK_LEAD`
+     (0.04 s) ahead on its arc, so it starts down before the foot does.
+  2. The swinging leg's reach may be short by `SWING_SLACK` (the step's
+     lift, 5 cm), fading to zero by touchdown, so the aim is not undone
+     by a leg near full extension.
+  3. A critically damped spring (15 rad/s, solved exactly, not
+     integrated) follows the aim, never deeper than the loaded legs'
+     reach plus slack.
+
+  Jolt (second difference of the pelvis) ≤ 4.8 mm, headless on
+  `puppet_base`. With the spring removed (instant follow), 6.0 mm: most
+  of the gain is the lead and slack.
+- **Ticks of at most 1/60 s** (`MAX_TICK`, the forecast's step). A swing
+  lands, and the next step is planned, only between ticks. Taken a whole
+  frame at a time, a 50 ms frame landed a foot up to 50 ms late while the
+  body kept falling off the old support. Under frames cycling 5–50 ms, a
+  1.2 m/s side push that four crossovers catch asked for ever-longer
+  steps (0.74, 0.85, 0.96, 1.39 m) and fell.
 - **The foot IK is told which feet are down** (`AnimFootIk::planted`); see
   [a speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md).
   The landing hint (`Balance::landing_spot`) eases in over the first
@@ -134,27 +162,28 @@ and physics takes over only for a fall.
 ## Consequences
 
 Every catch is the step's, not the validity bound's: nothing lost to the
-bound (`Balance::lost`), settled within 6 s. Caught on `puppet_base`:
-forward to 1.0 m/s, sideways to 1.0 (a crossover then a join), back to
-1.2 (`a_push_past_a_catchable_step_falls`). Harder pushes fall; see
+bound (`Balance::lost`), settled within 6 s. Caught on `puppet_base` in
+`relaxed_stand`: forward to 1.0 m/s, sideways to 1.2 (four crossovers),
+back to 1.2 (`a_push_past_a_catchable_step_falls`), also under uneven
+frames (`a_catch_does_not_depend_on_frame_times`). Harder pushes fall; see
 [a fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
+The limit depends on the stance: the gallery's `puppet_base` stands with
+k 0.095 s² against the test's 0.104, and falls on 1.2 m/s sideways;
+`character.glb` catches it.
 
-Near-full-reach steps, headless (`a_stumble_steps_cleanly_on_the_real_rig`):
+Near-full-reach steps, headless (`a_stumble_steps_cleanly_on_the_real_rig`),
+with the cushioned touchdown (~10 mm deeper than the bare need):
 
 | push | pelvis sank | note |
 |---|---|---|
-| 1.0 m/s forward | 52 mm | rear heel rises 84 mm onto the toes |
-| 0.8 m/s left | 91 mm | crossover; the side-step lunge was 266 mm |
+| 1.0 m/s forward | 61 mm | rear heel rises 84 mm onto the toes |
+| 0.8 m/s left | 99 mm | crossover; the side-step lunge was 266 mm |
 | 1.2 m/s back | 79 mm | rear heel rises 48 mm |
 
 Live, 0.8 m/s left on both rigs: the right foot crosses over (0.52 m),
-the left joins (0.51 m), planted balls slide ≤ 1.7 mm. The planned steps
-are identical under frame times cycling 5–50 ms.
-
-**A hard landing remains.** At a long step's touchdown the pelvis height
-follows the leg's reach through a V: its per-frame move changes by up to
-12.8 mm (≈ 5 g at 60 Hz). The pops fixed earlier were 60–132 mm; this is a
-landing, but a real one decelerates over 50–100 ms of knee flexion.
+the left joins (0.51 m), planted balls slide ≤ 1.7 mm. Live on
+2026-10-01, sideways 0.8–1.2 m/s after a forward stumble: planted balls
+held within 12–28 mm, the worst a single frame at a landing.
 
 Until 2026-09-30 the sideways catch was the clamp's: the 8° bound, from
 the stance foot alone, held the COM with its velocity zeroed, and every
@@ -164,8 +193,6 @@ side step was posed over a body the clamp had stopped.
 
 - Pushes while walking: the balance only runs on the standing side of the
   blend.
-- The touchdown V: plan the pelvis height across the swing (smooth descent
-  to the landing's need) instead of following the reach frame by frame.
 - Young-adult sideways stepping: a loaded side step would need the
   side-step lunge made shallow (a narrower join, or two shorter steps).
 

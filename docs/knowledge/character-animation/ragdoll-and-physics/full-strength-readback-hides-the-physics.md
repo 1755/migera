@@ -63,6 +63,7 @@ with itself.
 
 - [Same function both sides is a vacuous test](../../engineering-practice/testing/same-function-both-sides-is-a-vacuous-test.md) — same-trap: a comparison that cannot fail.
 - [avian joint limits are not cone and twist](./avian-joint-limits-are-not-cone-and-twist.md) — example: a defect found once the physics was measured.
+- [A pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md) — example: after a turn, the pinned bodies held T-pose arms under a correct picture.
 - [Kill stale processes before trusting BRP](../../engineering-practice/debugging/kill-stale-processes-before-trusting-brp.md) — prerequisite: make sure BRP answers from the current build.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: the earlier frame fixes.
 - [Gizmos need --show-real-mesh off](../animation-core/gizmos-need-show-real-mesh-off.md) — same-trap: another view that cannot show what is being verified.
