@@ -144,7 +144,27 @@ Order: **1 → 2 → 3a → 4 → 3b.**
   compensated so the planted foot holds. Check the sprung pose, not the
   target ([a lagging pelvis rotation slides planted feet](./docs/knowledge/character-animation/ik-and-locomotion/a-lagging-pelvis-rotation-slides-planted-feet.md)).
   - Tests: `the_pelvis_yaws_with_the_swing_leg`; planted slide unchanged.
-- [ ] **1.5 Live check.** BRP capture with `--anim-speed-schedule` (start and
+- [x] **1.5 done (2026-09-30), on `puppet_base`.** Live, each speed from
+  a standing start (BRP):
+
+  | | 0.7 m/s | 1.2 m/s | 1.6 m/s |
+  |---|---|---|---|
+  | step width | 130 mm | 128 mm | 130 mm |
+  | pelvis sway p-p | 47 mm | 43 mm | 34 mm |
+  | roll in single support | ±2.8° | ±2.7° | ±2.6° |
+  | pelvis–chest correlation | −0.98 | −0.97 | −0.97 |
+  | steady planted slide | 5.5 mm (was 5.7) | 3.3 mm | 7.1 mm (was 5.0) |
+
+  About 2 mm more slide at 1.6 m/s: a small rendered-pose cost of the
+  extra pelvis motion, not yet chased. The probe is removed.
+  **`character.glb`: open, predates this plan.** Its live walk is broken
+  on the committed pre-plan build too (A/B, same schedule): 0.27 m/s where
+  1.2 was asked, the hips 63° off the travel, planted feet sliding
+  ~200 mm. On the current build it walks sideways (83°) and its legs sink
+  below the floor in the Front view. Standing is fine. Cause not yet
+  investigated; it needs its own step before anything is judged on that
+  rig.
+- **1.5 as planned:** Live check. BRP capture with `--anim-speed-schedule` (start and
   stop). Front + Left, `--gizmos on --show-real-mesh off`. Claim: "the
   pelvis moves toward each stance foot and drops on the swing side, and the
   feet do not slide." `anim_bench`, CHARACTER_PROGRESS, KB note, update the

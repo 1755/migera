@@ -42,6 +42,41 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The frontal and transverse walk, checked live at three speeds — and a second rig that cannot walk
+
+Step 1.5 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md), closing step
+1: the walk's side-to-side and turning motion.
+
+**`puppet_base`, live, from a standing start** (BRP capture script with a
+speed schedule, A/B against the pre-plan build in a worktree):
+
+| | 0.7 m/s | 1.2 m/s | 1.6 m/s |
+|---|---|---|---|
+| step width (pre-plan: ~230 mm) | 130 mm | 128 mm | 130 mm |
+| pelvis sway, peak to peak | 47 mm | 43 mm | 34 mm |
+| pelvis roll in single support, swing side low | ±2.8° | ±2.7° | ±2.6° |
+| pelvis turn / chest turn | ±4.0° / ±4.8° | ±3.9° / ±4.7° | ±3.9° / ±4.7° |
+| pelvis–chest correlation | −0.98 | −0.97 | −0.97 |
+| trunk lean, peak to peak (pre-plan ~5.9°) | 2.3° | 2.2° | 2.2° |
+| steady planted slide (pre-plan) | 5.5 mm (5.7) | 3.3 mm | 7.1 mm (5.0) |
+
+The sway shrinks with speed, as the pendulum says it should. The fast walk
+slides ~2 mm more than before: the target pose holds the feet exactly, so
+this is the rendered pose following a busier pelvis. Small, recorded, not
+chased. The temporary probe in `locomotion.rs` is gone. 1008 tests pass.
+
+**`character.glb` cannot walk, and never could.** On the pre-plan build
+(A/B, same schedule, `--character-model models/character.glb`):
+- it travels 0.27 m/s where 1.2 was asked;
+- its hips face 63° off the travel;
+- its planted feet slide ~200 mm.
+
+On the current build it walks sideways (hips 83° off) and, in the Front
+view, its legs sink below the floor. Standing looks right. The rig was
+never checked walking; every walk measurement in this log is
+`puppet_base`'s. Cause not investigated yet.
+
+
 ### The walking pelvis turns with the stepping leg, and the chest against it
 
 Step 1.4 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in
