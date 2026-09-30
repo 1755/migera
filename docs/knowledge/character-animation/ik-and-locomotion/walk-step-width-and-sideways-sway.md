@@ -7,8 +7,8 @@ tags:
   - locomotion
   - biomechanics
   - performance
-updated: 2026-09-29
-verified: 2026-09-29
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/stance.rs
   - src/character/anim/walk.rs
@@ -60,6 +60,10 @@ frontal motion was an authored hips roll.
   | **13 cm** | **+4.3 mm** | **+9.2 mm** | **+11.9 mm** |
   | 22.9 cm (old) | +36 mm | +45 mm | +50 mm |
 
+  The table was measured with `COM_OVER_HIPS` 1.19 on the overhead-arms
+  fixture (see below). Re-measured at 13 cm on the character as drawn:
+  +4.2 / +8.6 / +11.2 mm, so the width stands.
+
   `narrow_feet` turns each leg whole about its hip, with the foot turned
   back so it keeps its attitude. `WalkCycle` composes Winter's stride onto
   those narrowed legs, and keeps the standing base's ground, so the pelvis
@@ -71,9 +75,13 @@ frontal motion was an authored hips roll.
   from the bare walk and keeps the feet in place, so it cannot move the
   body's path.
 - **K from a height ratio, not the COM.** The COM's height above the
-  ankles is 1.19× the hips' (`COM_OVER_HIPS`, pinned by a test against
-  `anthropometry::centre_of_mass`). Evaluating the COM every frame cost
-  ~2 µs a character.
+  ankles is 1.09× the hips' (`COM_OVER_HIPS`, pinned by a test against
+  `anthropometry::centre_of_mass`), about 54% of height from the floor.
+  Evaluating the COM every frame cost ~2 µs a character. Until 2026-10-01
+  it was 1.19 (62% of height), measured on plain `puppet_base()`, where
+  `relaxed_stand`'s world-axis arms point overhead; see
+  [the puppet_base fixture note](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md).
+  The lower COM shortens K by 8% and grows the sway about 6%.
 
 ## Two lessons
 
@@ -82,9 +90,9 @@ frontal motion was an authored hips roll.
   planted foot 1.2 mm in double support and put a swinging toe 0.6 mm into
   the floor after toe-off. Now the height is weighted by stance load
   (`sway_over_loaded_feet`), and each knee takes up its leg's residual
-  (`keep_ankle`). The result: 0.02 mm in single support, ≤ 0.67 mm in
-  double support (the trailing leg is near full extension), 0.01 mm on the
-  swing foot.
+  (`keep_ankle`). The result: 0.02 mm in single support, 0.01 mm in
+  double support and on the swing foot. (≤ 0.67 mm in double support on
+  the overhead-arms fixture, whose trailing leg came near full extension.)
 - **The leg IK is the wrong tool for millimetre fixes.** `solve_leg_on`
   places the toe joint and re-aims the foot (`aim_foot`), so heel and tip
   moved *more* (1.4 mm single support, 4.2 mm swing) than before it ran.
@@ -92,8 +100,13 @@ frontal motion was an authored hips roll.
 
 ## Measured
 
-- Headless, `puppet_base`: the pelvis sways 2.3 / 1.8 / 1.6 cm toward the
-  stance foot at 0.7 / 1.2 / 1.6 m/s, peaking at ~0.31 of the stride.
+- Headless, `puppet_base` as drawn: the pelvis sways 2.55 / 2.05 / 1.77 cm
+  toward the stance foot at 0.7 / 1.2 / 1.6 m/s (2.3 / 1.8 / 1.6 with the
+  old ratio), peaking at ~0.31 of the stride.
+- Live A/B, 2026-10-01, same schedule (0.7 then 1.2 m/s): pelvis sway
+  48.3 → 51.1 mm and 38.8 → 41.4 mm peak to peak; step width 139 / 141 mm
+  and speed unchanged; planted feet unchanged (the stop's last-step glide
+  of 10–12 mm appears at random in both builds).
   `walk_sway_at` is within 0.5 mm of a direct finite-difference solve; a
   sabotaged phase shift fails the test by 11.6 mm.
 - Live, 1.2 m/s: step width 230 → 134 mm; pelvis sway against the root

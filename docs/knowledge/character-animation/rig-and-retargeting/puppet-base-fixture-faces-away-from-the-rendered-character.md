@@ -15,6 +15,8 @@ code:
   - src/character/anim/poses.rs
   - src/character/anim/anthropometry.rs
   - src/character/anim/balance.rs
+  - src/character/anim/phase.rs
+  - src/character/anim/locomotion.rs
 sources:
   - "test gltf_rig::tests::the_rendered_rig_matches_the_live_character"
   - "BRP on character_gallery --anim-speed 0, 2026-09-29"
@@ -76,6 +78,8 @@ number gets trusted.
   0.18 m and forward 0.11 instead of 0.12 and 0.17. Every catch limit was
   inverted: forward 1.2 m/s "fell" and sideways 1.2 "was caught", the
   reverse of the live character (`the_balance_fixture_stands_as_the_character_is_drawn`).
+  The walk's pendulum ratio `COM_OVER_HIPS` was pinned on it too: 1.19
+  (a COM 62% up the body) instead of 1.09.
 - For gait and foot maths that never reads the arms or the COM (joint
   angles, sole contact), either fixture works.
 - If a posed measurement disagrees with a screenshot, check the facing

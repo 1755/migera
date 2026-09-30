@@ -687,11 +687,14 @@ mod tests {
         Vec3::new(moved.x, 0.0, moved.z)
     }
 
-    /// The real character as the gallery composes it: `puppet_base`, its
-    /// relaxed stance with the standing knee bend applied on the rig.
+    /// The real character as the gallery composes it: `puppet_base` as it
+    /// is drawn, its relaxed stance with the standing knee bend applied on
+    /// the rig. As drawn: `relaxed_stand`'s arms are world-axis rotations,
+    /// and on plain `puppet_base()` they point overhead, lifting the COM
+    /// the walk's sway is measured by.
     fn real_walk() -> (LocalPose, GaitParams, RigGeometry) {
         use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
-        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
         let stood =
             stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
         (stood, GaitParams::default(), rig)
@@ -2232,9 +2235,11 @@ mod tests {
                 let centreline = sole(&swayed, leg).iter().map(|p| p.dot(left)).sum::<f32>() / 3.0 * side;
                 margin = margin.min(centreline - INNER_BORDER - com);
             }
-            // Measured 0.02 mm in single support; 0.57-0.67 mm in double
-            // support, where the trailing leg is near full extension and
-            // cannot give the last fraction of a millimetre.
+            // Measured 0.02 mm in single support; 0.01 mm in double support
+            // on the character as drawn (0.57-0.67 mm on plain
+            // `puppet_base()`, whose trailing leg came near full extension).
+            // Sway toward the stance foot 25.5 / 20.5 / 17.7 mm, the COM
+            // 4.2 / 8.6 / 11.2 mm medial of the border at 0.7 / 1.2 / 1.6 m/s.
             assert!(feet_moved < 1.0e-4, "at {speed} m/s the sway moved the planted foot {:.2} mm", feet_moved * 1e3);
             assert!(double_moved < 1.0e-3, "at {speed} m/s the sway moved a planted foot {:.2} mm in double support", double_moved * 1e3);
             assert!(swing_across < 1.0e-4, "at {speed} m/s the sway moved a swinging foot {:.2} mm across the ground", swing_across * 1e3);

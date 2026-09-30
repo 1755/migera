@@ -317,12 +317,15 @@ pub fn pelvic_obliquity_at(cycle: f32) -> f32 {
 }
 
 /// The whole-body centre of mass's height above the ankles, as a multiple
-/// of the hips': 1.018 / 0.856 m on `puppet_base` standing
-/// (`anthropometry::centre_of_mass`). A ratio rather than the COM itself:
-/// the pendulum needs it every frame, and evaluating the COM there cost
-/// ~2 µs a character, as much as the rest of the phase layer and the
-/// springs together.
-const COM_OVER_HIPS: f32 = 1.19;
+/// of the hips': 0.934 / 0.856 m on `puppet_base` standing as drawn
+/// (`anthropometry::centre_of_mass`), about 54% of its height from the
+/// floor. A ratio rather than the COM itself: the pendulum needs it every
+/// frame, and evaluating the COM there cost ~2 µs a character, as much as
+/// the rest of the phase layer and the springs together.
+///
+/// Was 1.19 until 2026-10-01, measured on plain `puppet_base()`, where the
+/// world-axis `relaxed_stand` holds the arms overhead: a COM 62% up.
+const COM_OVER_HIPS: f32 = 1.09;
 
 /// [`walk_sway_at`] for a character walking on `phase`'s clock in `pose`.
 ///
@@ -952,7 +955,7 @@ mod tests {
         use crate::character::anim::anthropometry::centre_of_mass;
         use crate::character::anim::rig::offset_from;
         use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
-        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
         let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
         let ankles = offset_from(&stood, &rig, Bone::Hips, Bone::LeftFoot).y;
         let ratio = (centre_of_mass(&stood, &rig).y - ankles) / -ankles;

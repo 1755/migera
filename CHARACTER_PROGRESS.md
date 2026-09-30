@@ -42,6 +42,28 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The walk's sway pendulum measured on the character as drawn
+
+Closes the open item below. `phase::COM_OVER_HIPS` (the COM's height
+above the ankles over the hips', which sets the walk's sideways pendulum
+K) was pinned on plain `puppet_base()`, arms overhead: 1.19, a COM 62% up
+the body. As drawn it is 1.092 (about 54%, the usual ~55%). Now 1.09;
+`locomotion::real_walk` moved to `puppet_base_as_rendered()` too. Distilled
+in
+[the walk's step width and sway](./docs/knowledge/character-animation/ik-and-locomotion/walk-step-width-and-sideways-sway.md).
+
+- Headless: sway toward the stance foot 25.5 / 20.5 / 17.7 mm at
+  0.7 / 1.2 / 1.6 m/s (was 23 / 18 / 16). The COM stays 4.2 / 8.6 /
+  11.2 mm medial of the stance foot's inner border (was 4.3 / 9.2 /
+  11.9), so the 13 cm step width stands. Planted feet in double support
+  0.01 mm (0.57–0.67 on the old fixture).
+- Live A/B against 8d13bbb, same schedule: pelvis sway 48.3 → 51.1 mm
+  (0.7 m/s) and 38.8 → 41.4 mm (1.2 m/s) peak to peak; step width and
+  speed unchanged; planted feet unchanged over two runs each.
+- Cost unchanged: a constant.
+
+1044 tests pass.
+
 ### A hard side push caught: the balance tests stood the right way, longer steps, an early join
 
 Asked for: puppet_base catching 1.2 m/s sideways in the gallery. Distilled
@@ -101,10 +123,10 @@ there fell in 1 of 4 uneven frame patterns with it, 3 of 4 without
 forward then 1.0 back, all caught; planted balls within 13 mm; the pelvis
 sank 129–138 mm at worst. Forecast cost 42–55 µs, once per stumble.
 
-**Open:** `phase::COM_OVER_HIPS` (1.19, the walk's sway pendulum) is
-pinned by a test on the same overhead-arms fixture; on the drawn stance
-the ratio is about 1.08. The walk sway test (`locomotion::real_walk`)
-measures its COM on that fixture too.
+**Open (closed in the entry above):** `phase::COM_OVER_HIPS` (1.19, the
+walk's sway pendulum) is pinned by a test on the same overhead-arms
+fixture; on the drawn stance the ratio is about 1.08. The walk sway test
+(`locomotion::real_walk`) measures its COM on that fixture too.
 
 1044 tests pass.
 
