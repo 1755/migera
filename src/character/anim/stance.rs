@@ -263,10 +263,40 @@ pub fn move_pelvis_over_feet(
     turn: Quat,
     loads: [f32; 2],
 ) {
+    move_pelvis_and_feet(pose, rig, shift, turn, loads, [Vec3::ZERO; 2], 0.0);
+}
+
+/// How far a trailing foot's heel may rise about its ball, radians, when
+/// [`move_pelvis_and_feet`] is let use it. Winter's heel is past 45 degrees
+/// by toe-off (Table A.3(a)); a standing body stepping out stays well short.
+pub const MAX_HEEL_RISE: f32 = 0.6;
+
+/// How far the pelvis drops for a long stance with the feet flat before a
+/// trailing heel rises instead, metres. The walking pelvis's own
+/// excursion is ~4-5 cm; held flat, the rear foot of a 0.4 m stumble step
+/// asked 14 cm once the weight was over the front foot.
+pub const DROP_BEFORE_HEEL_RISE: f32 = 0.04;
+
+/// [`move_pelvis_over_feet`], with the feet also moved: each by `feet`
+/// (left, right; the pose's frame, lift included) from where it stands.
+///
+/// One solve, so the pelvis's height accounts for where each loaded foot is
+/// going, and each ankle is placed once under the moved pelvis. Placing a
+/// stepped foot first, under a pelvis not yet carried over it, left it out
+/// of reach (short, in the air) and the pelvis then kept that.
+pub fn move_pelvis_and_feet(
+    pose: &mut LocalPose,
+    rig: &super::rig::RigGeometry,
+    shift: Vec3,
+    turn: Quat,
+    loads: [f32; 2],
+    feet: [Vec3; 2],
+    rise: f32,
+) {
     use super::rig::{delta_after_world_turn, offset_from};
     let shift = Vec3::new(shift.x, 0.0, shift.z);
     let turned = 1.0 - turn.dot(Quat::IDENTITY).abs() > 1.0e-12;
-    if shift.length_squared() < 1.0e-12 && !turned {
+    if shift.length_squared() < 1.0e-12 && !turned && feet == [Vec3::ZERO; 2] {
         return;
     }
     let total = loads[0].max(0.0) + loads[1].max(0.0);
@@ -281,15 +311,64 @@ pub fn move_pelvis_over_feet(
     // its length under the shift: |leg − shift − v·Y| = |leg|. The turn
     // pivots on the loaded socket, so it asks nothing more of the loaded
     // leg.
-    let drop = legs
-        .iter()
-        .zip(loads)
-        .map(|((_, _, leg), load)| {
-            let shifted = *leg - shift;
-            let horizontal = Vec3::new(shifted.x, 0.0, shifted.z).length_squared();
-            load * (shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt())
-        })
-        .sum::<f32>();
+    //
+    // The most any loaded leg asks, not their load-weighted mean: sat
+    // higher than that, a loaded leg cannot reach its foot. With the feet
+    // a 0.4 m step apart the mean left the rear leg short, and its planted
+    // foot lifted 42 mm. The legs asking less bend their knees for it.
+    // `drop` is the root's rise, so the most asked is the least: taking
+    // the greatest still lifted the rear foot 37 mm as the COM went over
+    // the stepped one.
+    //
+    // A foot trailing its hip may instead rise on its toes, up to `rise`
+    // (`MAX_HEEL_RISE`), once flat it would ask more than
+    // `DROP_BEFORE_HEEL_RISE`: a lunge's rear foot, not a squat. It rolls
+    // rigidly about its sole's tip, as `foot::Sole` models a foot and as
+    // Winter's pre-swing does (the metatarsal marker climbs, the toe marker
+    // stays down): about the ball, the rigid tip went into the floor.
+    let heels = legs.map(|([_, _, ankle], hip, leg)| {
+        if rise <= 0.0 {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        let tip = super::foot::Sole::of(rig, ankle).points(pose, rig)[2] - (hip + leg);
+        let forward = Vec3::new(tip.x, 0.0, tip.z).normalize_or_zero();
+        (tip, Vec3::Y.cross(forward))
+    });
+    let trailing = [0, 1].map(|i| {
+        let (_, _, leg) = legs[i];
+        rise > 0.0 && (leg + feet[i] + heels[i].0 - shift).dot(heels[i].1.cross(Vec3::Y)) < 0.0
+    });
+    // Where leg `i`'s ankle goes, hips-relative before the move, with its
+    // heel risen `angle` about the tip.
+    let ankle_for = |i: usize, angle: f32| {
+        let (_, hip, leg) = legs[i];
+        let flat = hip + leg + feet[i];
+        if angle == 0.0 {
+            return flat;
+        }
+        let (tip, axis) = heels[i];
+        flat + tip - Quat::from_axis_angle(axis, angle) * tip
+    };
+    // The root's rise at which leg `i` just reaches its ankle.
+    let reach = |i: usize, angle: f32| {
+        let (_, hip, leg) = legs[i];
+        let shifted = ankle_for(i, angle) - hip - shift;
+        let horizontal = Vec3::new(shifted.x, 0.0, shifted.z).length_squared();
+        shifted.y + (leg.length_squared() - horizontal).max(0.0).sqrt()
+    };
+    let asks = |i: usize| {
+        let flat = reach(i, 0.0);
+        if !trailing[i] || flat >= -DROP_BEFORE_HEEL_RISE {
+            return flat;
+        }
+        let risen = (1..=8).map(|n| reach(i, rise * n as f32 / 8.0)).fold(flat, f32::max);
+        risen.min(-DROP_BEFORE_HEEL_RISE).max(flat)
+    };
+    let drop = (0..2)
+        .filter(|&i| loads[i] > 0.05)
+        .map(asks)
+        .fold(f32::MAX, f32::min)
+        .min(if loads.iter().all(|&l| l <= 0.05) { 0.0 } else { f32::MAX });
     let pivot = legs[0].1 * loads[0] + legs[1].1 * loads[1];
     if turned {
         pose.rotations[Bone::Hips] = delta_after_world_turn(pose, rig, Bone::Hips, turn);
@@ -299,11 +378,45 @@ pub fn move_pelvis_over_feet(
     // so the pivot stays put, then by the shift.
     let moved = shift + Vec3::Y * drop + (pivot - turn * pivot);
     pose.root_translation += moved;
-    for (bones, hip, leg) in legs {
+    for (i, (bones, hip, leg)) in legs.into_iter().enumerate() {
         // The leg rode the turn; its socket went with the pelvis.
         let socket_now = turn * hip;
-        keep_ankle(pose, rig, bones, turn, socket_now, socket_now + turn * leg, hip + leg - moved);
+        // The least heel rise that brings the ankle into reach.
+        let short = |angle: f32| (ankle_for(i, angle) - moved - socket_now).length() - leg.length();
+        let angle = if !trailing[i] || short(0.0) <= 1.0e-5 {
+            0.0
+        } else if short(rise) > 0.0 {
+            rise
+        } else {
+            let (mut low, mut high) = (0.0, rise);
+            for _ in 0..24 {
+                let middle = 0.5 * (low + high);
+                if short(middle) > 0.0 { low = middle } else { high = middle }
+            }
+            high
+        };
+        keep_ankle(pose, rig, bones, turn, socket_now, socket_now + turn * leg, ankle_for(i, angle) - moved);
+        if angle > 0.0 {
+            // The foot pitched about its tip, rigidly.
+            pose.rotations[bones[2]] =
+                delta_after_world_turn(pose, rig, bones[2], Quat::from_axis_angle(heels[i].1, angle));
+        }
     }
+}
+
+/// Puts `ankle`'s leg's ankle at `target` (hips-relative), its foot keeping
+/// its attitude in the world: bends the knee just enough and turns the leg
+/// about its hip. For stepping a foot somewhere; a target out of reach is
+/// left short.
+pub fn place_ankle(pose: &mut LocalPose, rig: &super::rig::RigGeometry, ankle: Bone, target: Vec3) {
+    use super::rig::offset_from;
+    let bones = match ankle {
+        Bone::RightFoot => [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot],
+        _ => [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot],
+    };
+    let hip = offset_from(pose, rig, Bone::Hips, bones[0]);
+    let ankle_at = offset_from(pose, rig, Bone::Hips, bones[2]);
+    keep_ankle(pose, rig, bones, Quat::IDENTITY, hip, ankle_at, target);
 }
 
 /// Puts the ankle at `target` (hips-relative) by bending the knee just

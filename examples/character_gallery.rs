@@ -1372,6 +1372,10 @@ struct GalleryStride {
     previous: Option<LocalPose>,
     /// How much of the gait is playing: 0 standing, 1 walking.
     weight: f32,
+    /// How far a balance recovery step has just carried the character, in
+    /// the pose's frame (`balance::Balance::travelled`): moved like root
+    /// motion, then zeroed.
+    stepped: Vec3,
 }
 
 /// One character's heading.
@@ -1471,6 +1475,8 @@ fn ride_rendered_feet(
             }
             _ => Vec3::ZERO,
         };
+        // A balance recovery step carries the character too.
+        let moved = moved + facing.0.rotation() * std::mem::take(&mut stride.stepped);
         locomotion.0.position += moved;
         // The foot locks keep a planted foot where it is in the WORLD only
         // if they know the body moved over it.
@@ -1702,20 +1708,38 @@ fn drive_walk_cycle(
         // pose, and the release changes every frame.
         let mut prepared = stood;
         transition_state.0.apply_release(&mut prepared, &gait_rig);
+        // A stop's last swing is set down onto where it will stand, judged
+        // by the foot IK on the rendered foot (`AnimFootIk::landing`).
+        foot_ik.landing = transition_state.0.landing(&prepared, &gait_rig);
         // A push sways the standing body over its feet and it recovers
-        // (Winter's inverted pendulum, `balance`). Posed on the standing
-        // side of the blend, so a walk starting mid-sway fades it out.
+        // (Winter's inverted pendulum, `balance`), stepping if it must.
+        // Posed on the standing side of the blend, so a walk starting
+        // mid-sway fades it out.
         for &push in &due_pushes {
             balance.push(push);
         }
         if !balance.is_settled(1.0e-5) {
             let support = balance::Support::of(&stood, &gait_rig);
             balance.step(&support, balance::pendulum_k(&stood, &gait_rig), time.delta_secs());
+            // A recovery step done: the character moves by it (with root
+            // motion, in `ride_rendered_feet`), and the feet stand where
+            // they are now.
+            if let Some(by) = balance.travelled {
+                gait.stepped += gait_rig.forward() * by.x + gait_rig.left() * by.y;
+                balance.rebase();
+            }
+            // The stepping foot is set down onto its spot by the foot IK.
+            if foot_ik.landing.is_none()
+                && let Some((left, spot, strength)) = balance.landing_spot(&prepared, &gait_rig)
+            {
+                foot_ik.landing = Some(migera::character::anim::plugin::Landing { left, spot, strength });
+            }
             balance.apply(&mut prepared, &gait_rig);
         }
-        // A stop's last swing is set down onto where it will stand, judged
-        // by the foot IK on the rendered foot (`AnimFootIk::landing`).
-        foot_ik.landing = transition_state.0.landing(&prepared, &gait_rig);
+        // The feet the balance has down stay locked however its sprung legs
+        // lag a stumbling body (`AnimFootIk::planted`); a walk's feet are
+        // the locks' own call.
+        foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) { balance.planted() } else { [false; 2] };
         let rendered = |cycle: f32| {
             if weight <= 0.0 {
                 prepared

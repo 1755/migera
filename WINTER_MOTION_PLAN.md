@@ -224,6 +224,31 @@ ragdoll may trade stance hip and knee torque as long as their sum holds.
 
 ## 4. Self-balancing active ragdoll (§11.2, §7.4.5, §9.0.5, §9.2, §8.1)
 
+**Re-scoped 2026-09-30: physics as a hybrid.** Animation stands and walks;
+physics takes over only for falling, stumbling and hits. The self-balancing
+ragdoll (4b–4d below) is dropped: it would need pairwise joint torques with
+a stable PD, research-grade (see the 4b finding). Instead:
+
+- [x] **H1 Stumble (animation), done 2026-09-30.** A push the feet cannot
+  absorb (`Balance::needs_step`) steps to the predicted capture point
+  (≤ 0.4 m). The weight moves toward that foot, and the trailing foot
+  joins once the capture point is inside it. Root motion moves the
+  character by the distance stepped. It has its own step, not the walk's
+  first-step machinery: a stumble step goes in any direction and is
+  planned from the pendulum. The pelvis sinks 46/115/44 mm (forward,
+  sideways, back); planted feet stay ≤ 1 mm live on both rigs. See
+  [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md).
+- [ ] **H2 Fall (physics).** A push or hit beyond what a step can catch, or
+  a game trigger: release the pinned root at runtime, go limp-ish under
+  real gravity on the sole feet, show the simulation, and let the entity
+  follow the body.
+- [ ] **H3 After a fall.** Detect that it has settled, then hand back to
+  animation. A timed blend to standing is the stand-in until there is
+  authored get-up motion.
+
+Already built and kept: hits with a stun-and-recover strength dial, the
+pinned ragdoll following the animation, sole feet (4a).
+
 - [x] **4.1 spike result (2026-09-30), stopped per its own rule.** Headless,
   `puppet_base` unpinned on a friction-1 floor, full gravity (the harness
   resets `GravityScale` to 1 each step, since `support_own_weight` zeroes

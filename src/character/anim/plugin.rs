@@ -149,6 +149,11 @@ pub struct AnimFootIk {
     /// [`super::transition::landing_lift`] of the rendered foot's own
     /// distance from its spot.
     pub landing: Option<Landing>,
+    /// Feet the caller knows are down (left, right): their locks hold
+    /// however fast the sprung foot moves ([`FootLock::update_planted`]).
+    /// Written each frame by whatever owns contact, such as a standing
+    /// balance; `[false; 2]` leaves contact to the locks' own speed test.
+    pub planted: [bool; 2],
 }
 
 /// A foot being set down onto a spot. See [`AnimFootIk::landing`].
@@ -727,16 +732,15 @@ fn solve_foot_ik(
             let contact_offset = toe_contact_offset(&solved, chain, &rig);
             let surface = hit.height + contact_offset;
 
+            // The body's travel arrives in world axes; the lock works in the
+            // pose's, the same rotation the arm targets below go through.
+            let turn = Turn { travel: root_rotation.inverse() * turn.travel, ..turn };
+            let planted = foot_ik.planted[matches!(side, Side::Right) as usize];
             let lock = match side {
                 Side::Left => &mut foot_ik.left,
                 _ => &mut foot_ik.right,
             };
-
-            // The body's travel arrives in world axes; the lock works in the
-            // pose's, the same rotation the arm targets below go through.
-            let turn = Turn { travel: root_rotation.inverse() * turn.travel, ..turn };
-            let mut target =
-                lock.update_turning(animated, surface, &lock_config, dt, turn);
+            let mut target = lock.update_planted(animated, surface, &lock_config, dt, turn, planted);
 
             // Never let the sole sink below the surface, even mid-release.
             target.y = target.y.max(surface);

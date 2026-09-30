@@ -218,6 +218,27 @@ impl FootLock {
         dt: f32,
         turn: Turn,
     ) -> Vec3 {
+        self.update_planted(animated, ground_height, config, dt, turn, false)
+    }
+
+    /// [`Self::update_turning`] for a foot its caller knows is down
+    /// (`planted`): a lock on it is not released by the animated toe's
+    /// speed, only by being dragged past
+    /// [`FootLockConfig::break_distance`].
+    ///
+    /// Speed is this module's guess at contact, and a sprung leg under a
+    /// fast body fools it: in a 0.7 m/s sideways stumble the planted foot's
+    /// animated toe lagged the unsprung pelvis at 0.5-0.8 m/s, the lock let
+    /// go four times, and the foot slid 16-21 mm.
+    pub fn update_planted(
+        &mut self,
+        animated: Vec3,
+        ground_height: f32,
+        config: &FootLockConfig,
+        dt: f32,
+        turn: Turn,
+        planted: bool,
+    ) -> Vec3 {
         // The anchor pivots with the body BEFORE anything reads it, so the
         // distance and speed checks below compare against where the foot
         // now is rather than where it was a turn ago.
@@ -267,7 +288,7 @@ impl FootLock {
             LockState::Locked => {
                 let dragged = (animated - self.anchor).length() > config.break_distance;
 
-                if speed > config.unlock_speed || dragged {
+                if speed > config.unlock_speed && !planted || dragged {
                     self.state = LockState::Free;
                     // Start closing the gap from where the foot actually
                     // is, so releasing is continuous rather than a snap.
@@ -501,6 +522,35 @@ mod tests {
         }
 
         assert!(!lock.is_locked(), "a foot swinging away should release");
+    }
+
+    #[test]
+    fn a_planted_foot_holds_its_lock_against_speed_but_not_a_drag() {
+        // A stumbling body's sprung leg lags its pelvis, and the animated
+        // toe of a foot the balance has down moves at 0.5-0.8 m/s: a
+        // caller-planted lock ignores that, and still lets go when dragged
+        // past `break_distance`.
+        let config = FootLockConfig::default();
+        let (mut lock, planted) = locked_foot(&config);
+        let mut animated = planted;
+        // Fast, but short of the break distance: well above unlock_speed.
+        for _ in 0..6 {
+            animated.x += 1.0 * DT;
+            let held = lock.update_planted(animated, 0.0, &config, DT, Turn::NONE, true);
+            assert!(lock.is_locked() && (held - Vec3::new(planted.x, 0.0, planted.z)).length() < 1.0e-6, "a planted foot let go");
+        }
+        let (mut unplanted, _) = locked_foot(&config);
+        let mut animated = planted;
+        for _ in 0..6 {
+            animated.x += 1.0 * DT;
+            unplanted.update_planted(animated, 0.0, &config, DT, Turn::NONE, false);
+        }
+        assert!(!unplanted.is_locked(), "the same motion, unplanted, should release");
+        for _ in 0..60 {
+            animated.x += 1.0 * DT;
+            lock.update_planted(animated, 0.0, &config, DT, Turn::NONE, true);
+        }
+        assert!(!lock.is_locked(), "dragged {:.2} m away, even a planted foot should release", animated.x - planted.x);
     }
 
     #[test]

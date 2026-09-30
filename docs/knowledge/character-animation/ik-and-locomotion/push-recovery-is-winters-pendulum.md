@@ -70,9 +70,10 @@ feet and returns.
   at the edge with its velocity zeroed, the body could never come back:
   the clamped COP sits exactly under the COM there, an equilibrium the law
   cannot leave. The clamp's jump also moved the planted feet 32 mm. Now the
-  push is flagged (`needs_step`), and while it is, the COP is unclamped,
-  standing in for the step that would put it there. The body comes back
-  smoothly (0.8 m/s peaks at ~10 cm of COM). The capture point is a later
+  push is flagged (`needs_step`) and a step catches it (see
+  [the stumble note](./a-stumble-is-a-capture-point-step-then-a-join.md));
+  the COP stays on the feet bearing weight. Before stepping existed, an
+  unclamped COP stood in for the step. The capture point is a later
   formalisation of the same pendulum, not Winter's.
 
 ## Measured, live
@@ -90,10 +91,11 @@ body is unsettled.
 
 ## Revisit when
 
-- Stepping exists: `needs_step` is its hook, and the unclamped COP should
-  become the step.
 - Pushes arrive while walking: only the standing side of the blend sways
   now.
+
+Stepping now exists: `needs_step` plans a recovery step, see
+[a stumble is a capture-point step, then a join](./a-stumble-is-a-capture-point-step-then-a-join.md).
 
 ## Related
 
@@ -101,3 +103,5 @@ body is unsettled.
 - [The walk's step width and sideways sway](./walk-step-width-and-sideways-sway.md) — contrast: the same pendulum driven by the stride instead of a push.
 - [A gait-timed motion cannot ride a weighty spring](./a-gait-timed-motion-cannot-ride-a-weighty-spring.md) — same-trap: a fast pelvis against lagging leg springs.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — context: the locks a one-frame push released.
+- [A stumble is a capture-point step, then a join](./a-stumble-is-a-capture-point-step-then-a-join.md) — deeper: what a flagged push now does.
+- [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — same-trap: the one-frame push's released locks, at stumble speed.

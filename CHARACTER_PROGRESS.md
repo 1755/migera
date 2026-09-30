@@ -42,6 +42,61 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A stumble: one step to the capture point, then the trailing foot joins
+
+H1 of the re-scoped step 4 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).
+Distilled in
+[a stumble is a capture-point step, then a join](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md)
+and
+[a speed contact test is fooled by a lagging sprung leg](./docs/knowledge/character-animation/ik-and-locomotion/a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md).
+
+When the capture point leaves the feet, `balance::Balance` steps. It
+plans the landing where the capture point will be (`p + (cp − p)·e^{T/√K}`,
+≤ 0.4 m), moves the weight toward that foot, and brings the other foot
+alongside once the capture point is inside the stepped foot. The gallery
+moves the character by the distance stepped (`GalleryStride::stepped`,
+root motion), so the feet end side by side as they stood.
+
+What it took, each found by a headless replay of the gallery's loop
+(`a_stumble_steps_cleanly_on_the_real_rig`) or a live BRP capture:
+- `stance::move_pelvis_and_feet`, a single solve for the pelvis and both
+  feet. Its drop is the root's *rise*, so the leg asking most is the
+  **least**. Folding with `max` left the rear foot lifting 37 mm.
+- The swinging foot keeps holding the pelvis (load 0.1). Let go, the
+  pelvis sprang up 132 mm.
+- The join starts when the capture point is inside the stepped foot.
+  Waiting until the COM was over it sank the pelvis 14 cm (21 cm
+  sideways) under a rear leg reaching 0.4 m.
+- A trailing foot rolls onto its toes about the sole's tip (`MAX_HEEL_RISE`
+  0.6 rad, after a flat 4 cm drop). Forward, the pelvis sinks 46 mm
+  instead of 69.
+- `AnimFootIk::planted`: the balance tells the foot IK which feet are
+  down. Live, the planted foot's lock let go four times on the sprung
+  toe's speed (0.49–0.78 m/s) and slid 16–21 mm.
+- The landing hint eases in over the swing's first quarter and fades out
+  over `LAND_HOLD`. Before, it made a 30 mm pop at lift-off and a 20 mm
+  drop at the end of the hold.
+
+**Measured.** Headless on `puppet_base`, the pelvis sinks 46 mm (0.6 m/s
+forward), 115 mm (0.7 m/s left: a 0.4 m side step, feet 0.63 m apart) and
+44 mm (0.8 m/s back; 0.6 m/s back needs no step, since the heel reaches
+0.18 m behind the COM). The same two steps are planned at frame times
+cycling 5–50 ms. Live (`--push-schedule 3:0.6:0,8:0:0.7,13:-0.8:0`), every
+planted ball stays within ≤ 1.0 mm on both rigs. Before these fixes the
+figure was 13–70 mm. `character.glb` catches the forward push without a
+step.
+
+**Seen.** Front and Left, `--gizmos on --show-real-mesh off`:
+- Forward: the front foot is flat and the rear heel is raised on its
+  toes; both knees bend forward; the pelvis is between the feet.
+- Sideways: a wide stance with both soles on the floor and the pelvis
+  lowered between them.
+
+**Cost.** `anim_bench` (100 × 600): 4.2 µs per character, against 4.3–4.4
+at HEAD (5f0a1f2) built in a worktree, so no change. The balance runs
+only in the gallery. The growth from the 2.0 µs last recorded came from
+the commits between, which didn't re-run the bench. 1027 tests pass.
+
 ### The ragdoll, unpinned: it buckles at 0.5 s; its feet now have soles
 
 Step 4 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md) (revised).
