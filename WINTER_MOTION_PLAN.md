@@ -274,6 +274,12 @@ a stable PD, research-grade (see the 4b finding). Instead:
   - The ragdoll converts poses in the character's frame, so the rise's
     turn no longer snaps the body or leaves the arms in a T.
   - The balance ticks at most 1/60 s, so long frames don't lose a catch.
+- [x] **Hard side push, done 2026-10-01.** The balance tests now stand as
+  the character is drawn (they had the arms overhead, limits inverted).
+  `MAX_STEP` is 0.7 m and the trailing foot joins as soon as the stepped
+  foot holds the body, so 1.2 m/s sideways is caught live on both rigs
+  with the pelvis ≤ 138 mm down. Limits: 1.5 forward, 1.4 sideways and
+  back.
 
 Already built and kept: hits with a stun-and-recover strength dial, the
 pinned ragdoll following the animation, sole feet (4a).

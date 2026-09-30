@@ -42,6 +42,72 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A hard side push caught: the balance tests stood the right way, longer steps, an early join
+
+Asked for: puppet_base catching 1.2 m/s sideways in the gallery. Distilled
+in
+[a foot may lift only when the other holds the body](./docs/knowledge/character-animation/ik-and-locomotion/a-foot-may-lift-only-when-the-other-holds-the-body.md)
+(new),
+[a stumble is a capture-point step](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md)
+and
+[the puppet_base fixture note](./docs/knowledge/character-animation/rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md).
+
+**The balance tests stood with their arms overhead.** `real_stood` put
+`relaxed_stand` on plain `puppet_base()`, which faces away from the drawn
+character. The hands were at 1.98 m, the COM 8 cm high (k 0.104 against
+the live 0.095), and the soles reached back 0.18 m and forward 0.11
+instead of 0.12 and 0.17. So every catch limit was inverted: forward
+1.2 m/s "fell" and sideways 1.2 "was caught", the reverse of the live
+character. The gallery's stance was right all along. Moved to
+`puppet_base_as_rendered()`, pinned by
+`the_balance_fixture_stands_as_the_character_is_drawn`.
+
+**`MAX_STEP` 0.6 → 0.7 m.** Needed for 1.2 m/s sideways (0.82 m asked):
+at 0.6 it ran away in 26 steps; at 0.65 it was an edge catch with 72 mm
+jolts. 0.7 m is ~40% of height, inside young adults' maximal step
+(77–79% of height forward, Medell & Alexander's test) and standard
+lateral lunges (60%). Alone it caught the push with the pelvis 213 mm
+(left) and 271 mm (right) down for about 2 s: after landing, the
+pendulum pulled the COM to the middle of the wide stance and the join
+waited 2.5–3.0 s to be "caught at rest".
+
+**The early join**, and the three faults it exposed:
+- The weight transfers onto a recovery step as it lands, and the
+  trailing foot joins as soon as the stepped foot alone holds the COM
+  (within the 8° validity lean) and the capture point isn't on the
+  trailing side. Joins now start 0.37–0.67 s in.
+- Without the hold gate, the join lifted the foot the COM leaned on and
+  the validity clamp teleported the COM 130 mm. A second recovery step
+  did the same under uneven frames: 1.05 m/s silently discarded.
+- The join foot was "furthest displaced"; after a crossover and a side
+  step it lifted the loaded foot (0.39 m/s lost, a fall). Now the foot
+  the weight is on stays.
+- A recovery step landing feet together never ended the stumble (back
+  1.4 m/s never settled). Now any feet-together landing does.
+- "Capture point inside, with a margin" made a 5 mm stance asymmetry
+  delay the right side's join 0.2 s, 78 mm deeper. Now inside or past.
+
+`SINK_LEAD` 0.04 → 0.08 s: on 0.66 m crossovers the late swing jolted
+9.7 mm; now ≤ 5.0 mm for every unclamped step. A backward step clamped at
+`MAX_STEP` (1.3 m/s) still lands ball-first with a 9.8 mm jolt.
+
+**Catch limits, headless, drawn stance:** forward to 1.5 m/s, sideways
+to 1.4, back to 1.4; 1.6 / 1.5 / 1.5 fall. Each gate, disabled alone,
+fails a test. Ticking (`MAX_TICK`) now matters only at the limit: catches
+there fell in 1 of 4 uneven frame patterns with it, 3 of 4 without
+(`a_catch_at_the_limit_mostly_survives_uneven_frames`).
+
+**Live, both rigs, 2026-10-01:** 1.2 m/s sideways each way, and 1.2
+forward then 1.0 back, all caught; planted balls within 13 mm; the pelvis
+sank 129–138 mm at worst. Forecast cost 42–55 µs, once per stumble.
+
+**Open:** `phase::COM_OVER_HIPS` (1.19, the walk's sway pendulum) is
+pinned by a test on the same overhead-arms fixture; on the drawn stance
+the ratio is about 1.08. The walk sway test (`locomotion::real_walk`)
+measures its COM on that fixture too.
+
+1044 tests pass.
+
 ### Falls forecast, touchdown cushioned, rising feet tucked, the ragdoll turned with its character
 
 Closes the four open items of the entry below, plus two found live.

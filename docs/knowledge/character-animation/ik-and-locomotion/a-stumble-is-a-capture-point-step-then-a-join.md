@@ -1,6 +1,6 @@
 ---
 title: A stumble is a capture-point step, then a join the body's momentum carries
-description: "balance::Balance steps to the predicted capture point (≤ 0.6 m), never re-using the leg just stepped, crossing over sideways; the trailing foot joins once the capture point is inside the stepped foot; a rear foot rolls onto its toes; a sprung pelvis cushions touchdown. Read before changing stepping in balance.rs."
+description: "balance::Balance steps to the predicted capture point (≤ 0.7 m), never re-using the leg just stepped, crossing over sideways; the weight moves onto the step as it lands and the trailing foot joins once that foot holds the body; a sprung pelvis cushions touchdown. Read before changing stepping in balance.rs."
 type: decision
 status: current
 tags:
@@ -40,9 +40,14 @@ aliases:
   - SWING_SLACK
   - touchdown V
   - MAX_TICK
+  - early join
 ---
 
 # A stumble is a capture-point step, then a join the body's momentum carries
+
+Contents: [Context](#context) · [Decision](#decision) ·
+[Alternatives](#alternatives-considered) · [Consequences](#consequences) ·
+[Revisit when](#revisit-when)
 
 When a push puts the capture point `x + ẋ√K` outside the feet,
 `balance::Balance` takes one recovery step to where the capture point will
@@ -67,9 +72,12 @@ and physics takes over only for a fall.
   `STEP_SECONDS` = 0.3. `p` is the stance foot's point **nearest the
   capture point**, where `step`'s law pins the COP, not its middle; the
   middle asked for steps ~2× too long (0.48 m where 0.26 m caught a
-  0.5 m/s push). Travel is clamped to `MAX_STEP` = 0.6 m, about 0.65 of
-  `puppet_base`'s leg length. The sideways component is kept only for a
-  sideways push.
+  0.5 m/s push). Travel is clamped to `MAX_STEP` = 0.7 m, about 0.76 of
+  `puppet_base`'s leg length and 40% of its height: young adults' maximal
+  step is 77–79% of height forward (Medell & Alexander's test), and
+  lateral lunges are standardised at 60%. At 0.6 m a 1.2 m/s side push
+  (0.82 m asked) ran away in 26 steps; at 0.65 it was an edge catch with
+  72 mm jolts. The sideways component is kept only for a sideways push.
 - **Judged and planned on the whole push**, the part not yet delivered
   too. Judged on what had landed, a frame's delay (50 ms live) put a
   0.7 m/s side push's step 17% further out, past `MAX_STEP`.
@@ -90,12 +98,19 @@ and physics takes over only for a fall.
   forward and bows out that far mid-swing, so the legs pass rather than
   through each other. The join uncrosses them, because the joining foot
   goes to the stood width beside the stepped one.
-- **The join starts when the capture point is inside the stepped foot**,
-  not when the COM is over it. Both feet are down first (`transfer`), so
-  the COM moves toward the stepped foot. Waiting until it was over that
-  foot kept the rear leg planted while it reached a foot 0.4 m away. The
-  pelvis sank 14 cm forward and 21 cm sideways (`COM_PER_PELVIS` puts the
-  pelvis beyond the COM).
+- **The weight moves onto a recovery step as it lands** (`transfer`), and
+  **the join starts as soon as that foot alone holds the body** and the
+  capture point is not on the trailing foot's side of it. Both conditions
+  and why each is needed are in
+  [a foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md).
+  Two ways of waiting both sank the pelvis. Waiting until the COM was
+  over the stepped foot: 14 cm forward, 21 cm sideways (`COM_PER_PELVIS`
+  puts the pelvis beyond the COM). Waiting to be caught at rest before
+  transferring: the pendulum pulled the COM to the middle of a 0.7 m
+  crossover's stance, and the far leg held the pelvis 213–271 mm down
+  for about 2 s, the join 2.5–3.0 s in. Now it joins 0.37–0.67 s in.
+- **The foot that stays is the one the weight is on**; any landing that
+  sets the feet side by side ends the stumble, a recovery step too.
 - **The swinging foot keeps holding the pelvis in reach.** Its leg gets
   load 0.1 in the drop, aimed at the foot's moving, lifted target. When
   it was let go, the pelvis sprang up 132 mm in the frame the trailing
@@ -123,7 +138,9 @@ and physics takes over only for a fall.
   (≈ 5 g at 60 Hz). A real landing decelerates over 50–100 ms of knee
   flexion. Three parts, all needed:
   1. The drop aims at the need with the swinging foot `SINK_LEAD`
-     (0.04 s) ahead on its arc, so it starts down before the foot does.
+     (0.08 s) ahead on its arc, so it starts down before the foot does.
+     0.04 s served 0.6 m steps; on a 0.66 m crossover the late swing
+     jolted 9.7 mm, the ceiling catching the lagging spring.
   2. The swinging leg's reach may be short by `SWING_SLACK` (the step's
      lift, 5 cm), fading to zero by touchdown, so the aim is not undone
      by a leg near full extension.
@@ -131,15 +148,18 @@ and physics takes over only for a fall.
      integrated) follows the aim, never deeper than the loaded legs'
      reach plus slack.
 
-  Jolt (second difference of the pelvis) ≤ 4.8 mm, headless on
-  `puppet_base`. With the spring removed (instant follow), 6.0 mm: most
-  of the gain is the lead and slack.
+  Jolt (second difference of the pelvis) ≤ 5.0 mm for every unclamped
+  step, headless on `puppet_base` (`probe_max_jolt`). With the spring
+  removed (instant follow), 6.0 mm on 0.6 m steps: most of the gain is
+  the lead and slack. A backward step clamped at `MAX_STEP` (1.3 m/s,
+  0.88 m asked) lands ball-first, overreaching, and still jolts 9.8 mm.
 - **Ticks of at most 1/60 s** (`MAX_TICK`, the forecast's step). A swing
   lands, and the next step is planned, only between ticks. Taken a whole
   frame at a time, a 50 ms frame landed a foot up to 50 ms late while the
-  body kept falling off the old support. Under frames cycling 5–50 ms, a
-  1.2 m/s side push that four crossovers catch asked for ever-longer
-  steps (0.74, 0.85, 0.96, 1.39 m) and fell.
+  body kept falling off the old support. Below the catch limit the lift
+  gates now make frame times irrelevant on their own. At the limit,
+  catches fell in 1 of 4 uneven frame patterns with ticking, 3 of 4
+  without (`a_catch_at_the_limit_mostly_survives_uneven_frames`).
 - **The foot IK is told which feet are down** (`AnimFootIk::planted`); see
   [a speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md).
   The landing hint (`Balance::landing_spot`) eases in over the first
@@ -152,6 +172,8 @@ and physics takes over only for a fall.
 - **Carry the COM fully over the stepped foot, then join.** This lost for
   the reason above: the rear leg's reach sets the pelvis height (14–21 cm
   sinks).
+- **A longer `MAX_STEP` alone.** At 0.7 m without the early join, 1.2 m/s
+  sideways was caught with the pelvis 213–271 mm down for 2 s.
 - **Shorter steps, so the stance is never wide.** This would under-catch
   hard pushes. The capture-point prediction asks for about 0.4 m at
   0.6–0.8 m/s.
@@ -162,28 +184,30 @@ and physics takes over only for a fall.
 ## Consequences
 
 Every catch is the step's, not the validity bound's: nothing lost to the
-bound (`Balance::lost`), settled within 6 s. Caught on `puppet_base` in
-`relaxed_stand`: forward to 1.0 m/s, sideways to 1.2 (four crossovers),
-back to 1.2 (`a_push_past_a_catchable_step_falls`), also under uneven
-frames (`a_catch_does_not_depend_on_frame_times`). Harder pushes fall; see
+bound (`Balance::lost`), settled 3.2–3.5 s after a near-limit push.
+Caught on `puppet_base` as drawn (`relaxed_stand`,
+`puppet_base_as_rendered`): forward to 1.5 m/s, sideways to 1.4 (1.2 in
+one crossover and a join, harder in up to three steps), back to 1.4 (two
+steps) (`a_push_past_a_catchable_step_falls`). Forward 1.6, sideways 1.5
+and back 1.5 fall; see
 [a fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
-The limit depends on the stance: the gallery's `puppet_base` stands with
-k 0.095 s² against the test's 0.104, and falls on 1.2 m/s sideways;
-`character.glb` catches it.
+Until 2026-10-01 these limits were measured with the arms overhead (see
+[the puppet_base fixture note](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md)),
+and read the other way round from the live character.
 
 Near-full-reach steps, headless (`a_stumble_steps_cleanly_on_the_real_rig`),
 with the cushioned touchdown (~10 mm deeper than the bare need):
 
-| push | pelvis sank | note |
-|---|---|---|
-| 1.0 m/s forward | 61 mm | rear heel rises 84 mm onto the toes |
-| 0.8 m/s left | 99 mm | crossover; the side-step lunge was 266 mm |
-| 1.2 m/s back | 79 mm | rear heel rises 48 mm |
+| push | step asked | pelvis sank | note |
+|---|---|---|---|
+| 1.2 m/s forward | 0.67 m | 86 mm | rear heel rises 82 mm onto the toes |
+| 1.0 m/s left | 0.66 m | 135 mm | crossover; the side-step lunge was 266 mm at 0.8 m/s |
+| 1.0 m/s back | 0.64 m | 55 mm | |
+| 1.2 m/s left or right | 0.82 m (0.7 taken) | 123–130 mm | `a_hard_side_catch_joins_early_instead_of_lunging` |
 
-Live, 0.8 m/s left on both rigs: the right foot crosses over (0.52 m),
-the left joins (0.51 m), planted balls slide ≤ 1.7 mm. Live on
-2026-10-01, sideways 0.8–1.2 m/s after a forward stumble: planted balls
-held within 12–28 mm, the worst a single frame at a landing.
+Live, 2026-10-01, both rigs: 1.2 m/s sideways each way, and 1.2 forward
+then 1.0 back, all caught. Planted balls held within 13 mm; the pelvis
+sank 129–138 mm at worst.
 
 Until 2026-09-30 the sideways catch was the clamp's: the 8° bound, from
 the stance foot alone, held the COM with its velocity zeroed, and every
@@ -200,6 +224,8 @@ side step was posed over a body the clamp had stopped.
 
 - [Push recovery is Winter's pendulum](./push-recovery-is-winters-pendulum.md) — prerequisite: the sway, COP law and support this steps from.
 - [A fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md) — deeper: what happens when no step catches the push.
+- [A foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md) — deeper: the gates on the join and every later step.
+- [The puppet_base fixture faces away from the rendered character](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md) — same-trap: why these catch limits were once inverted.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — deeper: why the gallery passes `planted` to the foot IK.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — applies: the join's travelled distance becomes root motion the locks must be given.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — context: why a wide stance leaves the legs no reach to spare.

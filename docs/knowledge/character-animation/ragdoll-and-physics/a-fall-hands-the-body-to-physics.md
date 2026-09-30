@@ -60,8 +60,8 @@ rotations only, and the gallery had no physics floor.
   `LOST_FALLS`, 0.1 m/s), the push falls, known within 0.2 s of it. This
   is capturability judged by the model itself, over all its steps: runaways
   lost momentum 0.65–2.1 s in, and caught pushes settle well inside 3 s.
-  It costs about 43 µs, once per stumble (`probe_forecast_cost`, worst
-  frame). The live balance ticks at the same 1/60 s at most, so it takes
+  It costs 42–55 µs, once per stumble (`probe_forecast_cost`, worst
+  frame, three runs). The live balance ticks at the same 1/60 s at most, so it takes
   the steps the forecast did (see
   [the stumble note](../ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md)).
   `lost` stays a late safety net for anything the forecast missed.
@@ -143,11 +143,15 @@ rotations only, and the gallery had no physics floor.
 - With the push carried: forward falls land face down on both rigs,
   backward face up. Sideways, `puppet_base` rolled face down both ways
   and `character.glb` ended face up.
-- With the forecast, `puppet_base` in `relaxed_stand` catches 1.2 m/s
-  sideways in four crossovers; forward 1.2, sideways 1.6 and back 1.8
-  fall. Where the edge lies depends on the stance: live, the gallery's
-  `puppet_base` (k 0.095 s²) falls on 1.2 m/s sideways and
-  `character.glb` (k 0.104 s²) catches it.
+- With the forecast, `MAX_STEP` 0.7 m and the early join, `puppet_base`
+  as drawn catches forward to 1.5 m/s, sideways to 1.4 and back to 1.4;
+  forward 1.6, sideways 1.5 and back 1.5 fall. Live, both rigs catch
+  1.2 m/s sideways each way. (Limits taken before 2026-10-01 stood the
+  test character with its arms overhead and read inverted: see
+  [the puppet_base fixture note](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md).)
+- At the limit, frame timing decides some catches: 1 in 4 uneven frame
+  patterns fell there. The forecast runs at 1/60 s, so the live balance
+  can lose a catch the forecast called; `lost` then makes it a fall late.
 - Found on the way: the read-back's quaternions drifted off unit length
   through their own feedback (see
   [normalize what you read back from your own output](../../engineering-practice/debugging/normalize-what-you-read-back-from-your-own-output.md)).

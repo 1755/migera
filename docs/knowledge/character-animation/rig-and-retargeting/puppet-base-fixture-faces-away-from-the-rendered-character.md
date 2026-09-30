@@ -1,6 +1,6 @@
 ---
 title: The puppet_base fixture faces away from the rendered character
-description: "gltf_rig::puppet_base() is turned 180° from the rendered character, so a world-axis-authored pose (relaxed_stand, clip imports) measures wrong on it: hands a metre above the hips. Measure rendered shape on puppet_base_as_rendered(). Read before measuring an authored pose on the real rig."
+description: "gltf_rig::puppet_base() is turned 180° from the rendered character, so a world-axis-authored pose (relaxed_stand, clip imports) measures wrong on it: hands overhead, COM high. Measure shape, COM and balance on puppet_base_as_rendered(). Read before measuring a pose or its balance on the real rig."
 type: lesson
 status: current
 tags:
@@ -8,12 +8,13 @@ tags:
   - retargeting
   - poses
   - verification
-updated: 2026-09-29
-verified: 2026-09-29
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/gltf_rig.rs
   - src/character/anim/poses.rs
   - src/character/anim/anthropometry.rs
+  - src/character/anim/balance.rs
 sources:
   - "test gltf_rig::tests::the_rendered_rig_matches_the_live_character"
   - "BRP on character_gallery --anim-speed 0, 2026-09-29"
@@ -68,8 +69,15 @@ number gets trusted.
 - For a question about what the character LOOKS like in a pose (posture,
   centre of mass, hand placement), use `puppet_base_as_rendered()`.
   `the_rendered_rig_matches_the_live_character` pins it to the live numbers.
-- For gait, foot and stance maths written against `rig.forward()`, either
-  fixture works. The existing tests use `puppet_base()`.
+- **Anything that depends on the centre of mass does too**, however
+  rig-relative its maths: balance, pendulum heights, support. The balance
+  tests stood `relaxed_stand` on `puppet_base()` until 2026-10-01: arms
+  overhead, COM 8 cm high (k 0.104 against 0.095), soles reaching back
+  0.18 m and forward 0.11 instead of 0.12 and 0.17. Every catch limit was
+  inverted: forward 1.2 m/s "fell" and sideways 1.2 "was caught", the
+  reverse of the live character (`the_balance_fixture_stands_as_the_character_is_drawn`).
+- For gait and foot maths that never reads the arms or the COM (joint
+  angles, sole contact), either fixture works.
 - If a posed measurement disagrees with a screenshot, check the facing
   before the maths: compare one BRP joint height.
 
@@ -78,3 +86,4 @@ number gets trusted.
 - [A pose delta names a world axis](./a-pose-delta-names-a-world-axis.md) — prerequisite: why a world-axis delta depends on the rig's orientation.
 - [Knee axis positive swings forward](./knee-axis-positive-swings-forward.md) — same-trap: the leg-side version of a facing assumption, fixed with `facing_sign`.
 - [Synthetic-rig tests are blind to retargeting](./synthetic-rig-tests-are-blind-to-retargeting.md) — contrast: a different fixture limitation (synthetic translations), not orientation.
+- [A stumble is a capture-point step, then a join](../ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md) — example: its catch limits were measured on this fixture, inverted, until 2026-10-01.
