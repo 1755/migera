@@ -163,7 +163,11 @@ Order: **1 → 2 → 3a → 4 → 3b.**
   ~200 mm. On the current build it walks sideways (83°) and its legs sink
   below the floor in the Front view. Standing is fine. Cause not yet
   investigated; it needs its own step before anything is judged on that
-  rig.
+  rig. **Fixed 2026-09-30:** the live rig geometry had centimetre offsets
+  and the synthetic hips height. It now walks at 1.18 m/s with a 5 mm
+  slide, and step 1's motion checks out on it. Open: the foot IK's toe
+  contact is 15 mm off the walk's `Sole` model on `puppet_base`. Check
+  every later step on both rigs.
 - **1.5 as planned:** Live check. BRP capture with `--anim-speed-schedule` (start and
   stop). Front + Left, `--gizmos on --show-real-mesh off`. Claim: "the
   pelvis moves toward each stance foot and drops on the swing side, and the

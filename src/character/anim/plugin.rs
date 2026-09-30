@@ -484,6 +484,44 @@ type IkRig = (
     Option<&'static GlobalTransform>,
 );
 
+/// The geometry of the rig `skeleton` drives, in metres, as the renderer
+/// places it: what the gait, foot IK and root motion solve on.
+///
+/// `local_translation` reads a bone's own rest `Transform.translation`
+/// (`None` while it is still loading). The one construction both the live
+/// solve and the tests use: a hand-copied twin of it in a test once kept
+/// passing while the live rig drifted.
+///
+/// - **Every bone but the hips**: its local translation, times the
+///   armature's scale ([`HumanoidSkeleton::bone_translation_scale`]). A
+///   Mixamo rig under Blender's 0.01 node stores centimetres, and the raw
+///   values gave `character.glb` a 46 m thigh: it walked at a fraction of
+///   the asked speed, sideways, feet sliding ~200 mm.
+/// - **The hips**: the rig's own rest offset
+///   ([`HumanoidSkeleton::hips_rest_offset`]), never the live transform —
+///   `write_pose_to_skeleton` overwrites it every frame, so reading it back
+///   would feed the solve its own previous output. In the rig's frame, not
+///   this crate's: forward kinematics applies the root's Z-up correction to
+///   it, and handing it this crate's Y-up (0, 0.94, 0) once laid the whole
+///   character on its back (ankle y = −0.856; the leg IK then rotated each
+///   toe 113° to rescue a tip it believed was a metre underground, which
+///   rendered as toes pointing at the sky). And at the rig's OWN rest
+///   height, not the synthetic 0.94 m: the renderer puts the hips at their
+///   real rest plus the root translation, so any other height grounds every
+///   foot against the wrong floor — `character.glb` (1.126 m) crouched with
+///   its feet 0.186 m in the air.
+pub fn live_rig_geometry(skeleton: &HumanoidSkeleton, local_translation: impl Fn(Bone) -> Option<Vec3>) -> RigGeometry {
+    let offsets = BoneSet::from_fn(|bone| {
+        if bone == Bone::Hips {
+            return skeleton.hips_rest_offset();
+        }
+        local_translation(bone)
+            .map(|translation| translation * skeleton.bone_translation_scale())
+            .unwrap_or_else(|| bone.t_pose_offset())
+    });
+    RigGeometry::from_skeleton(skeleton, offsets)
+}
+
 /// Plants each character's feet on the ground, and places any reaching hands.
 ///
 /// Runs after the springs, deliberately: IK is a *correction* to the pose
@@ -516,41 +554,9 @@ fn solve_foot_ik(
         // the wrong answer everywhere the two disagree — which is
         // everywhere except flat ground.
         let rig = match skeleton {
-            Some(skeleton) => {
-                let offsets = BoneSet::from_fn(|bone| {
-                    // `Hips` is excluded deliberately: its translation is
-                    // the one thing `write_pose_to_skeleton` overwrites
-                    // every frame, so reading it back here would feed the
-                    // solve its own previous output. Every other bone keeps
-                    // its fixed rest offset, which is exactly the rig
-                    // geometry wanted.
-                    //
-                    // The substitute has to be in the RIG's frame, not this
-                    // crate's. `t_pose_offset` is the synthetic table's Y-up
-                    // (0, 0.94, 0), while `root_rotation` is the real rig's
-                    // Z-up correction — and forward kinematics applies that
-                    // correction to the hips offset, because the root has no
-                    // parent to inherit one from. Handing it the Y-up value
-                    // turned it into Z-up (0, 0, 0.94) and laid the whole
-                    // character on its back: measured ankle y = -0.856, toe
-                    // y = -0.927, a metre underground.
-                    //
-                    // Nothing looked obviously broken because the leg IK then
-                    // reacted correctly to that garbage — `lift_toe_end_out_
-                    // of_the_ground` saw a tip 1.006 m below the floor and
-                    // dutifully rotated the toe 113 degrees to rescue it,
-                    // which rendered as feet whose toes point at the sky.
-                    if bone == Bone::Hips {
-                        return skeleton.hips_root_rotation().inverse()
-                            * bone.t_pose_offset();
-                    }
-                    transforms
-                        .get(skeleton.entity(bone))
-                        .map(|transform| transform.translation)
-                        .unwrap_or_else(|_| bone.t_pose_offset())
-                });
-                RigGeometry::from_skeleton(skeleton, offsets)
-            }
+            Some(skeleton) => live_rig_geometry(skeleton, |bone| {
+                transforms.get(skeleton.entity(bone)).ok().map(|transform| transform.translation)
+            }),
             None => RigGeometry::default(),
         };
 
@@ -591,7 +597,7 @@ fn solve_foot_ik(
                         continue;
                     };
                     let Ok(local) = transforms.get(tip) else { continue };
-                    rig = rig.with_toe_end(toe, local.translation);
+                    rig = rig.with_toe_end(toe, local.translation * skeleton.bone_translation_scale());
                 }
                 rig
             }

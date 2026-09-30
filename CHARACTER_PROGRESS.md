@@ -42,6 +42,54 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### `character.glb` walks: the live rig geometry was in centimetres and at the wrong hips height
+
+Distilled in [the live rig geometry must match the rendered rig](./docs/knowledge/character-animation/rig-and-retargeting/live-rig-geometry-must-match-the-rendered-rig.md).
+
+**Two causes, both in how `solve_foot_ik` built the geometry that the
+gait, foot IK and root motion solve on:**
+
+1. **Units.** It used raw bone translations. Under the Mixamo rig's
+   Blender `Armature` node (scale 0.01) those are centimetres: a 46 m
+   thigh. They now go through `HumanoidSkeleton::bone_translation_scale`.
+2. **Hips height.** The hips took the synthetic 0.94 m, while the renderer
+   puts them at the rig's own rest (`character.glb` 1.126 m, `puppet_base`
+   0.949 m, 44 mm off in all). They now use
+   `HumanoidSkeleton::hips_rest_offset`.
+
+After (1) alone the character walked at speed but crouched, feet 0.186 m
+in the air: exactly the hips error. The construction is now one function,
+`plugin::live_rig_geometry`. It is checked against the asset's bind, joint
+by joint, for `puppet_base` and a centimetre copy of it; sabotaged, the
+test fails by 11.5 m and by 44 mm.
+
+**A third bug the fix exposed, on `puppet_base`.** `stance_on_rig` bent the
+knees without lowering the hips, so the stance's feet floated 6.9 mm. The
+old geometry's error had read as slack; without it, the foot IK pitched
+each foot 4.5° toe-down to reach the floor. The stance now lowers the hips
+by what the ankles rise, and the feet stand at the asset's bind heights
+(new test; fails with the drop removed).
+
+| Live, 1.2 m/s asked | `character.glb` before | after | `puppet_base` after |
+|---|---|---|---|
+| speed | 0.27 m/s | 1.18 | 1.18 |
+| hips vs travel | 63° off | facing it | facing it |
+| steady planted slide | ~200 mm | 5.1 / 3.7 mm | 3.4 / 3.5 mm |
+| step width | — | 148 mm | 129 mm |
+| pelvis roll / chest correlation | — | ±2.6° / −0.97 | ±2.7° / −0.97 |
+
+Standing, `character.glb`'s ankle is at 0.1183 m (bind 0.1216). Front and
+Left gizmo views: it walks upright toward its travel, knees forward.
+`puppet_base`'s start slide is 2.5 / 2.9 mm, unchanged; its stop window
+reads 3.1 / 5.5 mm, where it used to read 8–20.
+
+**Still open (predates this):** the foot IK plants the toe *joint* on the
+floor on `puppet_base` (its toe and tip are level), 15 mm below where the
+walk's `Sole` puts the contact. Standing, the ball renders at 0.0016 m
+against a bind 0.0152 m; it was 0.0102 m before these fixes. 1010 tests
+pass.
+
+
 ### The frontal and transverse walk, checked live at three speeds — and a second rig that cannot walk
 
 Step 1.5 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md), closing step

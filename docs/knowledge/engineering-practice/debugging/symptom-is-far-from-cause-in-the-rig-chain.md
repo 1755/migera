@@ -41,6 +41,9 @@ looked unrelated to their cause:
   synthetic Y-up frame while the rig's root correction is Z-up. That laid the
   character on its back *inside the solver*. Leg IK then reacted correctly,
   rotating each toe 113° to rescue a tip it believed was a metre underground.
+  The same substitute was also at the wrong *height* (the synthetic 0.94 m);
+  on another rig that was a 0.186 m float. See
+  [the live rig geometry must match the rendered rig](../../character-animation/rig-and-retargeting/live-rig-geometry-must-match-the-rendered-rig.md).
 - **A hand missing its target.** A 180° yaw correction node sat *below* the
   character entity the plugin read. The entity reported identity while every
   live bone carried the yaw.

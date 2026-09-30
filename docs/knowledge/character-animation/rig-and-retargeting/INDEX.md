@@ -26,6 +26,7 @@ note here is a way that gap produced a bug the test suite could not see.
 
 | Note | What it establishes | Read when |
 |---|---|---|
+| [The live rig geometry must match the rendered rig](./live-rig-geometry-must-match-the-rendered-rig.md) | Bone offsets in metres (× the armature's 0.01 on Mixamo rigs) and the hips at the rig's own rest; `character.glb` never walked without both, and `puppet_base` hid them | before building rig geometry, adding a rig, or trusting one rig's results |
 | [Synthetic-rig tests are blind to retargeting](./synthetic-rig-tests-are-blind-to-retargeting.md) | `rig::forward_kinematics` never reads bind rotations, so it cannot catch retargeting bugs | before trusting a synthetic-rig test for real-rig output |
 | [Conjugate pose deltas by the bind rotation](./conjugate-pose-deltas-by-the-bind-rotation.md) | Write `bind⁻¹·delta·bind`, or the angle lands on the wrong axis; sabotage your regression test | before writing pose rotations to a glTF rig |
 | [A pose delta names a world axis](./a-pose-delta-names-a-world-axis.md) | FK conjugates by the accumulated bind; world corrections use `P = W(parent)·bind_local·B⁻¹` (026d9e8) | before composing rotations in `rig.rs`, `legik`, `armik` or `lookat` |

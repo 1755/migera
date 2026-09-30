@@ -543,8 +543,6 @@ mod tests {
         // 113 degrees to lift a tip it believed was 1.006 m below the floor.
         // The visible symptom was feet whose toes pointed at the sky, which is
         // several steps away from the actual cause.
-        use crate::character::anim::rig::{BoneSet, RigGeometry};
-
         let mut world = bevy::prelude::World::new();
         let mut entities = HashMap::new();
         for &bone in Bone::ALL.iter() {
@@ -553,16 +551,8 @@ mod tests {
         let skeleton = real_skeleton(&parsed_rig(), entities);
         let parsed = puppet_base();
 
-        // Exactly what `solve_foot_ik` builds: real offsets everywhere, and the
-        // substitute at the root.
-        let offsets = BoneSet::from_fn(|bone| {
-            if bone == Bone::Hips {
-                skeleton.hips_root_rotation().inverse() * bone.t_pose_offset()
-            } else {
-                parsed.offsets[bone]
-            }
-        });
-        let rig = RigGeometry::from_skeleton(&skeleton, offsets);
+        // Exactly what `solve_foot_ik` builds.
+        let rig = crate::character::anim::plugin::live_rig_geometry(&skeleton, |bone| Some(parsed.offsets[bone]));
 
         let positions = forward_kinematics_on(&LocalPose::REST, &rig);
 
@@ -586,6 +576,80 @@ mod tests {
                 foot.name(),
                 positions[foot],
             );
+        }
+    }
+
+    #[test]
+    fn the_live_rig_geometry_stands_where_the_asset_does_in_metres() {
+        // The geometry the gait, foot IK and root motion solve on must put
+        // every joint where the renderer does, in metres. It did neither on
+        // `character.glb`: its hips took the synthetic 0.94 m (the asset's
+        // rest is 1.126 m), so it crouched with its feet 0.186 m in the air;
+        // and its bones' centimetre translations under Blender's 0.01 node
+        // went in unscaled, a 46 m thigh. `puppet_base` hid both — metres,
+        // and hips 9 mm from 0.94.
+        //
+        // Checked on `puppet_base` and on a centimetre-authored copy of it
+        // under a 0.01 node, which must solve on the same geometry.
+        use crate::character::anim::plugin::live_rig_geometry;
+
+        let mut world = bevy::prelude::World::new();
+        let entities: HashMap<Bone, bevy::prelude::Entity> =
+            Bone::ALL.iter().map(|&bone| (bone, world.spawn(bevy::prelude::Transform::IDENTITY).id())).collect();
+        let asset = puppet_base();
+        let bind = forward_kinematics_on(&LocalPose::REST, &asset);
+
+        let metres = parsed_rig();
+        let mut centimetres = metres.clone();
+        centimetres.hips_rest_local_translation *= 100.0;
+        centimetres.hips_parent_rest_world_scale = Vec3::splat(0.01);
+
+        for (label, parsed, units) in [("metres", metres, 1.0), ("centimetres", centimetres, 100.0)] {
+            let skeleton = real_skeleton(&parsed, entities.clone());
+            let rig = live_rig_geometry(&skeleton, |bone| Some(asset.offsets[bone] * units));
+            let solved = forward_kinematics_on(&LocalPose::REST, &rig);
+            for bone in [
+                Bone::Hips,
+                Bone::LeftUpLeg,
+                Bone::LeftLeg,
+                Bone::LeftFoot,
+                Bone::LeftToeBase,
+                Bone::RightFoot,
+                Bone::Spine2,
+            ] {
+                let off = (solved[bone] - bind[bone]).length();
+                assert!(
+                    off < 1.0e-3,
+                    "{label}: {} at {:?}, the asset's bind puts it at {:?} ({:.1} mm off)",
+                    bone.name(),
+                    solved[bone],
+                    bind[bone],
+                    off * 1e3
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stance_keeps_the_soles_where_the_asset_stands_them() {
+        // Bending the knees shortens the legs; the stance lowers the hips by
+        // the same, so the feet stay at the asset's own bind heights. It
+        // used to leave the hips at full height, and on `puppet_base` the
+        // feet floated 6.9 mm with no leg left to reach the floor: the foot
+        // IK pitched them 4.5° toe-down instead.
+        use crate::character::anim::plugin::live_rig_geometry;
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let mut world = bevy::prelude::World::new();
+        let entities: HashMap<Bone, bevy::prelude::Entity> =
+            Bone::ALL.iter().map(|&bone| (bone, world.spawn(bevy::prelude::Transform::IDENTITY).id())).collect();
+        let asset = puppet_base();
+        let rig = live_rig_geometry(&real_skeleton(&parsed_rig(), entities), |bone| Some(asset.offsets[bone]));
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let (bind, standing) = (forward_kinematics_on(&LocalPose::REST, &rig), forward_kinematics_on(&stood, &rig));
+        assert!(stood.root_translation.y < -0.005, "the hips should come down, moved {}", stood.root_translation.y);
+        for bone in [Bone::LeftFoot, Bone::RightFoot, Bone::LeftToeBase, Bone::RightToeBase] {
+            let off = standing[bone].y - bind[bone].y;
+            assert!(off.abs() < 5.0e-4, "{} stands {:.1} mm off its bind height", bone.name(), off * 1e3);
         }
     }
 

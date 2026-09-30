@@ -157,6 +157,12 @@ pub fn stance_on_rig(
     // before the rig was a parameter.
     let flex = knee_flex * facing_sign(rig);
     let half = flex * 0.5;
+    let ankles = |pose: &LocalPose| {
+        use super::rig::offset_from;
+        0.5 * (offset_from(pose, rig, Bone::Hips, Bone::LeftFoot).y
+            + offset_from(pose, rig, Bone::Hips, Bone::RightFoot).y)
+    };
+    let before = ankles(&pose);
 
     for (hip, knee, ankle) in [
         (Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot),
@@ -166,6 +172,15 @@ pub fn stance_on_rig(
         compose(&mut pose, knee, Quat::from_axis_angle(KNEE_AXIS, -flex));
         compose(&mut pose, ankle, Quat::from_axis_angle(KNEE_AXIS, half));
     }
+
+    // Bent knees make shorter legs: the hips come down by what the ankles
+    // rose, so the soles stay on the floor. Left standing at full height,
+    // `puppet_base`'s feet floated 6.9 mm in the stance, and its legs,
+    // authored at full extension, had nothing to reach them with: the foot
+    // IK pitched each foot 4.5° toe-down instead. (Hidden until the live
+    // rig geometry put the hips where the renderer does; it had them 9 mm
+    // low, which read as slack.)
+    pose.root_translation.y -= ankles(&pose) - before;
 
     pose
 }

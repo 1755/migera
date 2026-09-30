@@ -485,6 +485,41 @@ impl HumanoidSkeleton {
         }
     }
 
+    /// The world scale every bone's local translation is expressed in:
+    /// `Vec3::ONE` on a metre-authored rig (`puppet_base.gltf`), `0.01` on
+    /// a Mixamo rig under Blender's centimetre-correction node
+    /// (`character.glb`).
+    ///
+    /// A bone's `Transform.translation` is in that scaled parent space, so
+    /// anything measuring the skeleton in metres — the rig geometry the gait,
+    /// foot IK and root motion solve on — multiplies by this. Skipping it
+    /// handed them a 46 m thigh on `character.glb`, which then walked at a
+    /// fraction of the asked speed, sideways, with feet sliding ~200 mm.
+    pub fn bone_translation_scale(&self) -> Vec3 {
+        match &self.other_rig {
+            Some(other) => other.hips_parent_rest_world_scale,
+            None => Vec3::ONE,
+        }
+    }
+
+    /// Where the hips joint rests in its parent's (rotated, unscaled) frame,
+    /// metres: under the parent's rest rotation ([`Self::hips_root_rotation`])
+    /// this is the hips' real rest position, which is where
+    /// [`Self::hips_local_translation_for`] renders them for a zero root
+    /// translation.
+    ///
+    /// Rig geometry that places the hips anywhere else solves every foot
+    /// against the wrong floor. It used to take the synthetic table's
+    /// 0.94 m: 9 mm off on `puppet_base` (hips 0.949 m), 0.186 m on
+    /// `character.glb` (1.126 m), whose feet then floated by exactly that
+    /// over a deep crouch.
+    pub fn hips_rest_offset(&self) -> Vec3 {
+        match &self.other_rig {
+            Some(other) => other.hips_rest_local_translation * other.hips_parent_rest_world_scale,
+            None => Bone::Hips.t_pose_offset(),
+        }
+    }
+
     /// This bone's own REST local rotation on THIS specific skeleton
     /// instance — `Quat::IDENTITY` for the debug skeleton (its own
     /// `spawn_humanoid_debug_skeleton` never rotates any bone's own

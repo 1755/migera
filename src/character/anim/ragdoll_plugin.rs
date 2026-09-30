@@ -616,9 +616,10 @@ fn rig_geometry(
         if bone == Bone::Hips {
             return bone.t_pose_offset();
         }
+        // In metres: see `HumanoidSkeleton::bone_translation_scale`.
         transforms
             .get(skeleton.entity(bone))
-            .map(|transform| transform.translation)
+            .map(|transform| transform.translation * skeleton.bone_translation_scale())
             .unwrap_or_else(|_| bone.t_pose_offset())
     });
 
