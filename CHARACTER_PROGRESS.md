@@ -42,6 +42,77 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A fall: the body goes to physics when no step can catch it
+
+H2 of the re-scoped step 4 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).
+Distilled in
+[a fall hands the body to physics](./docs/knowledge/character-animation/ragdoll-and-physics/a-fall-hands-the-body-to-physics.md)
+and
+[normalize what you read back from your own output](./docs/knowledge/engineering-practice/debugging/normalize-what-you-read-back-from-your-own-output.md).
+
+**The balance could not fall.** Its 8° validity clamp held the COM at the
+bound with its velocity zeroed. A 2 m/s shove was "caught" by one 0.4 m
+step, with 1.98 m/s simply discarded. `Balance::falls` now fires when the
+recovery step, planned from the whole push, asks for more than
+`MAX_CATCH` (0.8 m). That value is the model's own verdict with the clamp
+lifted: forward 0.8 m/s caught and 1.0 falls, back 1.0 caught and 1.2
+falls. Sideways, every stumble was the clamp's catch, the H1 0.7 m/s one
+included. The stumble note is corrected.
+
+**The ragdoll falls.** `Ragdoll::fall(tone, damping)`:
+- Release: the pinned (kinematic) root becomes dynamic with the velocity
+  it was following the hips at.
+- Physics: gravity in full, pose strength `tone`, and avian
+  `JointDamping` on every joint.
+- Display: the read-back shows only the simulation, with the hips joint
+  placed on the hips body.
+- Entity: the character entity follows the body across the ground.
+
+The gallery gets a physics floor, sole-block feet, 12 substeps, and
+`F` / `--fall-at-frame` / `--fall-damping`.
+
+**What it took:**
+- The read-back's hips rotation drifted off unit length through its own
+  feedback (`inverse()` of the Transform it wrote last frame). Lying down
+  it reached norm 1.03: skeleton scaled 6%, drawn 8–21° off its bodies.
+  Now normalized, and drawn within 0.1°.
+- Tone as a pose controller (0.15) kept a lying forearm pushing at
+  0.57 m/s. Tone is now joint damping. The sweep over three fall
+  directions at 12 substeps: only 1–3/s rested every fall; 3/s is used.
+- A body on the floor didn't stop. Resting jitter sat at avian's 0.15
+  rad/s sleep bound, so it never slept and crept 9 mm/s (`puppet_base`)
+  and 7 mm/s (`character.glb`, at avian's 6 substeps). Three layers stop
+  it: 12 substeps in the gallery, a looser
+  `FALLEN_SLEEP`, and `rest_fallen_ragdolls`, which puts a body slow for
+  1 s to sleep and marks `Fall::at_rest` (H3's trigger).
+- Dead ends, each measured: joint damping as the creep's engine (still
+  creeps at 0), joint limits (still creeps without them), a stray
+  collider, and the entity-follow (A/B: the outcome varied by landing,
+  not by follow).
+
+**Measured.**
+- Headless (`a_released_ragdoll_falls_with_its_momentum_and_is_drawn_where_it_lies`):
+  carried at 1 m/s and let go, the hips coast 6+ cm in 0.1 s. Lying at
+  hips < 0.35 m, the body is asleep within 5 s and moves 0 mm after.
+  Every bone is drawn within 1° of its body, the hips on their body
+  within 1 cm, and the norm stays within 1e-4 of 1 every frame.
+- Forced rest (`a_fallen_body_that_never_sleeps_by_itself_is_put_to_rest`):
+  fails without `SleepBody`.
+- Live, five falls (1.5 m/s forward and back, 1.2 sideways, both rigs):
+  all lie head-down (neck ~0.13 m). Four were at rest 2.5–3.5 s after
+  the push; `puppet_base` sideways rolled slowly for ~6 s first.
+- Caught stumbles with the ragdoll and floor present: planted balls
+  ≤ 0.1 mm (`puppet_base`).
+
+**Seen.** A fallen `puppet_base`, Front and Left:
+- `--gizmos on --show-real-mesh off`: the body lies on the floor, and the
+  drawn skeleton lies along the ragdoll bodies.
+- Mesh on: curled on its side, intact, nothing sunk or stretched.
+
+**Cost.** One `puppet_base` ragdoll frame, headless
+(`probe_ragdoll_substep_cost`): 0.66–0.77 ms p50 at 6 substeps and
+0.94–0.96 ms at 12. The kinematic stack is unchanged. 1030 tests pass.
+
 ### A stumble: one step to the capture point, then the trailing foot joins
 
 H1 of the re-scoped step 4 in [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md).

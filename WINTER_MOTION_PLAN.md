@@ -238,10 +238,15 @@ a stable PD, research-grade (see the 4b finding). Instead:
   planned from the pendulum. The pelvis sinks 46/115/44 mm (forward,
   sideways, back); planted feet stay ≤ 1 mm live on both rigs. See
   [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md).
-- [ ] **H2 Fall (physics).** A push or hit beyond what a step can catch, or
-  a game trigger: release the pinned root at runtime, go limp-ish under
-  real gravity on the sole feet, show the simulation, and let the entity
-  follow the body.
+- [x] **H2 Fall (physics), done 2026-09-30.** A push asking for a step
+  longer than `MAX_CATCH` (0.8 m), or a game call (`Ragdoll::fall`; `F`
+  in the gallery), releases the pinned root with its velocity. Gravity
+  acts in full, tone is joint damping (3/s), the screen shows the
+  simulation with the skeleton on the hips body, and the entity follows.
+  A body at rest is put to sleep and marked `Fall::at_rest`. Hits don't
+  trigger a fall yet. Sideways the balance can't tell a catch from a
+  fall (the clamp catches). See
+  [the note](./docs/knowledge/character-animation/ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
 - [ ] **H3 After a fall.** Detect that it has settled, then hand back to
   animation. A timed blend to standing is the stand-in until there is
   authored get-up motion.

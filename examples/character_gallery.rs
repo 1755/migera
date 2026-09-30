@@ -47,7 +47,7 @@ use migera::character::anim::plugin::{AnimArmIk, AnimFootIk, AnimGround, AnimPos
 use avian3d::prelude::PhysicsPlugins;
 use migera::character::anim::{
     spawn_ragdoll, AnimPhaseLayer, AnimPlugin, AnimRagdollPlugin, AnimSprings, AnimTarget,
-    AnimTargetAsset, Ragdoll, RagdollHit, RagdollSet, RagdollSpawnConfig,
+    AnimTargetAsset, Ragdoll, RagdollHit, RagdollSet, RagdollSpawnConfig, FALL_DAMPING, FALL_TONE,
 };
 
 /// `--shot PATH --at-frame N`: headless screenshot-based verification, same
@@ -1885,6 +1885,13 @@ struct RagdollConfig {
     hit_at_frame: Option<u32>,
     /// `--hit-bone NAME` (default `LeftForeArm`).
     hit_bone: Bone,
+    /// `--fall-at-frame N`: let the ragdoll fall at frame N, as `F` does
+    /// live. A push no step can catch does it by itself
+    /// (`Balance::falls`).
+    fall_at_frame: Option<u32>,
+    /// `--fall-damping PER_SECOND`: the falling joints' damping (default
+    /// `FALL_DAMPING`).
+    fall_damping: f32,
     /// `--hit-velocity X,Y,Z` in m/s (default straight up, `0,4,0`).
     ///
     /// Up rather than "backward" by default because it needs no facing: a
@@ -1899,6 +1906,8 @@ impl RagdollConfig {
             enabled: false,
             strength: 1.0,
             hit_at_frame: None,
+            fall_at_frame: None,
+            fall_damping: FALL_DAMPING,
             hit_bone: Bone::LeftForeArm,
             hit_velocity: Vec3::new(0.0, 4.0, 0.0),
         };
@@ -1913,6 +1922,12 @@ impl RagdollConfig {
                     }
                 }
                 "--hit-at-frame" => config.hit_at_frame = args.next().and_then(|v| v.parse().ok()),
+                "--fall-at-frame" => config.fall_at_frame = args.next().and_then(|v| v.parse().ok()),
+                "--fall-damping" => {
+                    if let Some(value) = args.next().and_then(|v| v.parse().ok()) {
+                        config.fall_damping = value;
+                    }
+                }
                 "--hit-bone" => {
                     if let Some(bone) = args.next().as_deref().and_then(Bone::from_name) {
                         config.hit_bone = bone;
@@ -1959,6 +1974,40 @@ fn deliver_ragdoll_hits(
         );
         hits.write(RagdollHit::new(character, config.hit_bone, config.hit_velocity));
     }
+}
+
+/// H2: lets a ragdolled character fall when its balance finds no step
+/// that catches it (`Balance::falls`), on `F`, or at `--fall-at-frame`.
+/// The balance is reset: the body is the physics' now, and a stumble still
+/// being posed underneath would move the character entity too.
+fn fall_when_uncaught(
+    config: Res<RagdollConfig>,
+    frame: Res<FrameCount>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut rigs: Query<(&mut balance::Balance, &mut Ragdoll, &mut AnimFootIk)>,
+) {
+    let asked = config.fall_at_frame == Some(frame.0) || keys.just_pressed(KeyCode::KeyF);
+    for (mut balance, mut ragdoll, mut foot_ik) in &mut rigs {
+        if ragdoll.is_falling() || !(asked || balance.falls) {
+            continue;
+        }
+        info!(
+            "character_gallery: falling at frame {} ({})",
+            frame.0,
+            if balance.falls { format!("a push asked for a {:.2} m step", balance.wanted_step) } else { "asked".into() }
+        );
+        ragdoll.fall(FALL_TONE, config.fall_damping);
+        *balance = balance::Balance::default();
+        foot_ik.planted = [false; 2];
+        foot_ik.landing = None;
+    }
+}
+
+/// The floor a falling ragdoll lands on: the rendered ground is only a
+/// mesh.
+fn spawn_physics_floor(mut commands: Commands) {
+    use avian3d::prelude::{Collider, Friction, RigidBody};
+    commands.spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
 }
 
 /// Draws every simulated ragdoll body as a cyan line along its own axis.
@@ -2024,8 +2073,12 @@ fn draw_ragdoll_gizmos(
 /// Animated rigs that do not yet have a simulated skeleton — the
 /// `Without<Ragdoll>` is what makes [`attach_ragdoll`] run once per
 /// character rather than every frame.
-type RagdollessRigs<'w, 's> =
-    Query<'w, 's, (Entity, &'static HumanoidSkeleton), (With<AnimTarget>, Without<Ragdoll>)>;
+type RagdollessRigs<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static HumanoidSkeleton, Option<&'static AnimFootIk>),
+    (With<AnimTarget>, Without<Ragdoll>),
+>;
 
 fn attach_ragdoll(
     mut commands: Commands,
@@ -2037,20 +2090,26 @@ fn attach_ragdoll(
         return;
     }
 
-    for (entity, skeleton) in &rigs {
+    for (entity, skeleton, foot_ik) in &rigs {
         // Skip until propagation has actually run: a rig whose hips still
         // sit at the origin has not been propagated yet.
         let Ok(hips) = global_transforms.get(skeleton.entity(Bone::Hips)) else { continue };
         if hips.translation() == Vec3::ZERO {
             continue;
         }
+        // And until the foot IK has measured the live rig: the feet stand
+        // on sole blocks built from it, so a fall lands on flat feet.
+        let Some(rig) = foot_ik.and_then(|ik| ik.rig.as_ref()) else { continue };
 
         let mut ragdoll = spawn_ragdoll(
             &mut commands,
             entity,
             skeleton,
             &global_transforms,
-            &RagdollSpawnConfig::default(),
+            &RagdollSpawnConfig {
+                feet: Some(migera::character::anim::ragdoll_plugin::sole_blocks(rig)),
+                ..Default::default()
+            },
         );
         ragdoll.set_strength(config.strength);
 
@@ -2375,14 +2434,22 @@ fn main() {
     let ragdoll_config = RagdollConfig::from_args();
     app.insert_resource(ragdoll_config);
     if ragdoll_config.enabled {
-        app.add_plugins((PhysicsPlugins::default(), AnimRagdollPlugin)).add_systems(
-            Update,
-            (
-                attach_ragdoll.after(attach_anim_backend),
-                draw_ragdoll_gizmos,
-                deliver_ragdoll_hits.before(RagdollSet::Hit),
-            ),
-        );
+        // Twelve substeps, not avian's six: at six a fallen `character.glb`
+        // never came to rest. Its resting contacts jittered past the sleep
+        // bound (`ragdoll_plugin::FALLEN_SLEEP`) and it crept 7 mm/s across
+        // the floor for as long as it lay there; at twelve it sleeps.
+        app.add_plugins((PhysicsPlugins::default(), AnimRagdollPlugin))
+            .insert_resource(avian3d::prelude::SubstepCount(12))
+            .add_systems(Startup, spawn_physics_floor)
+            .add_systems(
+                Update,
+                (
+                    attach_ragdoll.after(attach_anim_backend),
+                    draw_ragdoll_gizmos,
+                    deliver_ragdoll_hits.before(RagdollSet::Hit),
+                    fall_when_uncaught.after(drive_walk_cycle).before(RagdollSet::Hit),
+                ),
+            );
     }
 
     app.run();

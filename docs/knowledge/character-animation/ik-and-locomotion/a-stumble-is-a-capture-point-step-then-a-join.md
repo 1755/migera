@@ -1,6 +1,6 @@
 ---
 title: A stumble is a capture-point step, then a join the body's momentum carries
-description: "balance::Balance steps to the predicted capture point, then the trailing foot joins once the capture point is inside the stepped foot, not once the COM is over it. The swinging leg holds the pelvis; a rear foot rolls onto its toes. Pelvis sinks 46/44/115 mm, feet ≤ 1 mm live. Read before changing stepping in balance.rs."
+description: "balance::Balance steps to the predicted capture point; the trailing foot joins once the capture point is inside the stepped foot. The swinging leg holds the pelvis; a rear foot rolls onto its toes. Sideways the clamp, not the step, catches. Feet ≤ 1 mm live. Read before changing stepping in balance.rs."
 type: decision
 status: current
 tags:
@@ -118,12 +118,21 @@ step). No vertical pop outside the swing arc, and the pelvis sank at most
 123 mm (`puppet_base`, sideways). The planned steps are identical under
 frame times cycling 5–50 ms.
 
+**The sideways row is not a real catch** (found 2026-09-30, building H2).
+The balance's 8° validity clamp holds the COM at its bound with its
+velocity zeroed, and sideways it fires during the swing, because stepping
+off the far foot starts the COM at that bound. So the side step is posed,
+but the clamp, not the step, stops the body. Forward and back the steps
+catch without it up to 0.8 m/s and 1.0 m/s. A push asking for a step over
+`MAX_CATCH` now falls: see
+[a fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
+
 ## Revisit when
 
-- A falling push (H2): the capture point beyond `MAX_STEP`'s reach is where
-  physics should take over, not a clamped step.
 - Pushes while walking: the balance only runs on the standing side of the
   blend.
+- Sideways catches should be real: a crossover or loaded side step, or a
+  validity bound measured with the landing foot.
 - A sideways lunge looks too deep: a crossover step, or the trailing foot
   rolling onto its inner edge, are the human alternatives. The leg-length
   floor of ~10 cm stays either way.
@@ -131,6 +140,7 @@ frame times cycling 5–50 ms.
 ## Related
 
 - [Push recovery is Winter's pendulum](./push-recovery-is-winters-pendulum.md) — prerequisite: the sway, COP law and support this steps from.
+- [A fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md) — deeper: what happens when no step catches the push, and why the sideways catch is the clamp's.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — deeper: why the gallery passes `planted` to the foot IK.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — applies: the join's travelled distance becomes root motion the locks must be given.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — context: why a wide stance leaves the legs no reach to spare.

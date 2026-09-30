@@ -116,7 +116,47 @@ pub struct Ragdoll {
     /// hit to sweep strength through the values between froze a recovered
     /// forearm 55.9 degrees off its animation.
     pub displayed: Option<LocalPose>,
+    /// Let go to fall, if it has been. See [`Ragdoll::fall`].
+    pub fall: Option<Fall>,
 }
+
+/// A ragdoll let go to fall: its root is no longer pinned, gravity acts on
+/// every body in full, each joint keeps only `tone` of its strength, and
+/// the screen shows the simulation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fall {
+    /// The strength every joint's pose controller keeps, `0..=1`.
+    pub tone: f32,
+    /// How strongly each joint resists motion, 1/s: avian's `JointDamping`
+    /// on every joint, damping the two bodies' relative spin.
+    pub damping: f32,
+    /// Set once the root has been released: the hips body's centre in the
+    /// hips bone's frame, which the display needs to place the skeleton
+    /// on the body.
+    pub root_offset: Option<Vec3>,
+    /// How long every body has been slower than the rest bounds, seconds
+    /// (see `ragdoll_plugin::REST_SPEED`).
+    pub still_for: f32,
+    /// Set once the body has come to rest, and is asleep.
+    pub at_rest: bool,
+}
+
+/// How much pose-controller strength a falling body keeps by default: none.
+/// At 0.15 the controller kept driving the limbs toward the standing pose
+/// on the floor, and a forearm still moved at 0.57 m/s 3 s after the fall.
+pub const FALL_TONE: f32 = 0.0;
+
+/// How strongly a falling body's joints resist motion by default, 1/s: its
+/// muscle tone, as resistance to motion rather than a pose to hold.
+///
+/// Chosen by sweep (`ragdoll_plugin::tests::probe_fall_damping`):
+/// `puppet_base` carried at 1 m/s forward, backward and sideways, then let
+/// go, at 12 substeps. Only 1-3/s brought every fall to rest (asleep by
+/// 2.9-4.8 s). At 0 two of three never slept and the limbs whipped at
+/// 7.4 m/s. At 10 the backward fall never slept: heavy damping turns a
+/// collapse into a slow ooze, and live a hips-up body slid 12 mm/s for
+/// seconds. 3 whips least (6.1 m/s) of those that rest.
+pub const FALL_DAMPING: f32 = 3.0;
 
 impl Default for Ragdoll {
     fn default() -> Self {
@@ -128,6 +168,7 @@ impl Default for Ragdoll {
             stun: BoneSet::splat(Stun::default()),
             stun_response: StunResponse::default(),
             displayed: None,
+            fall: None,
         }
     }
 }
@@ -153,9 +194,41 @@ impl Ragdoll {
     /// other: a limb that physically yields but is still *shown* animated,
     /// or one shown limp while its controller holds it rigid.
     pub fn effective_strength(&self, bone: Bone) -> RagdollStrength {
-        let dial = self.strength[bone].0.clamp(0.0, 1.0);
+        let mut dial = self.strength[bone].0.clamp(0.0, 1.0);
+        if let Some(fall) = self.fall {
+            dial = dial.min(fall.tone.clamp(0.0, 1.0));
+        }
         let lost = self.stun[bone].limpness.clamp(0.0, 1.0);
         RagdollStrength(dial * (1.0 - lost))
+    }
+
+    /// How much of the simulation the screen shows at `bone`, `0..=1`:
+    /// where the controller no longer enforces the animation, and all of
+    /// it while falling, when the body is the character.
+    pub fn shown(&self, bone: Bone) -> f32 {
+        if self.fall.is_some() { 1.0 } else { 1.0 - self.effective_strength(bone).0 }
+    }
+
+    /// How much of its own weight `bone`'s body carries against gravity,
+    /// `0..=1`: its strength (see `ragdoll_plugin::support_own_weight`),
+    /// and none while falling.
+    pub fn carried_weight(&self, bone: Bone) -> f32 {
+        if self.fall.is_some() { 0.0 } else { self.effective_strength(bone).0 }
+    }
+
+    /// Lets the body fall (H2): the root is released at the next
+    /// `RagdollSet::Hit`, keeping the velocity it had, and every joint
+    /// keeps `tone` of its strength (see [`Fall`]). A second call while
+    /// already falling changes nothing.
+    pub fn fall(&mut self, tone: f32, damping: f32) {
+        if self.fall.is_none() {
+            self.fall = Some(Fall { tone, damping, root_offset: None, still_for: 0.0, at_rest: false });
+        }
+    }
+
+    /// Whether the body has been let go to fall.
+    pub fn is_falling(&self) -> bool {
+        self.fall.is_some()
     }
 
     /// Whether any joint is still recovering from a hit.

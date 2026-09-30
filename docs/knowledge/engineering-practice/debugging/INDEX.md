@@ -7,7 +7,7 @@ tags:
   - debugging
   - verification
   - tooling
-updated: 2026-09-28
+updated: 2026-09-30
 ---
 
 # Debugging lessons
@@ -27,6 +27,7 @@ then [Prefer BRP over prints](./prefer-brp-over-prints-for-live-ecs-state.md).
 | [Prefer BRP over prints for live ECS state](./prefer-brp-over-prints-for-live-ecs-state.md) | Query world-space transforms over BRP on port 15702 instead of adding prints; recipe included. | When debugging a live pose, transform or retarget. |
 | [Kill stale processes before trusting BRP](./kill-stale-processes-before-trusting-brp.md) | A leftover process keeps the BRP port and serves an old build's state; a four-subsystem false diagnosis came from it. | Before any BRP measurement, and when live data and tests disagree. |
 | [The symptom is far from the cause in the rig chain](./symptom-is-far-from-cause-in-the-rig-chain.md) | Downstream code reacting correctly to bad input moves the symptom far from the cause; measure link by link. | When a character pose looks wrong. |
+| [Normalize what you read back from your own output](./normalize-what-you-read-back-from-your-own-output.md) | A value read back from your own write and fed through `inverse()` keeps its norm error forever; the ragdoll's hips drifted to 1.03, scaling the skeleton 6%. | When a loop reads what it wrote, or two rotation measurements contradict each other. |
 
 ## See also
 - [Measurement lessons](../measurement/INDEX.md) — numbers that looked like evidence and weren't.

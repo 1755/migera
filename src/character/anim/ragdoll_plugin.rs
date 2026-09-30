@@ -170,10 +170,120 @@ impl RagdollHit {
 fn add_hit_systems(app: &mut App) {
     app.add_message::<RagdollHit>().add_systems(
         Update,
-        (apply_ragdoll_hits, recover_from_hits, support_own_weight)
+        (apply_ragdoll_hits, release_falling_roots, rest_fallen_ragdolls, recover_from_hits, support_own_weight)
             .chain()
             .in_set(RagdollSet::Hit),
     );
+}
+
+/// When a fallen ragdoll's bodies may sleep: below 0.1 m/s and 0.3 rad/s
+/// (avian's default is 0.15 and 0.15) for avian's `TimeToSleep`.
+///
+/// A body at rest on the floor is never still in the solver: measured on
+/// `puppet_base`, six or seven of its bodies kept spinning at 0.05-0.18
+/// rad/s about ever-changing axes, right at the default bound, so it never
+/// slept, and that jitter walked the whole body 9 mm/s across the floor.
+/// Asleep, it stops (0.0 mm over 3 s).
+pub const FALLEN_SLEEP: SleepThreshold = SleepThreshold { linear: 0.1, angular: 0.3 };
+
+/// How slow every body of a fallen ragdoll must stay, and for how long,
+/// before it is put to rest: m/s, rad/s, seconds.
+///
+/// Sleeping on its own (`FALLEN_SLEEP`) is not enough. Some landings rest
+/// in a pose the solver never quite holds: live, a hips-up `puppet_base`
+/// slid 4 mm/s and a `character.glb` 6-25 mm/s for as long as they lay
+/// there, while the same fall, landing differently, slept. The frame's
+/// physics-step count varies live, so which one happens varies run to run.
+pub const REST_SPEED: f32 = 0.05;
+/// See [`REST_SPEED`].
+pub const REST_SPIN: f32 = 0.5;
+/// See [`REST_SPEED`].
+pub const REST_SECONDS: f32 = 1.0;
+
+/// Puts a fallen ragdoll to sleep once all of it has stayed slow
+/// ([`REST_SPEED`], [`REST_SPIN`]) for [`REST_SECONDS`], and marks it
+/// [`super::ragdoll::Fall::at_rest`]: settled, for whatever hands the
+/// body back to animation.
+fn rest_fallen_ragdolls(
+    mut commands: Commands,
+    mut characters: Query<&mut Ragdoll>,
+    bodies: Query<(&LinearVelocity, &AngularVelocity, Has<Sleeping>)>,
+    time: Res<Time>,
+) {
+    for mut ragdoll in &mut characters {
+        let Some(fall) = ragdoll.fall else { continue };
+        if fall.at_rest || fall.root_offset.is_none() {
+            continue;
+        }
+        let states: Vec<_> = ragdoll.bodies.iter().filter_map(|(_, body)| body.and_then(|body| bodies.get(body).ok())).collect();
+        let asleep = states.iter().all(|(_, _, sleeping)| *sleeping);
+        let slow = states.iter().all(|(linear, angular, sleeping)| {
+            *sleeping || (linear.0.length() < REST_SPEED && angular.0.length() < REST_SPIN)
+        });
+        let still_for = if slow { fall.still_for + time.delta_secs() } else { 0.0 };
+        let at_rest = asleep || still_for >= REST_SECONDS;
+        if at_rest && !asleep && let Some(hips) = ragdoll.bodies[Bone::Hips] {
+            commands.queue(SleepBody(hips));
+        }
+        if let Some(fall) = ragdoll.fall.as_mut() {
+            fall.still_for = still_for;
+            fall.at_rest = at_rest;
+        }
+    }
+}
+
+/// Lets go of the root of every ragdoll set falling ([`Ragdoll::fall`]):
+/// a pinned (kinematic) root becomes dynamic, keeping the velocity it was
+/// following the hips with, so the body falls with the momentum the
+/// character had.
+///
+/// Records where the hips body sits in the hips bone's frame
+/// ([`super::ragdoll::Fall::root_offset`]), which the display needs to
+/// hang the skeleton on the body.
+fn release_falling_roots(
+    mut commands: Commands,
+    mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton)>,
+    roots: Query<&KinematicRoot>,
+    bodies: Query<(&Position, &Rotation)>,
+    joints: Query<(Entity, &SphericalJoint)>,
+    live: TransformHelper,
+) {
+    for (mut ragdoll, skeleton) in &mut characters {
+        let Some(fall) = ragdoll.fall else { continue };
+        if fall.root_offset.is_some() {
+            continue;
+        }
+        let ours: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
+        for &body in &ours {
+            commands.entity(body).insert(FALLEN_SLEEP);
+        }
+        if fall.damping > 0.0 {
+            for (joint, spherical) in &joints {
+                if ours.contains(&spherical.body2) {
+                    commands.entity(joint).insert(JointDamping { linear: 0.0, angular: fall.damping });
+                }
+            }
+        }
+        let Some(body) = ragdoll.bodies[Bone::Hips] else { continue };
+        let offset = match roots.get(body) {
+            Ok(root) => {
+                commands.entity(body).remove::<KinematicRoot>().insert(RigidBody::Dynamic);
+                root.offset
+            }
+            // Never pinned: measured from where the body is now.
+            Err(_) => {
+                let (Ok((position, rotation)), Ok(hips)) =
+                    (bodies.get(body), live.compute_global_transform(skeleton.entity(Bone::Hips)))
+                else {
+                    continue;
+                };
+                rotation.0.inverse() * (position.0 - hips.translation())
+            }
+        };
+        if let Some(fall) = ragdoll.fall.as_mut() {
+            fall.root_offset = Some(offset);
+        }
+    }
 }
 
 /// Each body carries as much of its own weight as its joint has strength.
@@ -201,7 +311,7 @@ fn support_own_weight(
 ) {
     for (target, mut gravity) in &mut bodies {
         let Ok(ragdoll) = characters.get(target.character) else { continue };
-        let scale = 1.0 - ragdoll.effective_strength(target.bone).0;
+        let scale = 1.0 - ragdoll.carried_weight(target.bone);
         // Compared first so an unchanged body is not marked changed.
         if gravity.0 != scale {
             gravity.0 = scale;
@@ -530,8 +640,8 @@ fn read_back_simulated_pose(
 
             // Effective strength, so a hit's stun is SHOWN as well as felt
             // by the controller — see `Ragdoll::effective_strength`.
-            let show_simulation = 1.0 - ragdoll.effective_strength(bone).0;
-            displayed.rotations[bone] = animated_local.slerp(simulated_local, show_simulation);
+            let show_simulation = ragdoll.shown(bone);
+            displayed.rotations[bone] = animated_local.slerp(simulated_local, show_simulation).normalize();
         }
 
         ragdoll.displayed = Some(displayed);
@@ -548,13 +658,39 @@ fn read_back_simulated_pose(
 ///
 /// Writes [`Ragdoll::displayed`], whose animated end already includes the
 /// ground and arm corrections — see [`read_back_simulated_pose`].
+///
+/// # While falling
+///
+/// The pose's root translation is the animation's; the body has gone
+/// elsewhere. So the hips are placed on the hips body (its centre less
+/// [`super::ragdoll::Fall::root_offset`]), and the character entity
+/// follows the body across the ground, keeping its height, so whatever
+/// follows the character (a camera, a controller) follows the fall. The
+/// entity is taken to be top-level: its translation is a world position.
 fn write_simulated_pose(
-    rigs: Query<(&HumanoidSkeleton, &Ragdoll)>,
-    mut transforms: Query<&mut Transform>,
+    rigs: Query<(Entity, &HumanoidSkeleton, &Ragdoll)>,
+    bodies: Query<(&Position, &Rotation)>,
+    parents: Query<&ChildOf>,
+    mut transforms: ParamSet<(Query<&mut Transform>, TransformHelper)>,
 ) {
-    for (skeleton, ragdoll) in &rigs {
+    for (character, skeleton, ragdoll) in &rigs {
         let Some(displayed) = &ragdoll.displayed else { continue };
-        super::retarget::write_pose_to_skeleton(skeleton, displayed, &mut transforms);
+        super::retarget::write_pose_to_skeleton(skeleton, displayed, &mut transforms.p0());
+
+        let Some(offset) = ragdoll.fall.and_then(|fall| fall.root_offset) else { continue };
+        let Some(Ok((position, rotation))) = ragdoll.bodies[Bone::Hips].map(|body| bodies.get(body)) else { continue };
+        let hips_world = position.0 - rotation.0 * offset;
+        if let Ok(mut entity) = transforms.p0().get_mut(character) {
+            entity.translation.x = hips_world.x;
+            entity.translation.z = hips_world.z;
+        }
+        let hips = skeleton.entity(Bone::Hips);
+        let Ok(parent) = parents.get(hips).map(ChildOf::parent) else { continue };
+        let Ok(parent_world) = transforms.p1().compute_global_transform(parent) else { continue };
+        let local = parent_world.affine().inverse().transform_point3(hips_world);
+        if let Ok(mut transform) = transforms.p0().get_mut(hips) {
+            transform.translation = local;
+        }
     }
 }
 
@@ -639,8 +775,13 @@ fn live_hips_parent_rotation(
 ) -> Option<Quat> {
     let hips = skeleton.entity(Bone::Hips);
     let world = live.compute_global_transform(hips).ok()?.rotation();
-    let local = transforms.get(hips).ok()?.rotation;
-    Some(world * local.inverse())
+    // Normalized: `local` is what the read-back wrote last frame, and
+    // `inverse` assumes a unit quaternion. Unnormalized, any drift in it came
+    // back through here as the next frame's root, and the next write, and
+    // never went away: a fallen body's hips reached norm 1.03, scaling the
+    // skeleton 6% and drawing it 8° off its bodies.
+    let local = transforms.get(hips).ok()?.rotation.normalize();
+    Some((world * local.inverse()).normalize())
 }
 
 /// Drives a pinned root toward the pose the character's hips have now.
@@ -1487,7 +1628,7 @@ pub fn connect_bodies(
 mod tests {
     use super::*;
     use crate::character::anim::math::pd::PdParams;
-    use crate::character::anim::ragdoll::RagdollStrength;
+    use crate::character::anim::ragdoll::{RagdollStrength, FALL_DAMPING, FALL_TONE};
     use crate::character::anim::rig::BoneSet;
     use core::time::Duration;
     use std::f32::consts::FRAC_PI_2;
@@ -2683,6 +2824,199 @@ mod tests {
                  its target",
                 bone.name(),
             );
+        }
+    }
+
+    #[test]
+    fn a_released_ragdoll_falls_with_its_momentum_and_is_drawn_where_it_lies() {
+        // H2: a pinned ragdoll carried forward at 1 m/s, then let go. It
+        // must keep going (the kinematic root's velocity is the hips'), come
+        // down onto the floor and stop there, and the skeleton must be
+        // drawn on the bodies, root and all. At twelve substeps: at avian's
+        // six a fallen body's resting jitter kept it awake (see the
+        // gallery's `SubstepCount`).
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+        app.add_systems(Update, publish_joint_targets);
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+        let (character, ragdoll, root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+        app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+        step(&mut app, 10);
+
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let start = app.world().get::<Position>(hips).unwrap().0;
+        // Carried forward (+X) at 1 m/s for a quarter second.
+        let carried = (0.25 / TIMESTEP) as usize;
+        for _ in 0..carried {
+            app.world_mut().get_mut::<Transform>(root).unwrap().translation.x += TIMESTEP;
+            app.update();
+        }
+        let released_at = app.world().get::<Position>(hips).unwrap().0;
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+        step(&mut app, (0.1 / TIMESTEP) as usize);
+        let coasted = app.world().get::<Position>(hips).unwrap().0.x - released_at.x;
+        assert!(
+            app.world().get::<RigidBody>(hips).unwrap().is_dynamic() && app.world().get::<KinematicRoot>(hips).is_none(),
+            "the root should be released"
+        );
+        // 1 m/s for 0.1 s: most of 10 cm.
+        assert!(coasted > 0.06, "the falling body kept only {:.1} cm of the carried 1 m/s over 0.1 s", coasted * 100.0);
+
+        // The written skeleton stays unit-length throughout: the read-back's
+        // own output fed back as the next frame's root, and drifted to a
+        // norm of 1.03 lying down (scaling the skeleton 6%, drawing it 8°
+        // off its bodies).
+        let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+        // Five seconds: it sleeps at 4.2 s (`probe_fall_damping`).
+        for _ in 0..(5.0 / TIMESTEP) as usize {
+            app.update();
+            let norm = app.world().get::<Transform>(skeleton.entity(Bone::Hips)).unwrap().rotation.length();
+            assert!((norm - 1.0).abs() < 1.0e-4, "the drawn hips rotation has norm {norm}");
+        }
+        let bodies: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
+        let hips_now = app.world().get::<Position>(hips).unwrap().0;
+        assert!(hips_now.is_finite(), "the fall blew up");
+        // At rest it sleeps, and stays put: awake, the solver's resting
+        // jitter walked it 9 mm/s (`FALLEN_SLEEP`).
+        let asleep = bodies.iter().filter(|&&body| app.world().get::<Sleeping>(body).is_some()).count();
+        assert_eq!(asleep, bodies.len(), "5 s after the fall, only {asleep} of {} bodies sleep", bodies.len());
+        step(&mut app, (3.0 / TIMESTEP) as usize);
+        let crept = app.world().get::<Position>(hips).unwrap().0.distance(hips_now);
+        assert!(crept < 1.0e-3, "the fallen body crept {:.1} mm in 3 s", crept * 1e3);
+        assert!(hips_now.y < 0.35, "the hips should lie low after 5 s of falling, not {:.2} m up (stood at {:.2})", hips_now.y, start.y);
+        for &body in &bodies {
+            let at = app.world().get::<Position>(body).unwrap().0;
+            let speed = app.world().get::<LinearVelocity>(body).unwrap().0.length();
+            assert!(at.y > -0.02, "a body sank {:.1} cm into the floor", -at.y * 100.0);
+            assert!(speed < 0.2, "a body still moves at {speed:.2} m/s after 5 s");
+        }
+
+        // Drawn where it lies: the rendered hips joint on the hips body,
+        // and every simulated bone at its body's rotation.
+        let offset = app.world().get::<Ragdoll>(character).unwrap().fall.unwrap().root_offset.unwrap();
+        let body_rotation = app.world().get::<Rotation>(hips).unwrap().0;
+        let drawn = app.world().get::<GlobalTransform>(skeleton.entity(Bone::Hips)).unwrap().translation();
+        assert!(
+            drawn.distance(hips_now - body_rotation * offset) < 0.01,
+            "the drawn hips are {:.1} cm off the body",
+            drawn.distance(hips_now - body_rotation * offset) * 100.0
+        );
+        for &bone in Bone::ALL.iter() {
+            let Some(body) = ragdoll.bodies[bone] else { continue };
+            let drawn = app.world().get::<GlobalTransform>(skeleton.entity(bone)).unwrap().rotation();
+            let error = rotation_of(&app, body).angle_between(drawn).to_degrees();
+            assert!(error < 1.0, "{} is drawn {error:.1}° off its body", bone.name());
+        }
+    }
+
+    #[test]
+    fn a_fallen_body_that_never_sleeps_by_itself_is_put_to_rest() {
+        // Some landings never drop under the sleep bound by themselves and
+        // creep for as long as they lie (4-25 mm/s live). With avian's own
+        // sleeping made impossible, `rest_fallen_ragdolls` alone must stop
+        // it: marked at rest, asleep, and still.
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+        app.add_systems(Update, publish_joint_targets);
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+        let (character, ragdoll, _root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+        app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+        step(&mut app, 10);
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+        step(&mut app, 2);
+        let bodies: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
+        for &body in &bodies {
+            app.world_mut().entity_mut(body).insert(SleepThreshold { linear: 0.0, angular: 0.0 });
+        }
+        let mut rested = None;
+        for i in 1..=(8.0 / TIMESTEP) as usize {
+            app.update();
+            if rested.is_none() && app.world().get::<Ragdoll>(character).unwrap().fall.unwrap().at_rest {
+                rested = Some(i as f32 * TIMESTEP);
+            }
+        }
+        assert!(rested.is_some(), "the fallen body was never put to rest");
+        let asleep = bodies.iter().filter(|&&body| app.world().get::<Sleeping>(body).is_some()).count();
+        assert_eq!(asleep, bodies.len(), "put to rest, but only {asleep} of {} bodies sleep", bodies.len());
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let before = app.world().get::<Position>(hips).unwrap().0;
+        step(&mut app, (2.0 / TIMESTEP) as usize);
+        let crept = app.world().get::<Position>(hips).unwrap().0.distance(before);
+        assert!(crept < 1.0e-3, "at rest since {rested:?} s, it still crept {:.1} mm in 2 s", crept * 1e3);
+    }
+
+    // Fall tone sweep at 12 substeps: peak limb speed after the first
+    // 0.3 s, when every body sleeps, and where the hips end up.
+    #[test]
+    #[ignore]
+    fn probe_fall_damping() {
+        for damping in [0.0, 1.0, 3.0, 10.0] {
+            for carry in [Vec3::X, Vec3::NEG_Z, Vec3::NEG_X] {
+                let mut app = physics_app();
+                app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+                app.add_systems(Update, publish_joint_targets);
+                app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+                let rig = crate::character::anim::gltf_rig::puppet_base();
+                let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+                let (character, ragdoll, root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+                app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+                step(&mut app, 10);
+                for _ in 0..(0.25 / TIMESTEP) as usize {
+                    app.world_mut().get_mut::<Transform>(root).unwrap().translation += carry * TIMESTEP;
+                    app.update();
+                }
+                app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(0.0, damping);
+                let bodies: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, b)| *b).collect();
+                let (mut peak, mut slept) = (0.0f32, None);
+                for i in 1..=(8.0 / TIMESTEP) as usize {
+                    app.update();
+                    if i as f32 * TIMESTEP > 0.3 {
+                        peak = bodies.iter().map(|&b| app.world().get::<LinearVelocity>(b).unwrap().0.length()).fold(peak, f32::max);
+                    }
+                    if slept.is_none() && bodies.iter().all(|&b| app.world().get::<Sleeping>(b).is_some()) {
+                        slept = Some(i as f32 * TIMESTEP);
+                    }
+                }
+                let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
+                println!("damping {damping:4.1} carry {carry}: peak limb {peak:.2} m/s, asleep at {slept:?} s, hips at {:.2} m", hips.y);
+            }
+        }
+    }
+
+    // Cost of one ragdoll's physics step at 6 and 12 substeps, standing
+    // (pinned) and falling. `cargo test --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_ragdoll_substep_cost() {
+        for substeps in [6, 12] {
+            let mut app = physics_app();
+            app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(substeps));
+            app.add_systems(Update, publish_joint_targets);
+            app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+            let rig = crate::character::anim::gltf_rig::puppet_base();
+            let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+            let (character, _ragdoll, _root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+            app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+            step(&mut app, 30);
+            let time = |app: &mut App, frames: usize| {
+                let mut samples: Vec<f64> = (0..frames)
+                    .map(|_| {
+                        let start = std::time::Instant::now();
+                        app.update();
+                        start.elapsed().as_secs_f64() * 1e3
+                    })
+                    .collect();
+                samples.sort_by(f64::total_cmp);
+                (samples[frames / 2], samples[frames * 99 / 100])
+            };
+            let standing = time(&mut app, 320);
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+            let falling = time(&mut app, 128);
+            println!("{substeps} substeps: standing p50 {:.3} p99 {:.3} ms, falling p50 {:.3} p99 {:.3} ms", standing.0, standing.1, falling.0, falling.1);
         }
     }
 

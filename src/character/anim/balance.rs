@@ -75,6 +75,17 @@ pub const JOIN_SECONDS: f32 = 0.45;
 /// `puppet_base`'s legs is ~0.6 m, but the step starts from standing.
 pub const MAX_STEP: f32 = 0.4;
 
+/// The longest step a push may ask for and still be caught, metres: past
+/// it the body falls ([`Balance::falls`]).
+///
+/// The model's own verdict, measured on `puppet_base`
+/// (`a_push_past_a_catchable_step_falls`). Forward and back, a push is
+/// caught while its planned step (from the whole push) asks ≤ 0.73 m, and
+/// runs away past 0.87 m once the validity clamp is lifted. Sideways the
+/// pendulum cannot tell: stepping off the far foot, the COM starts at the
+/// 8° bound, and every side step there is caught by the clamp.
+pub const MAX_CATCH: f32 = 0.8;
+
 /// How high a stepping foot is lifted at mid-swing, metres.
 pub const STEP_LIFT: f32 = 0.05;
 
@@ -248,6 +259,15 @@ pub struct Balance {
     /// foot left it behind the front foot's heel on one foot, and the body
     /// fell back into a second step.
     pub transfer: Option<usize>,
+    /// How long the last recovery step wanted to be, metres, before
+    /// [`MAX_STEP`] clamped it.
+    pub wanted_step: f32,
+    /// Set once a push has asked for a step longer than [`MAX_CATCH`]: no
+    /// step catches this body, and it is falling. The pendulum goes on
+    /// posing a clamped step, so a character without physics still
+    /// stumbles; one with a ragdoll hands it over (H2). Cleared by
+    /// [`Balance::default`].
+    pub falls: bool,
     /// The last swing to land, and the seconds since, for
     /// [`transition::LAND_HOLD`](super::transition::LAND_HOLD): see
     /// [`Balance::landing_spot`].
@@ -409,7 +429,10 @@ impl Balance {
         };
         if self.needs_step {
             self.transfer = None;
-            self.plan_recovery_step(support, k, capture);
+            // Planned for the whole push, the part still to come too:
+            // planned mid-push, a 1.2 m/s shove asked no longer a step
+            // than 0.8 m/s.
+            self.plan_recovery_step(support, k, capture + self.shove * k.sqrt());
         } else if self.feet[0] != self.feet[1] && (caught || self.transfer.is_some() && carried) {
             if self.transfer.is_none() {
                 // Caught between the feet: the weight moves onto the
@@ -454,6 +477,8 @@ impl Balance {
         if capture.y <= both.max.y && capture.y >= both.min.y {
             wanted.y = 0.0;
         }
+        self.wanted_step = wanted.length();
+        self.falls |= self.wanted_step > MAX_CATCH;
         let travel = wanted.clamp_length_max(MAX_STEP);
         self.swing = Some(Swing {
             leg,
@@ -780,6 +805,34 @@ mod tests {
             frames.push((world, pelvis, balance.swing));
         }
         frames
+    }
+
+    #[test]
+    fn a_push_past_a_catchable_step_falls() {
+        // Measured with the validity clamp lifted: forward 0.8 m/s and back
+        // 1.0 m/s are caught by their step (nothing discarded), forward
+        // 1.0 and back 1.2 run away. `MAX_CATCH` sits between the steps
+        // they ask for (0.73 / 0.71 caught, 0.90 / 0.87 not).
+        let (stood, rig) = real_stood();
+        let support = Support::of(&stood, &rig);
+        let k = pendulum_k(&stood, &rig);
+        let falls = |push: Vec2| {
+            let mut balance = Balance::default();
+            balance.push(push);
+            for _ in 0..(3.0 / DT) as usize {
+                balance.step(&support, k, DT);
+                if balance.travelled.is_some() {
+                    balance.rebase();
+                }
+            }
+            balance.falls
+        };
+        for caught in [Vec2::new(0.6, 0.0), Vec2::new(0.8, 0.0), Vec2::new(0.0, 0.7), Vec2::new(-0.8, 0.0), Vec2::new(-1.0, 0.0)] {
+            assert!(!falls(caught), "{caught} should be caught by a step");
+        }
+        for falling in [Vec2::new(1.0, 0.0), Vec2::new(-1.2, 0.0), Vec2::new(0.0, 1.0), Vec2::new(2.0, 0.0)] {
+            assert!(falls(falling), "{falling} should fall");
+        }
     }
 
     #[test]

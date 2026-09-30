@@ -91,7 +91,9 @@ pub use plugin::{
     AnimTargetAsset,
 };
 pub use poses::{relaxed_stand, rest, wave};
-pub use ragdoll::{default_joint_limits, JointLimits, Ragdoll, RagdollStrength, Stun, StunResponse};
+pub use ragdoll::{
+    default_joint_limits, Fall, JointLimits, Ragdoll, RagdollStrength, Stun, StunResponse, FALL_DAMPING, FALL_TONE,
+};
 pub use ragdoll_plugin::{
     spawn_ragdoll, AnimRagdollPlugin, RagdollHit, RagdollSet, RagdollSpawnConfig,
 };
