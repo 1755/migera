@@ -50,6 +50,8 @@ pub type Contacts = [Vec3; 3];
 pub struct Sole {
     ankle: Bone,
     contacts: Contacts,
+    /// The bind pose's up, in the ankle's frame: the sole's normal.
+    up: Vec3,
 }
 
 /// The bones that carry one foot: ankle and toe.
@@ -85,13 +87,64 @@ impl Sole {
         let heel = ground(ankle_at) - forward * (HEEL_BEHIND_ANKLE * ahead);
 
         let into_foot = |p: Vec3| ankle_rotation.inverse() * (p - ankle_at);
-        Self { ankle, contacts: [heel, ground(toe_at), ground(tip_at)].map(into_foot) }
+        Self {
+            ankle,
+            contacts: [heel, ground(toe_at), ground(tip_at)].map(into_foot),
+            up: ankle_rotation.inverse() * Vec3::Y,
+        }
     }
 
     /// Heel, ball and tip, relative to the hips, under `pose`.
     pub fn points(&self, pose: &LocalPose, rig: &RigGeometry) -> Contacts {
         let (ankle, rotation): (Vec3, Quat) = frame_from(pose, rig, Bone::Hips, self.ankle);
         self.contacts.map(|c| ankle + rotation * c)
+    }
+}
+
+/// A foot's breadth as a fraction of its length: Winter §4.0.1 (Fig. 4.1),
+/// breadth 0.055·H against length 0.152·H.
+pub const FOOT_BREADTH_PER_LENGTH: f32 = 0.055 / 0.152;
+
+/// How thick a foot's sole block is, metres: enough to stand on, thin
+/// enough to stay under the ankle.
+pub const SOLE_THICKNESS: f32 = 0.03;
+
+/// A foot as a flat block standing on its sole, in its ankle bone's own
+/// frame: a physics foot that can bear weight.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoleBox {
+    /// The block's centre, in the ankle bone's frame.
+    pub center: Vec3,
+    /// Its orientation in that frame: `x` across the foot, `y` up from the
+    /// sole, `z` from heel to toe tip.
+    pub rotation: Quat,
+    /// Its full size along those axes, metres.
+    pub size: Vec3,
+}
+
+impl Sole {
+    /// The foot as a block: heel to toe tip along the sole ([`Sole`]'s own
+    /// contacts), [`FOOT_BREADTH_PER_LENGTH`] across, [`SOLE_THICKNESS`] up
+    /// from the sole's plane.
+    ///
+    /// A single capsule from ankle to ball, which the ragdoll's foot used to
+    /// be, has no heel and no flat underside: stood on, it rolled, and an
+    /// unpinned ragdoll's feet skated 0.8 m in 2.5 s.
+    pub fn block(&self) -> SoleBox {
+        let [heel, _, tip] = self.contacts;
+        let along = tip - heel;
+        // The sole's own plane, in the ankle frame: the contacts lie on the
+        // bind floor, so the plane's normal is the bind's up. Taken from the
+        // three contacts' spread across the sole's length and the floor's
+        // level: `up` is perpendicular to `along` and to the across axis.
+        let length = along.length().max(1.0e-3);
+        let forward = along / length;
+        let up_guess = self.up;
+        let across = up_guess.cross(forward).normalize_or_zero();
+        let up = forward.cross(across).normalize_or_zero();
+        let rotation = Quat::from_mat3(&bevy::math::Mat3::from_cols(across, up, forward));
+        let size = Vec3::new(length * FOOT_BREADTH_PER_LENGTH, SOLE_THICKNESS, length);
+        SoleBox { center: (heel + tip) * 0.5 + up * (SOLE_THICKNESS * 0.5), rotation, size }
     }
 }
 

@@ -42,6 +42,31 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The ragdoll, unpinned: it buckles at 0.5 s; its feet now have soles
+
+Step 4 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md) (revised).
+Distilled in [an unpinned ragdoll needs soles and weight-bearing control](./docs/knowledge/character-animation/ragdoll-and-physics/an-unpinned-ragdoll-needs-soles-and-weight-bearing-control.md).
+Step 3a was withdrawn first: Winter §11.1 shows the hip/knee *moment*
+split varying at near-identical *angles*, so it supports no knee-angle
+style. The KB note that claimed otherwise is corrected.
+
+**Spike.** Headless: `puppet_base` unpinned, full gravity, full-strength
+PD toward its bind pose, on a friction-1 floor.
+- It buckles at 0.5 s (hips −10 cm), Winter §8.1's prediction.
+- Its capsule feet roll and skate 0.8 m in 2.5 s.
+- The PD holds weight only by zeroing gravity
+  (`GravityScale = 1 − strength`); the probe had to restore it every step.
+
+**Feet.** `RagdollSpawnConfig::feet` (`sole_blocks(rig)`) gives the foot
+bodies flat blocks built from the walk's `foot::Sole`: heel to toe tip,
+Winter's 0.362 breadth, 3 cm thick, friction 1, in the ankle bone's frame.
+A foot dropped onto the floor turns 0.10° and slides 0.16 mm, where the
+capsule turns 26.6° and slides 25.1 mm (`a_foot_stands_flat_on_its_sole`).
+In the whole ragdoll the feet stop rolling (2° instead of 11°) but still
+crawl ~0.85 m as the legs buckle. That is the controller, next. 1022 tests
+pass.
+
+
 ### A pushed standing character sways over its feet and recovers
 
 Step 2 of [WINTER_MOTION_PLAN.md](./WINTER_MOTION_PLAN.md). Distilled in

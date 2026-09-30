@@ -9,6 +9,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::anthropometry;
+use super::foot::{Sole, SoleBox};
 use super::plugin::{AnimFootIk, AnimPose, AnimSet};
 use super::ragdoll::{joint_torque_at, JointLimits, Ragdoll};
 use super::math::quat_ext::neighborhood;
@@ -933,6 +934,21 @@ pub fn spawn_ragdoll(
             },
         );
 
+        // A foot stands on its sole, not on a capsule: a block in the
+        // ankle bone's frame, which is this body's frame too, offset from
+        // the body's centre (it sits at the ankle-to-ball midpoint).
+        let block = match (config.feet, bone) {
+            (Some([left, _]), Bone::LeftFoot) => Some(left),
+            (Some([_, right]), Bone::RightFoot) => Some(right),
+            _ => None,
+        };
+        if let Some(block) = block {
+            commands.entity(body).insert(sole_collider(
+                block,
+                joint.rotation().inverse() * (body_position - joint.translation()),
+            ));
+        }
+
         // The root holds the whole assembly up — see
         // `RagdollSpawnConfig::pin_root`. Kinematic rather than static so a
         // controller can still move it; the solver treats both as infinite
@@ -1091,6 +1107,37 @@ pub struct RagdollSpawnConfig {
     /// from [`RAGDOLL_LAYER_POOL`]. Set it when a game manages its own
     /// layers or has more than 16 ragdolls alive at once.
     pub collision_layer: Option<LayerMask>,
+    /// Flat soles for the feet (left, right), in each ankle bone's own
+    /// frame ([`sole_blocks`]), in place of their capsules. A ragdoll that
+    /// stands on its own feet needs them: a capsule from ankle to ball has
+    /// no heel and no flat underside, and unpinned, the feet skated 0.8 m
+    /// in 2.5 s, turning 67°. `None` keeps the capsules, which is enough
+    /// for a ragdoll held up by its pinned root.
+    pub feet: Option<[SoleBox; 2]>,
+}
+
+/// The flat soles [`RagdollSpawnConfig::feet`] wants, for `rig`: the walk's
+/// own soles (`foot::Sole::block`), so the physics foot stands where the
+/// animated one does.
+pub fn sole_blocks(rig: &RigGeometry) -> [SoleBox; 2] {
+    [Bone::LeftFoot, Bone::RightFoot].map(|ankle| Sole::of(rig, ankle).block())
+}
+
+/// A foot body's collider and friction for its sole `block`, given where the
+/// body's centre sits from its ankle joint in the ankle's own frame
+/// (`body_from_joint`): the body's frame IS the ankle bone's, so the block
+/// goes in as it is, offset by that.
+///
+/// Friction 1.0, a rubber sole's: avian averages the two surfaces'.
+pub fn sole_collider(block: SoleBox, body_from_joint: Vec3) -> impl Bundle {
+    (
+        Collider::compound(vec![(
+            block.center - body_from_joint,
+            block.rotation,
+            Collider::cuboid(block.size.x, block.size.y, block.size.z),
+        )]),
+        Friction::new(1.0),
+    )
 }
 
 impl Default for RagdollSpawnConfig {
@@ -1105,6 +1152,7 @@ impl Default for RagdollSpawnConfig {
             masses: default_body_masses(),
             torso_radius: 0.13,
             collision_layer: None,
+            feet: None,
         }
     }
 }
@@ -2209,6 +2257,16 @@ mod tests {
     /// Returns the character, its ragdoll, the skeleton root to move, and
     /// the rig's geometry.
     fn spawn_real_rig_ragdoll(app: &mut App) -> (Entity, Ragdoll, Entity, RigGeometry) {
+        spawn_real_rig_ragdoll_with(app, &RagdollSpawnConfig::default(), Vec3::ZERO)
+    }
+
+    /// [`spawn_real_rig_ragdoll`] with a spawn config, and the whole rig
+    /// placed at `at` (its bind pose stands on `y = 0` at the origin).
+    fn spawn_real_rig_ragdoll_with(
+        app: &mut App,
+        config: &RagdollSpawnConfig,
+        at: Vec3,
+    ) -> (Entity, Ragdoll, Entity, RigGeometry) {
         use crate::character::anim::gltf_rig;
 
         let parsed = gltf_rig::parsed_rig();
@@ -2218,7 +2276,8 @@ mod tests {
             .world_mut()
             .spawn(
                 Transform::from_rotation(parsed.hips_parent_rest_world_rotation)
-                    .with_scale(parsed.hips_parent_rest_world_scale),
+                    .with_scale(parsed.hips_parent_rest_world_scale)
+                    .with_translation(at),
             )
             .id();
         let mut entities = std::collections::HashMap::new();
@@ -2244,16 +2303,141 @@ mod tests {
         let world = app.world();
         let globals = state.query(world);
         let mut commands = Commands::new(&mut queue, world);
-        let ragdoll = spawn_ragdoll(
-            &mut commands,
-            character,
-            &skeleton,
-            &globals,
-            &RagdollSpawnConfig::default(),
-        );
+        let ragdoll = spawn_ragdoll(&mut commands, character, &skeleton, &globals, config);
         queue.apply(app.world_mut());
         app.world_mut().entity_mut(character).insert((ragdoll.clone(), skeleton));
         (character, ragdoll, root, rig)
+    }
+
+    /// One foot body, `puppet_base`'s left, placed as its bind pose stands
+    /// 1 cm above a friction-1 floor under gravity, with a sole `block` or
+    /// its capsule, left for 2 s: how far it turned and slid.
+    fn settle_a_foot(block: Option<SoleBox>) -> (f32, f32) {
+        use crate::character::anim::gltf_rig::puppet_base;
+        use crate::character::anim::rig::{accumulate_world_rotations, forward_kinematics_on};
+        let rig = puppet_base();
+        let rest = LocalPose::REST;
+        let (world, rotations) = (forward_kinematics_on(&rest, &rig), accumulate_world_rotations(&rest, &rig));
+        let (ankle, toe, rotation) = (world[Bone::LeftFoot], world[Bone::LeftToeBase], rotations[Bone::LeftFoot]);
+        let centre = (ankle + toe) * 0.5 + Vec3::Y * 0.01;
+
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81));
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let character = app.world_mut().spawn_empty().id();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, app.world());
+        let length = ankle.distance(toe);
+        let body = spawn_bone_body(
+            &mut commands,
+            Bone::LeftFoot,
+            character,
+            BoneBodyPlacement {
+                world_position: centre,
+                world_rotation: rotation,
+                segment_direction: toe - ankle,
+                length,
+                radius: (length * 0.22).clamp(0.02, 0.09),
+                mass: Some(1.0),
+                collision_layer: LayerMask(1 << 20),
+            },
+        );
+        if let Some(block) = block {
+            commands.entity(body).insert(sole_collider(block, rotation.inverse() * (centre - Vec3::Y * 0.01 - ankle)));
+        }
+        queue.apply(app.world_mut());
+        step(&mut app, 128);
+        let now = app.world().get::<Transform>(body).unwrap();
+        let turned = (rotation.inverse() * now.rotation).to_axis_angle().1.to_degrees();
+        let slid = Vec3::new(now.translation.x - centre.x, 0.0, now.translation.z - centre.z).length();
+        (turned, slid)
+    }
+
+    #[test]
+    fn a_foot_stands_flat_on_its_sole() {
+        // The unpinned ragdoll's first spike: its feet, one capsule each from
+        // ankle to ball, rolled and skated (0.8 m in 2.5 s, turning 67°).
+        // A foot standing on its sole block stays as it was placed.
+        let block = sole_blocks(&crate::character::anim::gltf_rig::puppet_base())[0];
+        let (turned, slid) = settle_a_foot(Some(block));
+        assert!(turned < 2.0, "the foot on its sole turned {turned:.1}°");
+        assert!(slid < 0.005, "the foot on its sole slid {:.1} mm", slid * 1e3);
+        // Measured: on its sole 0.10° and 0.16 mm; the capsule 26.6° and
+        // 25.1 mm.
+        let (capsule_turned, _) = settle_a_foot(None);
+        assert!(capsule_turned > 10.0, "the capsule foot is the reason: it should roll or tip, turned {capsule_turned:.1}°");
+    }
+
+    // SPIKE (plan step 4.1) — an unpinned ragdoll on the real rig, full
+    // gravity, full PD strength toward its bind pose, feet on a floor with
+    // friction. How long does pose tracking alone keep it standing?
+    #[test]
+    #[ignore]
+    fn probe_unpinned_ragdoll_stands() {
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81));
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let feet = std::env::var("PROBE_FEET").is_ok().then(|| sole_blocks(&crate::character::anim::gltf_rig::puppet_base()));
+        let config = RagdollSpawnConfig { pin_root: false, feet, ..Default::default() };
+        let (character, ragdoll, _root, _rig) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.05);
+        let lowest = |app: &App| {
+            ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<GlobalTransform>(b).unwrap().translation().y).fold(f32::MAX, f32::min)
+        };
+        if let Ok(hz) = std::env::var("PROBE_HZ").map(|v| v.parse::<f32>().unwrap()) {
+            let mut stored = app.world_mut().get_mut::<Ragdoll>(character).unwrap();
+            for (_, params) in stored.params.iter_mut() {
+                params.frequency_hz = hz;
+            }
+        }
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let at = |app: &App| app.world().get::<GlobalTransform>(hips).unwrap().compute_transform();
+        // Full gravity with full muscle: `support_own_weight` (in `Update`,
+        // after this frame's physics) zeroes it at full strength, so it is
+        // put back before every next step.
+        let full_gravity = |app: &mut App| {
+            for (_, body) in ragdoll.bodies.iter() {
+                if let Some(body) = *body {
+                    app.world_mut().get_mut::<GravityScale>(body).unwrap().0 = 1.0;
+                }
+            }
+        };
+        let step = |app: &mut App, n: usize| {
+            for _ in 0..n {
+                full_gravity(app);
+                app.update();
+            }
+        };
+        step(&mut app, 1);
+        let start = at(&app);
+        let foot_start = {
+            let t = app.world().get::<GlobalTransform>(ragdoll.bodies[Bone::LeftFoot].unwrap()).unwrap().compute_transform();
+            (t.translation, t.rotation)
+        };
+        println!("start hips {:?}, lowest body centre {:.3}", start.translation, lowest(&app));
+        let mut fell = None;
+        for frame in 1..=240 {
+            step(&mut app, 1);
+            let now = at(&app);
+            let drop = start.translation.y - now.translation.y;
+            let drift = Vec3::new(now.translation.x - start.translation.x, 0.0, now.translation.z - start.translation.z).length();
+            let tilt = (start.rotation.inverse() * now.rotation).to_axis_angle().1.to_degrees();
+            if frame % 12 == 0 {
+                let foot = |bone: Bone| {
+                    let t = app.world().get::<GlobalTransform>(ragdoll.bodies[bone].unwrap()).unwrap().compute_transform();
+                    (t.translation, t.rotation)
+                };
+                let (lf, lr) = foot(Bone::LeftFoot);
+                println!(
+                    "t {:.2}s: hips drop {:+.3} m, drift {:.3} m, tilt {:5.1}° | left foot at {:?}, turned {:5.1}° from spawn",
+                    frame as f32 * TIMESTEP, drop, drift, tilt, lf, (foot_start.1.inverse() * lr).to_axis_angle().1.to_degrees()
+                );
+                let _ = foot_start.0;
+            }
+            if fell.is_none() && drop > 0.1 {
+                fell = Some(frame as f32 * TIMESTEP);
+            }
+        }
+        println!("fell (hips down 10 cm) at {fell:?}");
     }
 
     #[test]

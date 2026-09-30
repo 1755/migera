@@ -224,7 +224,48 @@ ragdoll may trade stance hip and knee torque as long as their sum holds.
 
 ## 4. Self-balancing active ragdoll (§11.2, §7.4.5, §9.0.5, §9.2, §8.1)
 
-- [ ] **4.1 Spike, unpinned root** (in a worktree). Release the root, add
+- [x] **4.1 spike result (2026-09-30), stopped per its own rule.** Headless,
+  `puppet_base` unpinned on a friction-1 floor, full gravity (the harness
+  resets `GravityScale` to 1 each step, since `support_own_weight` zeroes
+  it at full strength), full-strength PD toward the bind pose:
+  - **Buckles at 0.5 s** (hips −10 cm), as Winter §8.1 predicts for an
+    open-loop forward solution. Then the hips drop to −34 cm and recover,
+    repeatedly.
+  - **Contact is unstable: the feet skate.** The left foot slides 0.8 m
+    in 2.5 s and turns 67°, with the pelvis within ~4° of upright. Each
+    foot is one capsule, ankle to ball: no heel, no flat sole, and it can
+    roll.
+  - **Structural:** the PD is acceleration-shaped per body and holds the
+    weight only through gravity compensation (`GravityScale = 1 −
+    strength`). A balancing ragdoll has to carry its real weight through
+    its feet, so its load-bearing joints need torque-shaped control. The
+    4.2 torque budgets are then the control itself, not just its limits.
+  - Probe: `ragdoll_plugin::tests::probe_unpinned_ragdoll_stands`
+    (ignored).
+- **Revised step 4 (agreed 2026-09-30):** (a) feet, (b) torque-shaped
+  control of the load-bearing joints against real gravity, within Winter's
+  budgets, (c) the balance controller on the measured COM, then pushes,
+  (d) muscle behaviour and mode switching.
+- [x] **4a feet (2026-09-30).** `RagdollSpawnConfig::feet` / `sole_blocks`:
+  flat blocks from `foot::Sole` (heel to tip, Winter's 0.362 breadth, 3 cm,
+  friction 1). One foot dropped: 0.10° / 0.16 mm against the capsule's
+  26.6° / 25.1 mm (`a_foot_stands_flat_on_its_sole`). The whole ragdoll's
+  feet stop rolling but still crawl ~0.85 m as its legs buckle: that is
+  4b.
+- **4b finding (2026-09-30), before building.** The current controller
+  drives each body's WORLD orientation and applies the result to that body
+  alone (no reaction on its parent): an invisible hand per body, not a
+  muscle. With real gravity and sole feet it cannot stand either:
+  - at 8 Hz it buckles at 0.5 s;
+  - at 16 Hz, near the 64 Hz explicit bound, it holds ~1.1 s (hips −6 cm),
+    then the feet slide apart (the left foot 0.11 → 0.49 m out, the trunk
+    upright) to hips −50 cm.
+
+  Real standing needs pairwise internal torques (+τ on the child, −τ on
+  the parent) in N·m. That is unstable when explicitly integrated at the
+  needed stiffness against a light foot, unless the PD is formulated
+  stably (Tan et al. 2011) and/or the physics runs faster than 64 Hz.
+- **4.1 as planned:** Spike, unpinned root (in a worktree). Release the root, add
   foot colliders and ground friction, drive only the pose PD. Measure time
   to fall; Winter §8.1's null result predicts ~0.5 s. Stop and report if
   contact itself is unstable.

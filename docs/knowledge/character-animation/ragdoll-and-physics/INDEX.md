@@ -31,6 +31,7 @@ touching controller or joint setup.
 | [PD damping has an explicit-integration bound](./pd-damping-explicit-integration-bound.md) | Stable only while `kd·dt < 2`; more damping making things worse is the signature; tune `max_torque`, not frequency | before tuning PD gains or when damping increases oscillation |
 | [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) | Body rotation = bone world rotation; anchors in the body's midpoint frame | before changing ragdoll spawning, body placement or anchors |
 | [avian joint limits are not cone and twist](./avian-joint-limits-are-not-cone-and-twist.md) | With `twist_axis = +Y` limits are two bend stops; use `twist_axis = +X` | before configuring joint limits or upgrading avian |
+| [An unpinned ragdoll needs soles and weight-bearing control](./an-unpinned-ragdoll-needs-soles-and-weight-bearing-control.md) | Unpinned it buckles at 0.5 s and capsule feet skate 0.8 m; sole blocks fix the feet (0.1° / 0.16 mm); the PD holds weight only by switching gravity off | before unpinning a ragdoll or making it balance |
 | [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) | At strength 1 the screen is the animation; measure body-vs-target error and spin over BRP | before declaring any ragdoll change verified |
 
 ## See also
