@@ -211,22 +211,43 @@ pub const REST_SECONDS: f32 = 1.0;
 /// ([`REST_SPEED`], [`REST_SPIN`]) for [`REST_SECONDS`], and marks it
 /// [`super::ragdoll::Fall::at_rest`]: settled, for whatever hands the
 /// body back to animation.
+///
+/// Slow as the bodies MOVE, frame to frame, not as their velocities say. A
+/// thin forearm lying on the floor under its elbow's hinge carried a
+/// 1.1 rad/s roll the hinge undid every substep: it turned 1.1 degrees in
+/// half a second, and the body never rested.
 fn rest_fallen_ragdolls(
     mut commands: Commands,
     mut characters: Query<&mut Ragdoll>,
-    bodies: Query<(&LinearVelocity, &AngularVelocity, Has<Sleeping>)>,
+    bodies: Query<(&Position, &Rotation, Has<Sleeping>)>,
     time: Res<Time>,
 ) {
+    let dt = time.delta_secs();
     for mut ragdoll in &mut characters {
         let Some(fall) = ragdoll.fall else { continue };
         if fall.at_rest || fall.root_offset.is_none() {
             continue;
         }
-        let states: Vec<_> = ragdoll.bodies.iter().filter_map(|(_, body)| body.and_then(|body| bodies.get(body).ok())).collect();
-        let asleep = states.iter().all(|(_, _, sleeping)| *sleeping);
-        let slow = states.iter().all(|(linear, angular, sleeping)| {
-            *sleeping || (linear.0.length() < REST_SPEED && angular.0.length() < REST_SPIN)
-        });
+        // Over the whole window, not frame to frame: resting contacts
+        // jitter a millimetre a frame and back, which differenced reads as
+        // a speed. Each body stays within what the bounds allow over
+        // `REST_SECONDS` of where it was when the window began.
+        let (reach, turn) = (REST_SPEED * REST_SECONDS, REST_SPIN * REST_SECONDS);
+        let mut asleep = true;
+        let mut slow = dt > 0.0;
+        for &bone in Bone::ALL.iter() {
+            let Some(Ok((position, rotation, sleeping))) = ragdoll.bodies[bone].map(|body| bodies.get(body)) else { continue };
+            asleep &= sleeping;
+            slow &= sleeping
+                || ragdoll.last_seen[bone].is_some_and(|(was, turned)| {
+                    was.distance(position.0) < reach && turned.angle_between(rotation.0) < turn
+                });
+        }
+        if !slow {
+            for &bone in Bone::ALL.iter() {
+                ragdoll.last_seen[bone] = ragdoll.bodies[bone].and_then(|body| bodies.get(body).ok()).map(|(p, r, _)| (p.0, r.0));
+            }
+        }
         let still_for = if slow { fall.still_for + time.delta_secs() } else { 0.0 };
         let at_rest = asleep || still_for >= REST_SECONDS;
         if at_rest && !asleep && let Some(hips) = ragdoll.bodies[Bone::Hips] {
@@ -256,6 +277,7 @@ fn rise_fallen_ragdolls(
     mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton, Option<&mut AnimFootIk>)>,
     joints: Query<(Entity, &SphericalJoint)>,
     bodies: Query<(&Position, &Rotation, &JointTarget)>,
+    collision_layers: Query<&CollisionLayers>,
     transforms: Query<&Transform>,
     live: TransformHelper,
     time: Res<Time>,
@@ -325,6 +347,11 @@ fn rise_fallen_ragdolls(
                 AngularVelocity::ZERO,
                 SleepThreshold::default(),
             ));
+            // Its body parts pass through each other again, as they must
+            // standing (`spawn_bone_body`).
+            if let Ok(layers) = collision_layers.get(body) {
+                commands.entity(body).insert(CollisionLayers::new(layers.memberships, !layers.memberships));
+            }
             if bone == Bone::Hips {
                 commands.entity(body).insert((
                     RigidBody::Kinematic,
@@ -336,6 +363,16 @@ fn rise_fallen_ragdolls(
         for (joint, spherical) in &joints {
             if ours.contains(&spherical.body2) {
                 commands.entity(joint).remove::<JointDamping>();
+            }
+        }
+        // The hinges a fall made go; the ball joints the pose controller
+        // works with come back (`Hinge`).
+        for &bone in Bone::ALL.iter() {
+            if let Some(hinge) = ragdoll.hinge_joints[bone].take() {
+                commands.entity(hinge).despawn();
+            }
+            if let Some(ball) = ragdoll.joints[bone] {
+                commands.entity(ball).remove::<JointDisabled>();
             }
         }
         ragdoll.fall = None;
@@ -350,6 +387,7 @@ fn rise_fallen_ragdolls(
 /// Records where the hips body sits in the hips bone's frame
 /// ([`super::ragdoll::Fall::root_offset`]), which the display needs to
 /// hang the skeleton on the body.
+#[allow(clippy::too_many_arguments)]
 fn release_falling_roots(
     mut commands: Commands,
     mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton)>,
@@ -357,6 +395,7 @@ fn release_falling_roots(
     bodies: Query<(&Position, &Rotation)>,
     mut velocities: Query<&mut LinearVelocity>,
     joints: Query<(Entity, &SphericalJoint)>,
+    collision_layers: Query<&CollisionLayers>,
     live: TransformHelper,
 ) {
     for (mut ragdoll, skeleton) in &mut characters {
@@ -367,6 +406,14 @@ fn release_falling_roots(
         let ours: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
         for &body in &ours {
             commands.entity(body).insert(FALLEN_SLEEP);
+            // Its own body parts are solid to each other now (jointed
+            // neighbours aside, `JointCollisionDisabled`): with nothing
+            // holding a limp body's pose, a fall passed a shin straight
+            // through the other (180 mm) and a forearm through the trunk.
+            // Standing they stay apart: see `spawn_bone_body`.
+            if let Ok(layers) = collision_layers.get(body) {
+                commands.entity(body).insert(CollisionLayers::new(layers.memberships, LayerMask::ALL));
+            }
             if fall.launch != Vec3::ZERO
                 && let Ok(mut velocity) = velocities.get_mut(body)
             {
@@ -379,6 +426,21 @@ fn release_falling_roots(
                     commands.entity(joint).insert(JointDamping { linear: 0.0, angular: fall.damping });
                 }
             }
+        }
+        // Knees and elbows become the hinges they are (`Hinge`).
+        for &bone in Bone::ALL.iter() {
+            let (Some(hinge), Some(ball), Some(child), Some(parent_bone)) =
+                (ragdoll.hinges[bone], ragdoll.joints[bone], ragdoll.bodies[bone], nearest_simulated_ancestor(bone, &ragdoll))
+            else {
+                continue;
+            };
+            let Some(parent) = ragdoll.bodies[parent_bone] else { continue };
+            let (Ok((_, parent_rotation)), Ok((_, child_rotation))) = (bodies.get(parent), bodies.get(child)) else {
+                continue;
+            };
+            let hinge_joint = commands.spawn((hinge_joint(parent, child, &hinge, parent_rotation.0, child_rotation.0), JointCollisionDisabled, JointDamping { linear: 0.0, angular: fall.damping })).id();
+            commands.entity(ball).insert(JointDisabled);
+            ragdoll.hinge_joints[bone] = Some(hinge_joint);
         }
         let Some(body) = ragdoll.bodies[Bone::Hips] else { continue };
         let offset = match roots.get(body) {
@@ -839,16 +901,17 @@ fn read_back_simulated_pose(
             } else {
                 from.root_translation.lerp(to.root_translation, t)
             };
-            // Which feet move from one pose to the other: only those may be
-            // tucked (`tuck_foot`). A planted foot stays planted, the body
-            // lifted over it if the blend dips it: tucked, planted feet
-            // folded up from squatting to standing, and the lift jumped
-            // 15 mm when the tuck let go. Off the lying body, all move.
+            // Which feet and hands move from one pose to the other: only
+            // those may be tucked (`tuck_foot`). A planted foot stays
+            // planted, the body lifted over it if the blend dips it: tucked,
+            // planted feet folded up from squatting to standing, and the
+            // lift jumped 15 mm when the tuck let go. Off the lying body,
+            // all move.
             ragdoll.rise_moving = if segment == 0 {
-                [true; 2]
+                [true; 4]
             } else {
                 let (a, b) = (super::rig::forward_kinematics_on(&from, &rig), super::rig::forward_kinematics_on(&to, &rig));
-                [Bone::LeftToeBase, Bone::RightToeBase].map(|toe| a[toe].distance(b[toe]) > 0.05)
+                [Bone::LeftToeBase, Bone::RightToeBase, Bone::LeftHand, Bone::RightHand].map(|end| a[end].distance(b[end]) > 0.05)
             };
         }
 
@@ -926,12 +989,19 @@ fn write_simulated_pose(
             // brought forward under the body does. Left to the lift below, a
             // shin sweeping down through the floor from hands and knees to a
             // half-kneel hoisted the whole body 209 mm.
-            for (moving, bones) in ragdoll.rise_moving.into_iter().zip([
-                [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase],
-                [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase],
+            //
+            // So does an arm whose hand would: the elbow bends further, never
+            // back past straight. Lying with its arms flat beside it, a body
+            // sitting up swung a hand down through the floor on its way to
+            // being propped behind, and the lift hoisted it 82 mm.
+            for (moving, (bones, either_way)) in ragdoll.rise_moving.into_iter().zip([
+                ([Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase], true),
+                ([Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase], true),
+                ([Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand, Bone::LeftHand], false),
+                ([Bone::RightArm, Bone::RightForeArm, Bone::RightHand, Bone::RightHand], false),
             ]) {
                 if moving {
-                    tuck_foot(skeleton, bones, ground, &mut transforms);
+                    tuck_foot(skeleton, bones, ground, either_way, ragdoll.hinges[bones[1]].as_ref(), &mut transforms);
                 }
             }
             let lowest = RISE_CLEARANCE_BONES
@@ -952,11 +1022,17 @@ fn write_simulated_pose(
 
 /// Flexes `knee` about its own hinge (thigh × shin) until `toe` is at or
 /// above `ground`, as little as it takes, up to 2 rad; see
-/// `write_simulated_pose`.
+/// `write_simulated_pose`. An arm too: `[upper arm, forearm, hand, hand]`.
+///
+/// `either_way`: turn whichever way lifts the tip. Otherwise only further
+/// into the bend the joint already has, as an elbow must: the other way
+/// is past straight.
 fn tuck_foot(
     skeleton: &HumanoidSkeleton,
     [upper, knee, foot, toe]: [Bone; 4],
     ground: f32,
+    either_way: bool,
+    anatomical: Option<&super::ragdoll::Hinge>,
     transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>,
 ) {
     let at = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, bone: Bone| {
@@ -970,7 +1046,15 @@ fn tuck_foot(
     if tip.translation().y >= ground {
         return;
     }
-    let hinge = (bend.translation() - hip.translation()).cross(ankle.translation() - bend.translation());
+    // The joint's own hinge where the ragdoll knows it (`Hinge`, fixed in
+    // the upper segment, positive flexing): that is the way to fold. From
+    // the bend in the pose (upper × lower), a nearly straight arm's axis
+    // flipped from frame to frame, the fold with it, and the lift jumped
+    // 86 mm.
+    let (hinge, either_way) = match anatomical {
+        Some(hinge) => (hip.rotation() * hinge.axis, false),
+        None => ((bend.translation() - hip.translation()).cross(ankle.translation() - bend.translation()), either_way),
+    };
     if hinge.length_squared() < 1.0e-10 {
         return;
     }
@@ -982,11 +1066,13 @@ fn tuck_foot(
         }
         at(transforms, toe).map_or(f32::MAX, |tip| tip.translation().y)
     };
-    // Flexing is the way that lifts the toe.
-    let sign = if height(transforms, 0.1) >= height(transforms, -0.1) { 1.0 } else { -1.0 };
+    // Flexing is the way that lifts the toe. About `hinge`, a positive turn
+    // bends the joint further.
+    let sign = if !either_way || height(transforms, 0.1) >= height(transforms, -0.1) { 1.0 } else { -1.0 };
     let (mut low, mut high) = (0.0, 2.0);
     if height(transforms, sign * high) < ground {
-        // Out of reach of a fold: left as it was, for the lift.
+        // Out of reach of a fold: left as it was, for the lift. (Folded as
+        // far as it goes instead, a face-down rise lifted a hand 78 mm.)
         height(transforms, 0.0);
         return;
     }
@@ -997,8 +1083,10 @@ fn tuck_foot(
     height(transforms, sign * high);
 }
 
-/// The joints a rise keeps above the ground: the body's ends.
-const RISE_CLEARANCE_BONES: [Bone; 7] = [
+/// The joints a rise keeps above the ground: the body's ends, and the
+/// knees and elbows. Without them a knee went 29 mm into the floor on the
+/// way from lying face down to hands and knees.
+const RISE_CLEARANCE_BONES: [Bone; 11] = [
     Bone::LeftToeBase,
     Bone::RightToeBase,
     Bone::LeftFoot,
@@ -1006,6 +1094,10 @@ const RISE_CLEARANCE_BONES: [Bone; 7] = [
     Bone::LeftHand,
     Bone::RightHand,
     Bone::Head,
+    Bone::LeftLeg,
+    Bone::RightLeg,
+    Bone::LeftForeArm,
+    Bone::RightForeArm,
 ];
 
 /// The world rotation each joint's body is driven toward under `pose`:
@@ -1338,6 +1430,34 @@ pub fn limb_mass_properties(
     )
 }
 
+/// A uniform solid capsule's mass properties, held fixed: `mass` spread
+/// over `radius` around the segment `-half_segment..half_segment` in the
+/// body's frame, centred on the body.
+///
+/// What a torso body had from its capsule collider's density, kept when
+/// its collider becomes a [`TorsoBlock`]: from avian's `from_shape` on the
+/// tilted capsule the moments lost their orientation, and the chest spun up
+/// to 3769 rad/s.
+fn capsule_mass_properties(mass: f32, half_segment: Vec3, radius: f32) -> impl Bundle {
+    use std::f32::consts::PI;
+    let length = half_segment.length() * 2.0;
+    let along = half_segment.normalize_or(Vec3::Y);
+    // Split between the cylinder and its two hemispheres by volume.
+    let (cylinder, sphere) = (PI * radius * radius * length, 4.0 / 3.0 * PI * radius.powi(3));
+    let (m_cylinder, m_sphere) = (mass * cylinder / (cylinder + sphere), mass * sphere / (cylinder + sphere));
+    let long_axis = 0.5 * m_cylinder * radius * radius + 0.4 * m_sphere * radius * radius;
+    let transverse = m_cylinder * (length * length / 12.0 + radius * radius / 4.0)
+        + m_sphere * (0.4 * radius * radius + length * length / 4.0 + 3.0 * length * radius / 8.0);
+    (
+        Mass(mass),
+        CenterOfMass(Vec3::ZERO),
+        AngularInertia::new_with_local_frame(Vec3::new(transverse, long_axis, transverse), Quat::from_rotation_arc(Vec3::Y, along)),
+        NoAutoMass,
+        NoAutoAngularInertia,
+        NoAutoCenterOfMass,
+    )
+}
+
 /// Builds a complete simulated skeleton for one character.
 ///
 /// Reads the rig's own live `GlobalTransform`s, so it works on a retargeted
@@ -1372,6 +1492,18 @@ pub fn spawn_ragdoll(
 
     let layout = &config.layout;
     let collision_layer = config.collision_layer.unwrap_or_else(next_ragdoll_layer);
+    // Flesh in proportion to the rig: its hips' height above its ankles
+    // against the reference person's.
+    let scale = match (
+        global_transforms.get(skeleton.entity(Bone::Hips)),
+        global_transforms.get(skeleton.entity(Bone::LeftFoot)),
+    ) {
+        (Ok(hips), Ok(ankle)) if hips.translation().y > ankle.translation().y => {
+            (hips.translation().y - ankle.translation().y) / REFERENCE_HIPS_HEIGHT
+        }
+        _ => 1.0,
+    };
+    let left = spawn_forward(skeleton, global_transforms).map_or(Vec3::X, |forward| Vec3::Y.cross(forward));
 
     // Pass one: a body per bone the layout names, placed at the midpoint of
     // the capsule running from this bone's joint to its tip.
@@ -1404,16 +1536,28 @@ pub fn spawn_ragdoll(
                 world_rotation: joint.rotation(),
                 segment_direction: tip - joint.translation(),
                 length,
-                radius: match bone {
-                    // The torso is as wide as it is, whatever its bones'
-                    // lengths — see `RagdollSpawnConfig::torso_radius`.
-                    Bone::Hips | Bone::Spine | Bone::Spine2 => config.torso_radius,
-                    _ => (length * config.radius_fraction).clamp(0.02, config.maximum_radius),
+                radius: match config.torso[bone] {
+                    // Its inertia's; its collider is its block, below.
+                    Some(_) => config.torso_radius,
+                    None => config.radii[bone] * scale,
                 },
                 mass: Some(config.masses[bone]),
                 collision_layer,
             },
         );
+        if let Some(block) = config.torso[bone] {
+            // Its mass, inertia and centre stay the capsule's, held fixed:
+            // left to the block, they came from its volume (the torso has
+            // no Table 4.1 row to set them), a pelvis reaching below its
+            // joint moved its centre down, and bodies spawned on their
+            // targets drifted 14 degrees off them.
+            let half_segment = joint.rotation().inverse() * (tip - joint.translation()) * 0.5;
+            let up = (tip - joint.translation()).normalize_or(Vec3::Y);
+            commands.entity(body).insert((
+                torso_collider(block, scale, up, left, length, joint.rotation()),
+                capsule_mass_properties(config.masses[bone], half_segment, config.torso_radius),
+            ));
+        }
 
         // A foot stands on its sole, not on a capsule: a block in the
         // ankle bone's frame, which is this body's frame too, offset from
@@ -1449,6 +1593,16 @@ pub fn spawn_ragdoll(
         ragdoll.bodies[bone] = Some(body);
         ragdoll.body_offsets[bone] = joint.rotation().inverse() * (body_position - joint.translation());
     }
+
+    // The skeleton in its bind pose and frame, for the joints whose limits
+    // are anatomical directions (`tilted_parent_basis`): each bone's local
+    // translation read off the live transforms.
+    let bind = super::plugin::live_rig_geometry(skeleton, |bone| {
+        let child = global_transforms.get(skeleton.entity(bone)).ok()?;
+        let parent = global_transforms.get(skeleton.entity(bone.parent()?)).ok()?;
+        Some(parent.affine().inverse().transform_point3(child.translation()))
+    });
+    let bind_world = super::rig::accumulate_world_rotations(&LocalPose::REST, &bind);
 
     // Pass two: connect each body to its nearest simulated ancestor. Not
     // simply to `bone.parent()` — a skipped bone would otherwise orphan
@@ -1502,8 +1656,10 @@ pub fn spawn_ragdoll(
             segment,
             bind_rotation_between(parent_bone, bone, |b| skeleton.rest_rotation(b)),
         );
+        // A hip's or shoulder's cone leans to the middle of its range.
+        let basis_on_parent = tilted_parent_basis(bone, basis_on_parent, bind_world[parent_bone], bind.forward());
 
-        connect_bodies(
+        ragdoll.joints[bone] = Some(connect_bodies(
             commands,
             parent_body,
             body,
@@ -1512,22 +1668,83 @@ pub fn spawn_ragdoll(
             basis_on_parent,
             basis_on_child,
             ragdoll.limits[bone],
-        );
+        ));
+
+        // A knee or an elbow: the hinge a fall will swap in (`Hinge`).
+        let (Some(range), Some(forward)) = (hinge_range(bone), spawn_forward(skeleton, global_transforms)) else {
+            continue;
+        };
+        // The bend carries the forearm toward the front and the shin toward
+        // the back, about an axis fixed in the upper segment: across it and
+        // that direction, in the pose it spawns in (standing, arms down or
+        // out, the upper segments near vertical or across the body).
+        let toward = if matches!(bone, Bone::LeftLeg | Bone::RightLeg) { -forward } else { forward };
+        let upper = (world_anchor - parent_global.translation()).normalize_or_zero();
+        let axis = upper.cross(toward);
+        if axis.length() < 0.3 {
+            continue;
+        }
+        let into_parent = parent_global.rotation().inverse();
+        let child_segment = (child_body_position - world_anchor).normalize_or_zero();
+        ragdoll.hinges[bone] = Some(super::ragdoll::Hinge {
+            axis: into_parent * axis.normalize(),
+            range: (range.0.to_radians(), range.1.to_radians()),
+            segments: (into_parent * upper, child_global.rotation().inverse() * child_segment),
+            anchors: (parent_anchor, child_anchor),
+        });
     }
 
     ragdoll
 }
 
+/// The hinge standing in for a knee's or elbow's ball joint from now, with
+/// the parent and child bodies at these world rotations: its frames
+/// coincide as they are, so nothing moves when it takes over, and whatever
+/// roll and sideways tilt the limb has now is its hinge's straight line.
+/// Limited to the anatomical range less the bend it already has (and
+/// never so as to push it: a stance a few degrees past a limit starts
+/// inside it).
+fn hinge_joint(parent: Entity, child: Entity, hinge: &super::ragdoll::Hinge, parent_rotation: Quat, child_rotation: Quat) -> RevoluteJoint {
+    let bend = hinge.bend(parent_rotation, child_rotation);
+    let on_parent = Quat::from_rotation_arc(Vec3::X, hinge.axis);
+    let on_child = child_rotation.inverse() * parent_rotation * on_parent;
+    RevoluteJoint::new(parent, child)
+        .with_hinge_axis(Vec3::X)
+        .with_local_anchor1(hinge.anchors.0)
+        .with_local_anchor2(hinge.anchors.1)
+        .with_local_basis1(on_parent)
+        .with_local_basis2(on_child)
+        .with_angle_limits((hinge.range.0 - bend).min(0.0), (hinge.range.1 - bend).max(0.0))
+}
+
+/// The bend range, degrees, of the joints a fall makes hinges (`Hinge`).
+fn hinge_range(bone: Bone) -> Option<(f32, f32)> {
+    match bone {
+        Bone::LeftLeg | Bone::RightLeg => Some(super::ragdoll::KNEE_RANGE),
+        Bone::LeftForeArm | Bone::RightForeArm => Some(super::ragdoll::ELBOW_RANGE),
+        _ => None,
+    }
+}
+
+/// Which way the character faces as it spawns, horizontal: along its left
+/// foot, heel to toe, as `RigGeometry::forward` measures it in the bind.
+fn spawn_forward(skeleton: &HumanoidSkeleton, global_transforms: &Query<&GlobalTransform>) -> Option<Vec3> {
+    let foot = global_transforms.get(skeleton.entity(Bone::LeftFoot)).ok()?.translation();
+    let toe = global_transforms.get(skeleton.entity(Bone::LeftToeBase)).ok()?.translation();
+    let along = Vec3::new(toe.x - foot.x, 0.0, toe.z - foot.z);
+    (along.length() > 1.0e-4).then(|| along.normalize())
+}
+
 /// How [`spawn_ragdoll`] sizes the bodies it creates.
 #[derive(Debug, Clone, Copy)]
 pub struct RagdollSpawnConfig {
-    /// Capsule radius as a fraction of the bone's own length. A limb whose
-    /// radius scales with its length keeps a consistent look across
-    /// differently-proportioned rigs.
-    pub radius_fraction: f32,
-    /// Upper bound on that radius, so a long bone does not produce an
-    /// absurdly fat capsule.
-    pub maximum_radius: f32,
+    /// Each limb's (and the head's) capsule radius, metres, for a person
+    /// whose hips stand [`REFERENCE_HIPS_HEIGHT`] above the ankles; scaled
+    /// to the rig. See [`default_flesh_radii`].
+    pub radii: BoneSet<f32>,
+    /// The torso's bodies as the blocks of flesh they are. See
+    /// [`default_torso_blocks`].
+    pub torso: BoneSet<Option<TorsoBlock>>,
     /// Bones shorter than this get no body at all; their children join the
     /// nearest simulated ancestor instead.
     ///
@@ -1576,14 +1793,15 @@ pub struct RagdollSpawnConfig {
     pub layout: BoneSet<Option<BodyEnd>>,
     /// Each body's mass in kilograms. See [`default_body_masses`].
     pub masses: BoneSet<f32>,
-    /// Capsule radius of the three torso bodies.
+    /// The radius the three torso bodies' spin inertia is computed with
+    /// (their collider is a [`TorsoBlock`]).
     ///
-    /// Limbs scale their radius with their length; a torso does not — it is
-    /// as wide as a chest, however the spine happens to be divided. Sized
-    /// like a limb, the synthetic rig's 0.10 m upper torso became a 15 kg
-    /// pencil with a third of the bending inertia of the head it carried,
-    /// and the torso chain settled into a limit cycle: the neck coning 6.5
-    /// degrees off its target at 2.5 rad/s, with or without gravity.
+    /// A torso is as wide as a chest, however the spine happens to be
+    /// divided. Sized like a limb, the synthetic rig's 0.10 m upper torso
+    /// became a 15 kg pencil with a third of the bending inertia of the
+    /// head it carried, and the torso chain settled into a limit cycle: the
+    /// neck coning 6.5 degrees off its target at 2.5 rad/s, with or without
+    /// gravity.
     pub torso_radius: f32,
     /// This character's collision layer, or `None` to take the next one
     /// from [`RAGDOLL_LAYER_POOL`]. Set it when a game manages its own
@@ -1596,6 +1814,81 @@ pub struct RagdollSpawnConfig {
     /// in 2.5 s, turning 67°. `None` keeps the capsules, which is enough
     /// for a ragdoll held up by its pinned root.
     pub feet: Option<[SoleBox; 2]>,
+}
+
+/// The hips' height above the ankles, metres, of the person
+/// [`default_flesh_radii`] and [`default_torso_blocks`] describe:
+/// `puppet_base`'s standing, 1.74 m tall. A rig is fleshed out in
+/// proportion to its own.
+pub const REFERENCE_HIPS_HEIGHT: f32 = 0.856;
+
+/// Each body's flesh radius, metres: the mean radius along its segment,
+/// so a capsule as thick as the limb it stands in for.
+///
+/// From ANSUR II male means (Gordon et al. 2014): thigh circumference
+/// 625 mm at the crotch (r 0.10) tapering to the knee, calf 373 mm (r 0.06)
+/// tapering to the ankle, flexed biceps 358 mm (r 0.057). The old radii, a
+/// fifth of each bone's length, gave the shins 0.09 m: they overlapped
+/// standing a step width apart, and with no collision between them a fall
+/// passed one shin straight through the other (180 mm).
+pub fn default_flesh_radii() -> BoneSet<f32> {
+    BoneSet::from_fn(|bone| match bone {
+        Bone::LeftUpLeg | Bone::RightUpLeg => 0.075,
+        Bone::LeftLeg | Bone::RightLeg => 0.048,
+        Bone::LeftArm | Bone::RightArm => 0.045,
+        Bone::LeftForeArm | Bone::RightForeArm => 0.037,
+        Bone::Head => 0.09,
+        Bone::LeftFoot | Bone::RightFoot => 0.035,
+        _ => 0.05,
+    })
+}
+
+/// A torso body's flesh: a rounded block across the body, metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorsoBlock {
+    /// Side to side.
+    pub breadth: f32,
+    /// Front to back.
+    pub depth: f32,
+    /// How far it reaches below the bone's joint: the pelvis's buttocks
+    /// hang below the hips joint.
+    pub below: f32,
+}
+
+/// The torso as blocks: wider than deep, so a fallen body lies flat on its
+/// back or front, or on its side, rather than rolling on a 0.26 m round
+/// capsule. Breadths from ANSUR II male means: chest 289 mm, hips 354 mm;
+/// the depths and the pelvis's reach below the hips joint are estimates.
+pub fn default_torso_blocks() -> BoneSet<Option<TorsoBlock>> {
+    BoneSet::from_fn(|bone| match bone {
+        Bone::Hips => Some(TorsoBlock { breadth: 0.34, depth: 0.22, below: 0.10 }),
+        Bone::Spine => Some(TorsoBlock { breadth: 0.30, depth: 0.21, below: 0.0 }),
+        Bone::Spine2 => Some(TorsoBlock { breadth: 0.31, depth: 0.23, below: 0.0 }),
+        _ => None,
+    })
+}
+
+/// A torso body's collider: its [`TorsoBlock`] at `scale`, across the
+/// body (`left`, world) and along its segment (`up`, world, from the joint
+/// to its end, `length` long), in a body at world `rotation` whose centre
+/// is the segment's midpoint.
+fn torso_collider(block: TorsoBlock, scale: f32, up: Vec3, left: Vec3, length: f32, rotation: Quat) -> Collider {
+    let (breadth, depth, below) = (block.breadth * scale, block.depth * scale, block.below * scale);
+    let height = length + below;
+    let border = 0.25 * breadth.min(depth);
+    let across = (left - up * left.dot(up)).normalize_or(Vec3::X.any_orthonormal_vector());
+    let world = Quat::from_mat3(&Mat3::from_cols(across, up, across.cross(up)));
+    let centre = rotation.inverse() * (-up * below * 0.5);
+    Collider::compound(vec![(
+        centre,
+        rotation.inverse() * world,
+        Collider::round_cuboid(
+            (breadth - 2.0 * border).max(0.01),
+            (height - 2.0 * border).max(0.01),
+            (depth - 2.0 * border).max(0.01),
+            border,
+        ),
+    )])
 }
 
 /// The flat soles [`RagdollSpawnConfig::feet`] wants, for `rig`: the walk's
@@ -1625,8 +1918,8 @@ pub fn sole_collider(block: SoleBox, body_from_joint: Vec3) -> impl Bundle {
 impl Default for RagdollSpawnConfig {
     fn default() -> Self {
         Self {
-            radius_fraction: 0.22,
-            maximum_radius: 0.09,
+            radii: default_flesh_radii(),
+            torso: default_torso_blocks(),
             minimum_bone_length: 0.075,
             pin_root: true,
             limits: super::ragdoll::default_joint_limits(),
@@ -1871,6 +2164,44 @@ pub fn joint_bases(segment: Vec3, bind_between: Quat) -> (Quat, Quat) {
     let axis = segment.normalize_or_zero();
     let on_child = if axis == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::Y, axis) };
     (bind_between * on_child, on_child)
+}
+
+/// Where a joint's swing cone is centred, as a direction for the child
+/// segment in the character's bind frame (`forward` its facing, `+Y` up),
+/// for the ball joints whose range is lopsided. `None`: centred on the
+/// bind pose, as [`joint_bases`] makes it.
+///
+/// avian's cone is symmetric (`avian_limit_angles`); a real hip and
+/// shoulder are not. Tilted toward the middle of their range, one cone
+/// reaches both ends:
+/// - **Hip:** AAOS flexion 0-120, extension 0-30. Centred 45 degrees
+///   forward of straight down, a 75-degree cone reaches 120 forward and 30
+///   back. Centred on the bind (straight down), it allowed 75 each way: a
+///   forward fall bent the hips 43 back and a backward one stopped at 75.
+/// - **Shoulder:** the arm reaches up (flexion and abduction to 180),
+///   down, across the front, and only 60 back. Centred out to the side and
+///   a little forward, one cone reaches all of those but not far behind.
+pub fn anatomical_cone_centre(bone: Bone, forward: Vec3) -> Option<Vec3> {
+    let left = Vec3::Y.cross(forward).normalize_or_zero();
+    match bone {
+        Bone::LeftUpLeg | Bone::RightUpLeg => Some((Vec3::NEG_Y + forward).normalize()),
+        Bone::LeftArm => Some((left + forward * 0.3).normalize()),
+        Bone::RightArm => Some((-left + forward * 0.3).normalize()),
+        _ => None,
+    }
+}
+
+/// [`joint_bases`]'s parent frame turned so its cone is centred on
+/// [`anatomical_cone_centre`]: `parent_bind` is the parent bone's world
+/// rotation in the bind pose, in the frame `forward` is measured in.
+///
+/// Turned by the shortest arc from the bind direction to the centre, so
+/// the twist reference is carried with it: in the bind pose the twist
+/// still reads zero, and every pose's twist is what it was.
+pub fn tilted_parent_basis(bone: Bone, on_parent: Quat, parent_bind: Quat, forward: Vec3) -> Quat {
+    let Some(centre) = anatomical_cone_centre(bone, forward) else { return on_parent };
+    let (from, to) = (on_parent * Vec3::Y, parent_bind.inverse() * centre);
+    Quat::from_rotation_arc(from, to) * on_parent
 }
 
 /// The product of bind rotations from just below `ancestor` down to and
@@ -2749,6 +3080,17 @@ mod tests {
         config: &RagdollSpawnConfig,
         at: Vec3,
     ) -> (Entity, Ragdoll, Entity, RigGeometry) {
+        spawn_real_rig_ragdoll_turned(app, config, at, Quat::IDENTITY)
+    }
+
+    /// [`spawn_real_rig_ragdoll_with`], the whole character turned by
+    /// `turn` before its bodies are built.
+    fn spawn_real_rig_ragdoll_turned(
+        app: &mut App,
+        config: &RagdollSpawnConfig,
+        at: Vec3,
+        turn: Quat,
+    ) -> (Entity, Ragdoll, Entity, RigGeometry) {
         use crate::character::anim::gltf_rig;
 
         let parsed = gltf_rig::parsed_rig();
@@ -2757,7 +3099,7 @@ mod tests {
         let root = app
             .world_mut()
             .spawn(
-                Transform::from_rotation(parsed.hips_parent_rest_world_rotation)
+                Transform::from_rotation(turn * parsed.hips_parent_rest_world_rotation)
                     .with_scale(parsed.hips_parent_rest_world_scale)
                     .with_translation(at),
             )
@@ -3177,6 +3519,239 @@ mod tests {
         }
     }
 
+    /// A real-rig ragdoll standing as the character is drawn (turned half
+    /// round from the file's facing), in `relaxed_stand`, pinned and driven,
+    /// on a friction-1 floor under full gravity at twelve substeps.
+    fn drawn_standing_ragdoll() -> (App, Entity, Ragdoll, RigGeometry) {
+        use crate::character::anim::gltf_rig;
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+        app.add_systems(Update, publish_joint_targets);
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let file = gltf_rig::puppet_base();
+        let config = RagdollSpawnConfig { feet: Some(sole_blocks(&file)), ..Default::default() };
+        // Built facing the drawn way: turned after spawning, every body had
+        // to swing half round, and the upper arms were still 28-33 degrees
+        // off their targets a second later.
+        let turn = Quat::from_rotation_y(std::f32::consts::PI);
+        let (character, ragdoll, _, _) = spawn_real_rig_ragdoll_turned(&mut app, &config, Vec3::Y * 0.01, turn);
+        let drawn = gltf_rig::puppet_base_as_rendered();
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &drawn);
+        app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&stood));
+        step(&mut app, (1.0 / TIMESTEP) as usize);
+        (app, character, ragdoll, drawn)
+    }
+
+    /// What a fall does to the body, per frame: the knees' and elbows'
+    /// bend (signed, degrees: positive is the anatomical flexion) and how
+    /// far each leaves its hinge's plane, and the deepest overlap between
+    /// two bodies no joint connects.
+    #[derive(Debug, Default, Clone, Copy)]
+    struct FallShape {
+        knee_bend: (f32, f32),
+        knee_off: f32,
+        elbow_bend: (f32, f32),
+        elbow_off: f32,
+        overlap: f32,
+        overlap_pair: Option<(Bone, Bone)>,
+        rest_height: f32,
+        /// The thighs against the pelvis, degrees: forward (flexion,
+        /// positive) and back (extension, negative) in its sagittal plane,
+        /// and the furthest out to the side (abduction).
+        hip_sagittal: (f32, f32),
+        hip_abduction: f32,
+    }
+
+    fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
+        // Closest points between two segments (Ericson, Real-Time Collision
+        // Detection, 5.1.9).
+        let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
+        let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
+        let (s, t) = if a <= 1e-9 && e <= 1e-9 {
+            (0.0, 0.0)
+        } else if a <= 1e-9 {
+            (0.0, (f / e).clamp(0.0, 1.0))
+        } else {
+            let c = d1.dot(r);
+            if e <= 1e-9 {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else {
+                let b = d1.dot(d2);
+                let denom = a * e - b * b;
+                let mut s = if denom > 1e-9 { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+                let mut t = (b * s + f) / e;
+                if t < 0.0 {
+                    t = 0.0;
+                    s = (-c / a).clamp(0.0, 1.0);
+                } else if t > 1.0 {
+                    t = 1.0;
+                    s = ((b - c) / a).clamp(0.0, 1.0);
+                }
+                (s, t)
+            }
+        };
+        (p1 + d1 * s).distance(p2 + d2 * t)
+    }
+
+    /// Falls the standing ragdoll with `launch` and measures `FallShape`
+    /// over `seconds`.
+    fn measure_fall(launch: Vec3, seconds: f32) -> FallShape {
+        let (mut app, character, ragdoll, rig) = drawn_standing_ragdoll();
+        let world_rotation = |app: &App, bone: Bone| app.world().get::<Rotation>(ragdoll.bodies[bone].unwrap()).unwrap().0;
+        // Each hinge's axis in its parent body's frame, from the standing
+        // pose: the bend carries the child toward the rig's forward (elbow)
+        // or backward (knee) — see `hinge_axes`.
+        // The drawn rig's own forward: the character stands turned to it.
+        let forward = rig.forward();
+        let direction = |app: &App, bone: Bone| {
+            let rotation = world_rotation(app, bone);
+            let (p, q) = capsule_of(app, ragdoll.bodies[bone].unwrap()).unwrap();
+            (rotation * (q - p)).normalize()
+        };
+        // The ragdoll's own hinges where it has them (`Hinge`), so the bend
+        // is measured about the axis the joint enforces; otherwise across
+        // the upper segment and the way it bends, from the standing pose.
+        let hinges = [
+            (Bone::LeftUpLeg, Bone::LeftLeg, -forward),
+            (Bone::RightUpLeg, Bone::RightLeg, -forward),
+            (Bone::LeftArm, Bone::LeftForeArm, forward),
+            (Bone::RightArm, Bone::RightForeArm, forward),
+        ]
+        .map(|(parent, child, toward)| {
+            let axis = match ragdoll.hinges[child] {
+                Some(hinge) => hinge.axis,
+                None => world_rotation(&app, parent).inverse() * direction(&app, parent).cross(toward).normalize(),
+            };
+            (parent, child, axis)
+        });
+        let adjacent = |a: Bone, b: Bone| {
+            nearest_simulated_ancestor(a, &ragdoll) == Some(b) || nearest_simulated_ancestor(b, &ragdoll) == Some(a)
+        };
+        // The pelvis's own down, forward and left as it stands, in its
+        // body's frame: what a hip's flexion and abduction are measured in.
+        let pelvis = world_rotation(&app, Bone::Hips).inverse();
+        let (down, ahead, side) = (pelvis * Vec3::NEG_Y, pelvis * forward, pelvis * Vec3::Y.cross(forward));
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall_moving(FALL_TONE, FALL_DAMPING, launch);
+        let mut shape = FallShape {
+            knee_bend: (f32::MAX, f32::MIN),
+            elbow_bend: (f32::MAX, f32::MIN),
+            overlap: f32::MIN,
+            hip_sagittal: (f32::MAX, f32::MIN),
+            ..Default::default()
+        };
+        for _ in 0..(seconds / TIMESTEP) as usize {
+            app.update();
+            for (thigh, outward) in [(Bone::LeftUpLeg, side), (Bone::RightUpLeg, -side)] {
+                let d = world_rotation(&app, Bone::Hips).inverse() * direction(&app, thigh);
+                let sagittal = d.dot(ahead).atan2(d.dot(down)).to_degrees();
+                shape.hip_sagittal = (shape.hip_sagittal.0.min(sagittal), shape.hip_sagittal.1.max(sagittal));
+                shape.hip_abduction = shape.hip_abduction.max(d.dot(outward).clamp(-1.0, 1.0).asin().to_degrees());
+            }
+            for (i, (parent, child, axis)) in hinges.iter().enumerate() {
+                let axis = world_rotation(&app, *parent) * *axis;
+                let (p, c) = (direction(&app, *parent), direction(&app, *child));
+                let bend = axis.dot(p.cross(c)).atan2(p.dot(c)).to_degrees();
+                let off = c.dot(axis).clamp(-1.0, 1.0).asin().to_degrees().abs();
+                let (range, worst) = if i < 2 { (&mut shape.knee_bend, &mut shape.knee_off) } else { (&mut shape.elbow_bend, &mut shape.elbow_off) };
+                *range = (range.0.min(bend), range.1.max(bend));
+                *worst = worst.max(off);
+            }
+            let capsules: Vec<(Bone, Vec3, Vec3, f32)> = Bone::ALL
+                .iter()
+                .filter_map(|&bone| {
+                    let body = ragdoll.bodies[bone]?;
+                    let (a, b) = capsule_of(&app, body)?;
+                    let radius = capsule_radius(&app, body)?;
+                    let (position, rotation) = (app.world().get::<Position>(body)?.0, app.world().get::<Rotation>(body)?.0);
+                    Some((bone, position + rotation * a, position + rotation * b, radius))
+                })
+                .collect();
+            for (i, &(a, p1, q1, r1)) in capsules.iter().enumerate() {
+                for &(b, p2, q2, r2) in &capsules[i + 1..] {
+                    if adjacent(a, b) {
+                        continue;
+                    }
+                    let depth = r1 + r2 - segment_distance(p1, q1, p2, q2);
+                    if depth > shape.overlap {
+                        (shape.overlap, shape.overlap_pair) = (depth, Some((a, b)));
+                    }
+                }
+            }
+        }
+        shape.rest_height = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0.y;
+        shape
+    }
+
+    /// A body's capsule segment in its own frame, if its collider is one.
+    fn capsule_of(app: &App, body: Entity) -> Option<(Vec3, Vec3)> {
+        let collider = app.world().get::<Collider>(body)?;
+        let capsule = collider.shape_scaled().as_capsule()?;
+        let (a, b) = (capsule.segment.a, capsule.segment.b);
+        Some((Vec3::new(a.x, a.y, a.z), Vec3::new(b.x, b.y, b.z)))
+    }
+
+    fn capsule_radius(app: &App, body: Entity) -> Option<f32> {
+        Some(app.world().get::<Collider>(body)?.shape_scaled().as_capsule()?.radius)
+    }
+
+    #[test]
+    fn a_limp_fall_bends_knees_and_elbows_as_hinges_and_keeps_its_flesh_apart() {
+        // Pushed over from the relaxed stance at 1.5 m/s each way, limp.
+        // With ball joints and no contact between its own parts, the knees
+        // folded 163 degrees backward and 88 sideways, the elbows 81 past
+        // straight and 85 sideways, and a shin passed through the other
+        // (180 mm). Knees and elbows are hinges while falling (`Hinge`), and
+        // the body's parts are solid to each other (`release_falling_roots`).
+        //
+        // And the hips bend as hips do (`anatomical_cone_centre`): no more
+        // than AAOS's 30 degrees back, while flexing past the 75 a cone
+        // centred on the bind allowed. With that cone a forward fall bent
+        // the hips 43 back and a backward one stopped at 75.
+        let mut deepest_flexion: f32 = 0.0;
+        for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
+            let s = measure_fall(launch * 1.5, 4.0);
+            assert!(s.hip_sagittal.0 > -31.0, "{name}: the hips bent {:.1} degrees back", -s.hip_sagittal.0);
+            deepest_flexion = deepest_flexion.max(s.hip_sagittal.1);
+            let (knee, elbow) = (super::super::ragdoll::KNEE_RANGE, super::super::ragdoll::ELBOW_RANGE);
+            assert!(
+                s.knee_bend.0 > knee.0 - 1.0 && s.knee_bend.1 < knee.1 + 1.0 && s.knee_off < 5.0,
+                "{name}: knees bent {:.1}..{:.1} degrees, {:.1} out of their plane",
+                s.knee_bend.0,
+                s.knee_bend.1,
+                s.knee_off
+            );
+            // Out of the plane, the elbows keep the few degrees the stance
+            // holds them at as they fall (the hinge freezes them).
+            assert!(
+                s.elbow_bend.0 > elbow.0 - 1.0 && s.elbow_bend.1 < elbow.1 + 1.0 && s.elbow_off < 8.0,
+                "{name}: elbows bent {:.1}..{:.1} degrees, {:.1} out of their plane",
+                s.elbow_bend.0,
+                s.elbow_bend.1,
+                s.elbow_off
+            );
+            assert!(s.overlap < 0.02, "{name}: {:?} sank {:.0} mm into each other", s.overlap_pair, s.overlap * 1e3);
+            // On the floor, not through it.
+            assert!(s.rest_height > 0.05 && s.rest_height < 0.3, "{name}: the hips lie at {:.2} m", s.rest_height);
+        }
+        assert!(deepest_flexion > 85.0, "no fall flexed the hips past {deepest_flexion:.1} degrees");
+    }
+
+    // `cargo test --release -- --ignored --nocapture probe_fall_shape`.
+    #[test]
+    #[ignore]
+    fn probe_fall_shape() {
+        for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
+            let s = measure_fall(launch * 1.5, 4.0);
+            println!(
+                "FALL {name:7}: knee bend {:6.1}..{:6.1} off {:5.1} | elbow bend {:6.1}..{:6.1} off {:5.1} | hip {:6.1}..{:6.1} abd {:5.1} | overlap {:5.1} mm {:?} | hips {:.2} m",
+                s.knee_bend.0, s.knee_bend.1, s.knee_off, s.elbow_bend.0, s.elbow_bend.1, s.elbow_off,
+                s.hip_sagittal.0, s.hip_sagittal.1, s.hip_abduction,
+                s.overlap * 1e3, s.overlap_pair, s.rest_height
+            );
+        }
+    }
+
     #[test]
     fn a_released_ragdoll_falls_with_its_momentum_and_is_drawn_where_it_lies() {
         // H2: a pinned ragdoll carried forward at 1 m/s, then let go. It
@@ -3219,8 +3794,10 @@ mod tests {
         // norm of 1.03 lying down (scaling the skeleton 6%, drawing it 8°
         // off its bodies).
         let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
-        // Five seconds: it sleeps at 4.2 s (`probe_fall_damping`).
-        for _ in 0..(5.0 / TIMESTEP) as usize {
+        // Seven seconds: it rests at 5.5 s, an outstretched forearm sliding
+        // about its elbow's hinge a while on the floor (4.2 s with ball
+        // joints and no contact between its own body parts).
+        for _ in 0..(7.0 / TIMESTEP) as usize {
             app.update();
             let norm = app.world().get::<Transform>(skeleton.entity(Bone::Hips)).unwrap().rotation.length();
             assert!((norm - 1.0).abs() < 1.0e-4, "the drawn hips rotation has norm {norm}");
@@ -3231,7 +3808,7 @@ mod tests {
         // At rest it sleeps, and stays put: awake, the solver's resting
         // jitter walked it 9 mm/s (`FALLEN_SLEEP`).
         let asleep = bodies.iter().filter(|&&body| app.world().get::<Sleeping>(body).is_some()).count();
-        assert_eq!(asleep, bodies.len(), "5 s after the fall, only {asleep} of {} bodies sleep", bodies.len());
+        assert_eq!(asleep, bodies.len(), "7 s after the fall, only {asleep} of {} bodies sleep", bodies.len());
         step(&mut app, (3.0 / TIMESTEP) as usize);
         let crept = app.world().get::<Position>(hips).unwrap().0.distance(hips_now);
         assert!(crept < 1.0e-3, "the fallen body crept {:.1} mm in 3 s", crept * 1e3);
@@ -3346,12 +3923,16 @@ mod tests {
         app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
         let rig = crate::character::anim::gltf_rig::puppet_base();
         let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
-        let (character, ragdoll, _root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+        let (character, ragdoll, root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
         // The character stands on its ground at its entity's height (the
-        // rise keeps the body's ends above it).
+        // rise keeps the body's ends above it). Its skeleton hangs under it,
+        // as a game's does, so it follows the fallen body and rises where it
+        // lay: a skeleton left where it spawned dragged the rising body back
+        // there, 0.4-1.2 m depending on where the fall happened to land.
         app.world_mut()
             .entity_mut(character)
-            .insert((AnimPose::settled_on(&crate::character::anim::poses::rest()), Transform::default()));
+            .insert((AnimPose::settled_on(&crate::character::anim::poses::rest()), Transform::default(), Visibility::default()));
+        app.world_mut().entity_mut(root).insert(ChildOf(character));
         step(&mut app, 10);
         let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
         let drawn_hips = |app: &App| app.world().get::<GlobalTransform>(skeleton.entity(Bone::Hips)).unwrap().translation();
@@ -3375,14 +3956,17 @@ mod tests {
         let stored = app.world().get::<Ragdoll>(character).unwrap().clone();
         let rise = stored.fall.unwrap().rise.unwrap();
         assert!(rise.lying.is_some() && stored.rise_keys.len() == 2, "no get-up keys chosen: {rise:?}");
-        // The rise: through its keys, smoothly, no end joint under the floor.
+        // The rise: through its keys, smoothly, nothing it keeps clear
+        // (`RISE_CLEARANCE_BONES`) under the floor. A hand's tuck folding
+        // about a nearly straight arm's bend flipped its axis frame to frame
+        // and the hips jumped 86 mm (`tuck_foot`).
         let mut previous = drawn_hips(&app);
         let mut frames = 0;
         while app.world().get::<Ragdoll>(character).unwrap().is_falling() {
             app.update();
             let now = drawn_hips(&app);
             assert!(now.distance(previous) < 0.03, "the hips jumped {:.1} mm in a frame", now.distance(previous) * 1e3);
-            for bone in [Bone::LeftToeBase, Bone::RightToeBase, Bone::LeftHand, Bone::RightHand, Bone::Head] {
+            for bone in RISE_CLEARANCE_BONES {
                 let y = app.world().get::<GlobalTransform>(skeleton.entity(bone)).unwrap().translation().y;
                 assert!(y > -0.01, "{} went {:.0} mm under the floor while rising", bone.name(), -y * 1e3);
             }
@@ -3396,7 +3980,12 @@ mod tests {
             frames as f32 * TIMESTEP,
             stored.rise_seconds()
         );
-        assert!(drawn_hips(&app).distance(stood) < 0.01, "stood up {:.1} cm from where it stood", drawn_hips(&app).distance(stood) * 100.0);
+        // Standing at full height, over where it lay.
+        let up = drawn_hips(&app);
+        assert!((up.y - stood.y).abs() < 0.01, "stood up at {:.2} m, stood at {:.2}", up.y, stood.y);
+        let from_lying = Vec3::new(up.x - lying.x, 0.0, up.z - lying.z).length();
+        // Measured 43 mm (face down, its first key's hips over its knees).
+        assert!(from_lying < 0.3, "stood up {:.0} mm from where it lay", from_lying * 1e3);
 
         // Pinned again, every body on its bone, and it holds.
         let hips = ragdoll.bodies[Bone::Hips].unwrap();
@@ -3418,7 +4007,7 @@ mod tests {
                 );
             }
         }
-        assert!(drawn_hips(&app).distance(stood) < 0.01, "the standing ragdoll drifted {:.1} cm", drawn_hips(&app).distance(stood) * 100.0);
+        assert!(drawn_hips(&app).distance(up) < 0.01, "the standing ragdoll drifted {:.1} cm", drawn_hips(&app).distance(up) * 100.0);
     }
 
     /// A rise's segment, and the heights of the joints it tracks.
@@ -3431,9 +4020,11 @@ mod tests {
         // half-kneel the front shin swept down through the floor and the
         // ground clearance hoisted the whole body, a foot 228 mm over both
         // ends; the leg now tucks its foot (`tuck_foot`). Face down and face
-        // up, both routes.
+        // up, both routes: pushed forward and back (this rig faces +Z). A
+        // sideways push lands either way; with a flat torso (`TorsoBlock`)
+        // the +X one that used to land face down rolled face up.
         for (launch, expect) in [
-            (Vec3::X, crate::character::anim::getup::Lying::FaceDown),
+            (Vec3::Z, crate::character::anim::getup::Lying::FaceDown),
             (Vec3::NEG_Z, crate::character::anim::getup::Lying::FaceUp),
         ] {
             let mut app = physics_app();
@@ -4095,6 +4686,8 @@ mod tests {
             segment,
             bind_rotation_between(parent, bone, |b| rig.bind_rotations[b]),
         );
+        let bind = accumulate_world_rotations(&LocalPose::REST, rig);
+        let on_parent = tilted_parent_basis(bone, on_parent, bind[parent], rig.forward());
 
         let world = accumulate_world_rotations(pose, rig);
         let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);

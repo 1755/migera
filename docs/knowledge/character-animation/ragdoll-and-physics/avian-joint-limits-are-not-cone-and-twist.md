@@ -65,3 +65,4 @@ and `every_limited_ragdoll_joint_uses_the_cone_and_twist_configuration` in
 - [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) — applies: this was one of the defects found once the ragdoll was actually measured.
 - [Use apply_angular_acceleration, not apply_torque](./avian-apply-angular-acceleration-not-torque.md) — same-trap: another avian API that means something other than its name.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: the body frames these limits are expressed in.
+- [A falling body has hinged knees and elbows and solid flesh](./a-falling-body-is-hinged-and-fleshed.md) — applies: hip and shoulder cones tilted to the middle of a lopsided range (the twist carried with them), and knees and elbows made true hinges while falling.

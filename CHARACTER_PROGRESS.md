@@ -42,6 +42,76 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### A falling body: hinged knees and elbows, solid anthropometric flesh
+
+Asked for: falls that move like a body, not a skeleton of thin sticks.
+Distilled in
+[a falling body has hinged knees and elbows and solid flesh](./docs/knowledge/character-animation/ragdoll-and-physics/a-falling-body-is-hinged-and-fleshed.md).
+
+- **Hinges while falling.** At the fall, each knee's and elbow's ball
+  joint is disabled and an avian `RevoluteJoint` takes over: its axis is
+  fixed in the femur or humerus, its frames coincide at that instant (no
+  snap, roll and sideways tilt frozen), and it is limited to knee −5..140°
+  and elbow −5..150° (AAOS 0–135, 0–150). The re-pin swaps back: a hinge
+  would lock the forearm roll a pose like the wave holds.
+- **Solid flesh while falling.** The body's parts collide with each other
+  (jointed neighbours exempt). Limbs are capsules of ANSUR II mean radii;
+  the torso is three rounded blocks wider than deep (pelvis 0.34 × 0.22
+  reaching 0.10 below the hips joint), so a fallen body lies on its back,
+  front or flank.
+- **Measured** (`probe_fall_shape`, relaxed stance, 1.5 m/s four ways):
+  knees −163..114° → −5.5..99°, sideways 88° → ≤ 1.8°; elbows −81..89° →
+  −5.5..146°, sideways 85° → ≤ 5.3°; overlap between unjointed parts
+  180 mm → ≤ 10 mm. Pinned by
+  `a_limp_fall_bends_knees_and_elbows_as_hinges_and_keeps_its_flesh_apart`,
+  which fails with either change disabled.
+- **Live, both rigs** (top and left views): forward lands face down,
+  back face up, sideways on the back or flank. No knee folds backward or
+  sideways and no limb passes through another.
+- **Found on the way:**
+  - Rest was judged by velocities. A thin forearm on the floor carried
+    1.1 rad/s that its hinge cancelled every substep (it turned 1.1° in
+    0.5 s), so the body never rested. Rest is now judged by how far each
+    body moves over the whole 1 s window.
+  - The torso's mass came from its collider, so a block moved its mass
+    and centre. avian's `from_shape` inertia on the tilted capsule lost
+    its orientation, and the chest spun to 3769 rad/s. Both are now set
+    explicitly from the old capsule.
+  - The face-up rise swung a hand through the floor and the clearance lift
+    hoisted the body 82 mm. Hands now tuck like feet, the elbow bending
+    further only.
+  - The fall harness was turned after spawning, which left the arms
+    28–33° off target. It now spawns facing the drawn way.
+- **Cost:** four 4 s headless falls simulate in 1.00 s against 0.81 s,
+  about 25% more while falling; standing is unchanged. A T-pose fall rests
+  at 5.5 s (was 4.2).
+- **Hips and shoulders, the same day.** avian's cone is symmetric, so
+  each is tilted to the middle of its range (`anatomical_cone_centre`),
+  its twist reference turned with it:
+  - **Hip:** centred 45° forward of straight down, 75° half-angle, so
+    120° forward and 30° back (AAOS). A forward fall's hip extension went
+    43° → 30.0°, and backward and side falls flex the hips 96–115° where
+    the bind-centred cone stopped them at 75.
+  - **Shoulder:** centred out to the side and slightly forward, 105°
+    half-angle, reaching a hanging arm's 60° extension. Walk and run
+    swings fit (the run's backswing is 94°).
+  - Pinned by the fall test (fails at 43.8° with the tilt off) and the
+    pose-limits test, which now measures the tilted frames.
+- **Found on the way:**
+  - The get-up test's skeleton never followed the fallen body, so the
+    rise dragged it 0.4–1.17 m back to the spawn spot, depending on the
+    landing. Hung under its character as in a game, it rises 43 mm from
+    where it lay.
+  - A tuck folding about a nearly straight arm's bend flipped axis frame
+    to frame, and the hips jumped 86 mm. Tucks now fold about the joint's
+    `Hinge` axis; the test fails at 45.6 mm the old way.
+  - Knees and elbows join the rise's floor clearance (a knee went 29 mm
+    under).
+- **Open:** a tilted cone still allows about 68° of hip abduction at
+  neutral flexion (AAOS 45; falls measured up to 52).
+
+1045 tests pass.
+
 ### Every test checked for the fixture that faces away
 
 Audit of the tests on plain `puppet_base()`, by swapping the fixtures

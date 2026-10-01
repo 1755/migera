@@ -99,7 +99,14 @@ end, when every body is set onto its bone and the root is pinned again.
   Only feet that **move** between the two keys are tucked
   (`Ragdoll::rise_moving`, toe moving over 5 cm; all of them off the
   lying body). Tucking planted feet folded them up from squatting to
-  standing, and the lift jumped 15 mm when the tuck let go.
+  standing, and the lift jumped 15 mm when the tuck let go. Hands tuck
+  the same way, the elbow only bending further: lying with arms flat at
+  its sides, a body sitting up swung a hand through the floor and was
+  hoisted 82 mm.
+- **The re-pin also undoes the fall's joints and contacts:** the knees'
+  and elbows' hinges go, their ball joints return, and the body's parts
+  pass through each other again (see
+  [a falling body is hinged and fleshed](./a-falling-body-is-hinged-and-fleshed.md)).
 - **Bodies asleep during the rise; the end re-pins.** The frame after the
   last blend, each body is set onto its drawn bone at
   `Ragdoll::body_offsets` (recorded at spawn; a bone is rigid), still and
@@ -156,6 +163,7 @@ end, when every body is set onto its bone and the root is pinned again.
 ## Related
 
 - [A fall hands the body to physics](./a-fall-hands-the-body-to-physics.md) — prerequisite: the fall, its rest signal and why the entity follows.
+- [A falling body has hinged knees and elbows and solid flesh](./a-falling-body-is-hinged-and-fleshed.md) — context: the lying pose a rise starts from, and why hands tuck too.
 - [A pose delta names a world axis](../rig-and-retargeting/a-pose-delta-names-a-world-axis.md) — prerequisite: why angles about `left` add down a chain.
 - [A pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md) — deeper: why the rise's turn broke the bodies, and the rule that fixed it.
 - [Foot locks need the body's travel](../ik-and-locomotion/foot-locks-need-the-bodys-travel.md) — same-trap: an entity moved behind the locks' back.

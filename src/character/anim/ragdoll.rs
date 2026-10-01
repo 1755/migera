@@ -125,9 +125,62 @@ pub struct Ragdoll {
     /// The poses a rise passes through, built on the rig when it starts
     /// ([`super::getup::keys`]).
     pub rise_keys: Vec<super::getup::GetUpKey>,
-    /// Which feet (left, right) move in the rise's current segment; only
-    /// they may be tucked clear of the floor.
-    pub rise_moving: [bool; 2],
+    /// Which feet and hands (left foot, right foot, left hand, right hand)
+    /// move in the rise's current segment; only they may be tucked clear of
+    /// the floor.
+    pub rise_moving: [bool; 4],
+    /// Each body's ball joint to its parent, by the child's bone.
+    pub joints: BoneSet<Option<Entity>>,
+    /// The hinges a fall turns the knees and elbows into, by the child's
+    /// bone, as measured at spawn. See [`Hinge`].
+    pub hinges: BoneSet<Option<Hinge>>,
+    /// The hinge joints standing in for those ball joints while falling.
+    pub hinge_joints: BoneSet<Option<Entity>>,
+    /// Each body's position and rotation the last frame a fall was checked
+    /// for rest: rest is judged by how the bodies move, not by their
+    /// velocities (`ragdoll_plugin::REST_SPEED`).
+    pub last_seen: BoneSet<Option<(Vec3, Quat)>>,
+}
+
+/// A knee or elbow as the hinge it is: one bending axis fixed in the parent
+/// segment (the femur's, the humerus's), within an anatomical range.
+///
+/// Standing, the ball joint stays: the pose controller holds the limb, and
+/// a pose may roll a forearm 90 degrees (the wave), which a hinge would
+/// lock. A limp body has no controller, and a ball joint let a knee fold
+/// 159 degrees backward and 88 sideways in a fall. So a fall swaps each ball
+/// joint for a hinge set up from where the limb is at that moment, its
+/// roll and sideways tilt frozen, and the rise's end swaps it back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hinge {
+    /// The bending axis in the parent body's frame; bending about it by a
+    /// positive angle is flexion.
+    pub axis: Vec3,
+    /// The allowed bend, radians, from the straight limb: (hyperextension,
+    /// full flexion).
+    pub range: (f32, f32),
+    /// The parent's and the child's segment directions, each in its own
+    /// body's frame: the bend is the angle between them about `axis`.
+    pub segments: (Vec3, Vec3),
+    /// The joint's anchor in each body's frame.
+    pub anchors: (Vec3, Vec3),
+}
+
+/// A knee's bend, degrees: AAOS normal flexion is 0-135; a limp limb is
+/// moved passively a little further, and a little past straight.
+pub const KNEE_RANGE: (f32, f32) = (-5.0, 140.0);
+
+/// An elbow's bend, degrees: AAOS normal flexion is 0-150.
+pub const ELBOW_RANGE: (f32, f32) = (-5.0, 150.0);
+
+impl Hinge {
+    /// The bend now, radians, with the parent and child bodies at these
+    /// world rotations.
+    pub fn bend(&self, parent: Quat, child: Quat) -> f32 {
+        let axis = parent * self.axis;
+        let (p, c) = (parent * self.segments.0, child * self.segments.1);
+        axis.dot(p.cross(c)).atan2(p.dot(c))
+    }
 }
 
 /// A ragdoll let go to fall: its root is no longer pinned, gravity acts on
@@ -207,7 +260,11 @@ impl Default for Ragdoll {
             fall: None,
             body_offsets: BoneSet::splat(Vec3::ZERO),
             rise_keys: Vec::new(),
-            rise_moving: [true; 2],
+            rise_moving: [true; 4],
+            joints: BoneSet::splat(None),
+            hinges: BoneSet::splat(None),
+            hinge_joints: BoneSet::splat(None),
+            last_seen: BoneSet::splat(None),
         }
     }
 }
@@ -690,7 +747,13 @@ pub fn default_joint_limits() -> BoneSet<Option<JointLimits>> {
         // way. Now that the arm hangs from the upper torso through the
         // collarbone (which has no body), the run's arm swing measures a
         // 77.6-degree roll against the old 70-degree stop.
-        Bone::LeftArm | Bone::RightArm => Some(JointLimits::degrees(90.0, 90.0)),
+        //
+        // The cone is centred out to the side and a little forward
+        // (`ragdoll_plugin::anatomical_cone_centre`): up and down are 90
+        // degrees from there, and an arm hanging and swung 60 back (AAOS
+        // extension) is 104. 105 reaches all of them and not far behind
+        // the back; the run's back swing measures 94.
+        Bone::LeftArm | Bone::RightArm => Some(JointLimits::degrees(105.0, 90.0)),
 
         // Elbow: the bend is the swing cone (see the note above); the
         // asymmetric twist is real forearm pronation/supination, which
@@ -705,8 +768,11 @@ pub fn default_joint_limits() -> BoneSet<Option<JointLimits>> {
 
         Bone::LeftHand | Bone::RightHand => Some(JointLimits::degrees(45.0, 25.0)),
 
-        // Hip: wide forward, much less back, but again a cone is symmetric,
-        // so this is the generous reading.
+        // Hip: wide forward, much less back. A cone is symmetric, so it is
+        // centred 45 degrees forward of straight down
+        // (`ragdoll_plugin::anatomical_cone_centre`), and reaches AAOS's 120
+        // of flexion and 30 of extension. Centred on the bind it allowed 75
+        // each way.
         Bone::LeftUpLeg | Bone::RightUpLeg => Some(JointLimits::degrees(75.0, 40.0)),
 
         // Knee: swing is the bend, twist is near-zero because a knee that

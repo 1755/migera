@@ -167,6 +167,7 @@ rotations only, and the gallery had no physics floor.
 
 - [A stumble is a capture-point step, then a join](../ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md) — prerequisite: the step whose failure this is.
 - [Getting up goes through key poses chosen by how the body lies](./getting-up-is-a-timed-blend-then-a-re-pin.md) — deeper: what `at_rest` hands on to.
+- [A falling body has hinged knees and elbows and solid flesh](./a-falling-body-is-hinged-and-fleshed.md) — deeper: what the joints and colliders become during the fall, and why rest is judged by motion.
 - [An unpinned ragdoll needs soles and weight-bearing control](./an-unpinned-ragdoll-needs-soles-and-weight-bearing-control.md) — context: why the ragdoll only falls, and doesn't balance.
 - [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) — same-trap: verify bodies over BRP, not the picture.
 - [PD damping has an explicit-integration bound](./pd-damping-explicit-integration-bound.md) — contrast: the PD's damping; joint damping is avian's implicit one.
