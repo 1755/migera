@@ -8,8 +8,8 @@ tags:
   - physics
   - biomechanics
   - correctness
-updated: 2026-10-01
-verified: 2026-10-01
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/ragdoll.rs
   - src/character/anim/ragdoll_plugin.rs
@@ -19,6 +19,10 @@ sources:
   - "AAOS normal range of motion: knee flexion 0-135, elbow 0-150 (e.g. https://goniometer.io/range-of-motion)"
   - "ANSUR II male means (Gordon et al., 2012 Anthropometric Survey of U.S. Army Personnel, NATICK/TR-15/007): thigh circumference 625 mm, calf 373, flexed biceps 358, chest breadth 289, hip breadth 354"
 aliases:
+  - toe dip
+  - Dominance
+  - turn_up_clear
+  - tip_world
   - Hinge
   - KNEE_RANGE
   - ELBOW_RANGE
@@ -39,6 +43,7 @@ aliases:
 
 Contents: [Decision](#decision) · [Alternatives](#alternatives-considered) ·
 [Consequences](#consequences) · [Lessons](#lessons-on-the-way) ·
+[Why the bodies dip](#why-the-bodies-dip-and-what-was-measured) ·
 [Revisit when](#revisit-when)
 
 Standing, the ragdoll is driven by its pose controller, and ball joints
@@ -201,27 +206,48 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
   read that slide as a jump. Hung under the character, it rises 43 mm
   from where it lay.
 
-## Open, with what was tried (2026-10-01)
+- **The drawn toes and fingers stay out of the floor; the bodies may
+  not** (`write_simulated_pose`, `turn_up_clear`, `tip_world`). Falling
+  or rising, the ankle turns the toe joint up to the ground under it,
+  then the toes and each wrist turn their tips up. Only the drawn
+  skeleton changes. Live, both rigs, the lowest drawn toe joint sits at
+  0.0 mm through a fall
+  (`a_falling_body_is_drawn_with_its_toes_and_fingers_out_of_the_floor`).
+
+## Why the bodies dip, and what was measured
+
+The feet and hands sink into the floor at impact: toes 29-57 mm, fingers
+12-68 mm, and a forward fall's foot rested 23 mm in
+(`probe_fall_floor_penetration`, ignored; exact sole corners, since
+`ColliderAabb` includes speculative margins). In avian 0.7 each substep
+solves the soft contacts first and the XPBD joints after, and a joint's
+correction is split by inverse mass. A 1 kg foot under a 70 kg body
+takes ~98% of it, back into the floor, and the contact only answers in
+the next substep. So the body's momentum reaches the floor through the
+foot a little at a time. Every physics lever cost more than the dip:
+- `contact_frequency_factor` ×3: 20-42 mm; ×10: 13-33 mm. Rest detection
+  broke ("never came to rest"), and landing tests landed differently.
+  `SolverConfig` is global to the app, too.
+- 24 substeps: 23-48 mm. ×3 contacts and 24 substeps: 16-25 mm.
+- Feet ×4 mass: 18-25 mm, with balance tuned on the real masses.
+- A 20-30 mm `CollisionMargin` skin: pushed falls 10-19 mm, but the
+  collapse reached 66 and feet floated 13-29 mm at rest.
+- `Dominance(1)` on feet near the floor (avian's per-body override, which
+  applies to joints as well as contacts): no foot dipped, and none rested
+  in the floor. But a dominant foot cannot be moved by its leg at all:
+  the feet moved 5-119 mm in a fall instead of 154-712, and bodies came
+  to rest propped up (hips 0.35 m high, not 0.11-0.19). Switched on and
+  off with the leg's lift, bodies were flung metres. On hands, flung too.
+
+## Open, with what was tried
 
 - **Elbows past 150° on impact (1.4-2.2°), kept.** AAOS's 0-150 is active
   range; passive flexion, stopped by soft tissue, goes further. A fall
   driving the arm onto its stop for a moment is within what a real elbow
   does, so the authored limit was not moved to hide it.
-- **Toes dip 3-6 cm through the floor at impact**, on flat ground too
-  (`probe_fall_floor_penetration`, ignored; exact sole corners, since
-  `ColliderAabb` includes speculative margins). The cause is avian's soft
-  contacts: a light foot under the falling body's weight overlaps the
-  floor until its contact catches up. Every lever cost more than the dip:
-  - `contact_frequency_factor` ×3: 20-42 mm; ×10: 13-33 mm. Rest
-    detection broke ("never came to rest"), and landing tests landed
-    differently. `SolverConfig` is global to the app, too.
-  - 24 substeps: 23-48 mm. ×3 contacts and 24 substeps: 16-25 mm.
-  - Feet ×4 mass: 18-25 mm, with balance tuned on the real masses.
-  - A 20-30 mm `CollisionMargin` skin: pushed falls 10-19 mm, but the
-    collapse reached 66 and feet floated 13-29 mm at rest.
-- **In a get-up the fingers point 18-21 cm into the floor** with the
-  wrist at the floor, both rigs. Fingers have no bodies; the rise's hand
-  key, not physics. Not yet looked at.
+- **Other bodies dip too** (thighs, upper arms 7-28 mm at impact), drawn
+  as they are. Their capsules' surfaces, not joints or tips, so nothing
+  points through the floor.
 
 Was open until 2026-10-01: the shoulder's second cone and the hand
 bodies. Both were blocked by a stale arm anchor (see
@@ -234,8 +260,9 @@ slope.
 
 - Another lopsided joint (an ankle): a second cone on the same pivot is
   the tool. Give its anchor a compliant point.
-- Toe dip matters (a close camera on a landing): try per-body contact
-  stiffness if avian gains it, before anything global.
+- avian gains per-body contact stiffness or joint inverse-mass scaling
+  (PhysX's `setInvMassScale`, Jolt's `mInvMassScale`): either could fix
+  the dip in the physics, and the drawn correction would then be moot.
 
 ## Related
 

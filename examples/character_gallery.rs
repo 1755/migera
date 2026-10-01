@@ -205,10 +205,10 @@ impl ViewPreset {
         }
     }
 
-    fn look_at(self) -> Vec3 {
+    fn look_at(self, look_at_height: f32) -> Vec3 {
         match self {
             ViewPreset::Top => Vec3::ZERO,
-            _ => Vec3::new(0.0, 0.95, 0.0),
+            _ => Vec3::new(0.0, look_at_height, 0.0),
         }
     }
 
@@ -348,6 +348,11 @@ impl CameraConfig {
                     cfg.preset_distance = val(&mut i).parse().unwrap_or(cfg.preset_distance);
                 }
                 "--camera-follow" => cfg.follow = true,
+                // A preset's eye and aim height, metres (default 0.95): low,
+                // for what happens at the floor.
+                "--camera-look-height" => {
+                    cfg.look_at_height = val(&mut i).parse().unwrap_or(cfg.look_at_height);
+                }
                 _ => {}
             }
             i += 1;
@@ -357,7 +362,7 @@ impl CameraConfig {
 
     fn preset_transform(&self) -> Transform {
         Transform::from_translation(self.preset.eye_position(self.preset_distance, self.look_at_height))
-            .looking_at(self.preset.look_at(), self.preset.up())
+            .looking_at(self.preset.look_at(self.look_at_height), self.preset.up())
     }
 }
 

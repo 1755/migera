@@ -1070,12 +1070,9 @@ fn write_simulated_pose(
         // under it: the character's `AnimGround`, or with none, the
         // character entity's height. Taken as the entity's height on a 0.2
         // slope, a rising calf went 47 mm into the hillside.
-        if rising.is_some()
-            && let Ok(height) = transforms.p0().get(character).map(|entity| entity.translation.y)
-        {
-            let ground = |at: Vec3| {
-                ground_probe.and_then(|probe| probe.0.sample(at)).map_or(height, |hit| hit.height)
-            };
+        let Ok(height) = transforms.p0().get(character).map(|entity| entity.translation.y) else { continue };
+        let ground = |at: Vec3| ground_probe.and_then(|probe| probe.0.sample(at)).map_or(height, |hit| hit.height);
+        if rising.is_some() {
             // A leg whose toe would pass under the floor tucks its foot
             // first: the knee flexes about its hinge just enough, as a leg
             // brought forward under the body does. Left to the lift below, a
@@ -1108,9 +1105,32 @@ fn write_simulated_pose(
                 }
             }
         }
+        // Falling or rising, the drawn feet and hands keep their tips out of
+        // the ground: the ankle turns the toe joint up to it, then the toes
+        // and each wrist turn their tips up. Drawn only; the bodies are left
+        // as they are. avian's contacts are soft and its joints are solved
+        // after them in every substep, so a light foot under a falling body
+        // is pushed into the floor until the body has stopped: toes 29-57 mm
+        // at impact, fingers 12-68 (`probe_fall_floor_penetration`). Every
+        // physics lever cost more than the dip (see the knowledge note on
+        // the falling body). Rising, between get-up keys whose palms lie
+        // flat, a hand turning from one to the other dipped its fingertips
+        // 38 mm in.
+        for (ankle, toe) in [(Bone::LeftFoot, Bone::LeftToeBase), (Bone::RightFoot, Bone::RightToeBase)] {
+            turn_up_clear(skeleton, ankle, &ground, &mut transforms, 1.0, |skeleton, transforms| {
+                transforms.p1().compute_global_transform(skeleton.entity(toe)).ok().map(|g| g.translation())
+            });
+            turn_up_clear(skeleton, toe, &ground, &mut transforms, 1.0, |skeleton, transforms| {
+                tip_world(skeleton, toe, |b| transforms.p1().compute_global_transform(skeleton.entity(b)).ok())
+            });
+        }
+        for hand in [Bone::LeftHand, Bone::RightHand] {
+            turn_up_clear(skeleton, hand, &ground, &mut transforms, std::f32::consts::FRAC_PI_2, |skeleton, transforms| {
+                tip_world(skeleton, hand, |b| transforms.p1().compute_global_transform(skeleton.entity(b)).ok())
+            });
+        }
     }
 }
-
 /// Flexes `knee` about its own hinge (thigh × shin) until `toe` is at or
 /// above the ground under it (`ground`, world height at a world point), as
 /// little as it takes, up to 2 rad; see `write_simulated_pose`. An arm
@@ -1175,6 +1195,72 @@ fn tuck_foot(
         if height(transforms, sign * middle) < 0.0 { low = middle } else { high = middle }
     }
     height(transforms, sign * high);
+}
+
+/// Where the tip of a limb's end is, from the drawn skeleton (`global`, a
+/// bone's world transform): on from `end`'s joint along its parent's bind
+/// line, turned with `end`. A hand's fingertips,
+/// [`super::getup::HAND_PER_FOREARM`] of the forearm's length on; a toe's
+/// tip, [`super::rig::TOE_END_FRACTION`] of the ankle-to-toe length, as
+/// `RigGeometry::toe_end_offset` puts it. The pose-side counterpart for a
+/// hand is [`super::getup::fingertip`].
+fn tip_world(skeleton: &HumanoidSkeleton, end: Bone, mut global: impl FnMut(Bone) -> Option<GlobalTransform>) -> Option<Vec3> {
+    let parent = end.parent()?;
+    let fraction = match end {
+        Bone::LeftToeBase | Bone::RightToeBase => super::rig::TOE_END_FRACTION,
+        _ => super::getup::HAND_PER_FOREARM,
+    };
+    let (joint, above) = (global(end)?, global(parent)?);
+    let bound = bind_world_rotation(skeleton, parent) * skeleton.rest_direction(end);
+    let along = joint.rotation() * (bind_world_rotation(skeleton, end).inverse() * bound).normalize_or_zero();
+    Some(joint.translation() + along * fraction * joint.translation().distance(above.translation()))
+}
+
+/// Turns `bone` about its joint, `point` up, just far enough that `point`
+/// (a joint or tip it carries, measured on the drawn skeleton) is not under
+/// the ground (`ground`, world height at a world point); up to `most`
+/// radians, which it takes if even that is not enough. See
+/// `write_simulated_pose`.
+fn turn_up_clear(
+    skeleton: &HumanoidSkeleton,
+    bone: Bone,
+    ground: &impl Fn(Vec3) -> f32,
+    transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>,
+    most: f32,
+    point: impl Fn(&HumanoidSkeleton, &mut ParamSet<(Query<&mut Transform>, TransformHelper)>) -> Option<Vec3>,
+) {
+    let clearance = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>| {
+        point(skeleton, transforms).map_or(f32::MAX, |at| at.y - ground(at))
+    };
+    if clearance(transforms) >= 0.0 {
+        return;
+    }
+    let (Ok(joint), Some(at)) = (transforms.p1().compute_global_transform(skeleton.entity(bone)), point(skeleton, transforms)) else {
+        return;
+    };
+    // About the level line across the segment: a positive turn lifts it.
+    let axis = (at - joint.translation()).cross(Vec3::Y);
+    if axis.length_squared() < 1.0e-10 {
+        return;
+    }
+    let axis = joint.rotation().inverse() * axis.normalize();
+    let Ok(start) = transforms.p0().get(skeleton.entity(bone)).map(|transform| transform.rotation) else { return };
+    let turned = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, angle: f32| {
+        if let Ok(mut transform) = transforms.p0().get_mut(skeleton.entity(bone)) {
+            transform.rotation = start * Quat::from_axis_angle(axis, angle);
+        }
+        clearance(transforms)
+    };
+    let (mut low, mut high) = (0.0, most);
+    if turned(transforms, high) < 0.0 {
+        turned(transforms, high);
+        return;
+    }
+    for _ in 0..16 {
+        let middle = 0.5 * (low + high);
+        if turned(transforms, middle) < 0.0 { low = middle } else { high = middle }
+    }
+    turned(transforms, high);
 }
 
 /// The joints a rise keeps above the ground: the body's ends, and the
@@ -4221,6 +4307,12 @@ mod tests {
                 let y = app.world().get::<GlobalTransform>(skeleton.entity(bone)).unwrap().translation().y;
                 assert!(y > -0.01, "{} went {:.0} mm under the floor while rising", bone.name(), -y * 1e3);
             }
+            // Fingertips too: set down along a straight arm, they went 18-21
+            // cm into the floor, and turning between flat palms, 38 mm.
+            for hand in [Bone::LeftHand, Bone::RightHand] {
+                let tip = tip_world(&skeleton, hand, |b|app.world().get::<GlobalTransform>(skeleton.entity(b)).copied()).unwrap();
+                assert!(tip.y > -0.01, "{} fingertips went {:.0} mm under the floor while rising", hand.name(), -tip.y * 1e3);
+            }
             previous = now;
             frames += 1;
             assert!(frames < ((stored.rise_seconds() + 0.5) / TIMESTEP) as usize, "the rise never ended");
@@ -4409,14 +4501,16 @@ mod tests {
     #[ignore]
     fn probe_fall_floor_penetration() {
         use avian3d::dynamics::solver::SolverConfig;
+        // `dominant`: feet within that height of the floor get `Dominance(1)`
+        // (the joint then moves only the leg, never the foot); `MAX`: always.
         let settings = [
-            ("default", SolverConfig::default(), 12, 1.0, 0.0),
-            ("frequency x3", SolverConfig { contact_frequency_factor: 4.5, ..Default::default() }, 12, 1.0, 0.0),
-            ("feet skin 20 mm", SolverConfig::default(), 12, 1.0, 0.02),
-            ("feet skin 30 mm", SolverConfig::default(), 12, 1.0, 0.03),
+            ("default", SolverConfig::default(), 12, 1.0, 0.0, None::<f32>),
+            ("dominant near floor 20 mm",SolverConfig::default(), 12, 1.0, 0.0, Some(0.02)),
+            ("dominant near floor 20 mm unless lifted", SolverConfig::default(), 12, 1.0, 0.0, Some(-0.02)),
         ];
-        for (name, config, substeps, foot_mass, skin) in settings {
+        for (name, config, substeps, foot_mass, skin, dominant) in settings {
             let mut line = String::new();
+            let mut ends = String::new();
             for launch in [Vec3::ZERO, Vec3::Z * 1.5, Vec3::NEG_Z * 1.5, Vec3::X * 1.5] {
                 let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|config| {
                     for foot in [Bone::LeftFoot, Bone::RightFoot] {
@@ -4431,7 +4525,29 @@ mod tests {
                 }
                 app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall_moving(FALL_TONE, FALL_DAMPING, launch);
                 let mut deepest = (0.0f32, Bone::Hips, 0usize);
+                let mut by_end = [0.0f32; 3];
+                let feet_at = [Bone::LeftFoot, Bone::RightFoot].map(|b| app.world().get::<Position>(ragdoll.bodies[b].unwrap()).unwrap().0);
                 for frame in 0..(3.0 / TIMESTEP) as usize {
+                    if let Some(within) = dominant {
+                        for end in [Bone::LeftFoot, Bone::RightFoot] {
+                            let body = ragdoll.bodies[end].unwrap();
+                            let low = if matches!(end, Bone::LeftFoot | Bone::RightFoot) {
+                                sole_lowest(&app, body)
+                            } else {
+                                let (p, q) = capsule_of(&app, body).unwrap();
+                                let (position, rotation) = (app.world().get::<Position>(body).unwrap().0, rotation_of(&app, body));
+                                (position + rotation * p).y.min((position + rotation * q).y) - capsule_radius(&app, body).unwrap()
+                            };
+                            // The limb above it lifting it: its body's
+                            // velocity at this end.
+                            let above = ragdoll.bodies[end.parent().unwrap()].unwrap();
+                            let at = app.world().get::<Position>(body).unwrap().0 - app.world().get::<Position>(above).unwrap().0;
+                            let lifting = app.world().get::<LinearVelocity>(above).unwrap().0
+                                + app.world().get::<AngularVelocity>(above).unwrap().0.cross(at);
+                            let near = low < within.abs() && (within > 0.0 || lifting.y < 0.1);
+                            app.world_mut().entity_mut(body).insert(avian3d::prelude::Dominance(near as i8));
+                        }
+                    }
                     app.update();
                     for (bone, body) in ragdoll.bodies.iter() {
                         let Some(body) = *body else { continue };
@@ -4447,8 +4563,31 @@ mod tests {
                         if -lowest > deepest.0 {
                             deepest = (-lowest, bone, frame);
                         }
+                        let group = match bone {
+                            Bone::LeftFoot | Bone::RightFoot => 0,
+                            Bone::LeftHand | Bone::RightHand => 1,
+                            _ => 2,
+                        };
+                        by_end[group] = by_end[group].max(-lowest);
                     }
                 }
+                let travel = [Bone::LeftFoot, Bone::RightFoot]
+                    .map(|b| app.world().get::<Position>(ragdoll.bodies[b].unwrap()).unwrap().0)
+                    .iter()
+                    .zip(feet_at)
+                    .map(|(now, then)| format!("{:.0}", now.distance(then) * 1e3))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
+                ends += &format!(
+                    " feet {:.0} hands {:.0} rest {:.0}, feet moved {travel} mm, hips at ({:.2}, {:.2}, {:.2}) |",
+                    by_end[0] * 1e3,
+                    by_end[1] * 1e3,
+                    by_end[2] * 1e3,
+                    hips.x,
+                    hips.y,
+                    hips.z
+                );
                 // At rest, how high the lower foot's sole sits: a skin holds
                 // it off the floor.
                 let resting = [Bone::LeftFoot, Bone::RightFoot]
@@ -4464,7 +4603,38 @@ mod tests {
                 );
             }
             println!("FLOOR {name}:{line}");
+            println!("ENDS {name}:{ends}");
         }
+    }
+
+    #[test]
+    fn a_falling_body_is_drawn_with_its_toes_and_fingers_out_of_the_floor() {
+        // The bodies dip at impact (avian's soft contacts against light
+        // feet and hands: `probe_fall_floor_penetration`); the drawn toes
+        // and fingertips do not. Checked on the drawn skeleton, the bodies
+        // too, so the test is known to exercise the correction.
+        let mut bodies_dipped = 0.0f32;
+        for launch in [Vec3::ZERO, Vec3::Z * 1.5, Vec3::NEG_Z * 1.5, Vec3::X * 1.5] {
+            let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+            app.world_mut().entity_mut(character).insert(Transform::default());
+            let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall_moving(FALL_TONE, FALL_DAMPING, launch);
+            for _ in 0..(3.0 / TIMESTEP) as usize {
+                app.update();
+                let global = |b: Bone| app.world().get::<GlobalTransform>(skeleton.entity(b)).copied();
+                for end in [Bone::LeftToeBase, Bone::RightToeBase, Bone::LeftHand, Bone::RightHand] {
+                    let tip = tip_world(&skeleton, end, global).unwrap();
+                    let joint = global(end).unwrap().translation();
+                    for (what, at) in [("tip", tip), ("joint", joint)] {
+                        assert!(at.y > -0.005, "{launch}: {}'s {what} drawn {:.0} mm under the floor", end.name(), -at.y * 1e3);
+                    }
+                }
+                for foot in [Bone::LeftFoot, Bone::RightFoot] {
+                    bodies_dipped = bodies_dipped.max(-sole_lowest(&app, ragdoll.bodies[foot].unwrap()));
+                }
+            }
+        }
+        assert!(bodies_dipped > 0.02, "the feet bodies dipped only {:.0} mm: the correction went untested", bodies_dipped * 1e3);
     }
 
     #[test]

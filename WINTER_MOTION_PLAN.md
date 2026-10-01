@@ -405,6 +405,13 @@ pinned ragdoll following the animation, sole feet (4a).
   off the near leg the 8° stance bound forbids); toes dipping 3-6 cm at
   fall impact (soft contacts on light feet). Found: in a get-up the
   fingers point 18-21 cm into the floor.
+- [x] **5.7 The 5.6 leftovers, worked 2026-10-02.** All four closed:
+  sideways pushes to 0.7 m/s take a quick (0.2 s) loaded side step, and
+  1.5 m/s sideways is now caught; the backward jolt is 3.7 mm (every
+  catch ≤ 4.4) with the weight moving over through a spring and the sink
+  seeing the ceiling coming; drawn toes and fingers stay out of the floor
+  (the bodies still dip, a solver limit, measured); weight-bearing palms
+  lie flat in the get-up. See CHARACTER_PROGRESS.md.
 
 ## Throughout
 

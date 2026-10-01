@@ -255,6 +255,71 @@ fn aim(pose: &mut LocalPose, rest: &super::rig::BoneSet<Vec3>, bone: Bone, child
     pose.set_rotation(bone, (above.inverse() * world).normalize());
 }
 
+/// How long a hand is, wrist to fingertip, per length of forearm: Winter's
+/// hand 0.108 H over his forearm 0.146 H (§4.0.1).
+pub const HAND_PER_FOREARM: f32 = 0.108 / 0.146;
+
+/// Where `hand`'s fingertips are under `pose`: the hand carries on from the
+/// wrist along the forearm's rest line, turned by the hand's own world turn.
+/// The rigs have no finger joints this module knows.
+pub fn fingertip(pose: &LocalPose, rig: &RigGeometry, hand: Bone) -> Vec3 {
+    let forearm = hand.parent().expect("a hand hangs from its forearm");
+    let rest = forward_kinematics_on(&LocalPose::REST, rig);
+    let at = forward_kinematics_on(pose, rig);
+    let line = rest[hand] - rest[forearm];
+    at[hand] + carried(pose, hand) * line * HAND_PER_FOREARM
+}
+
+/// Which way `hand`'s palm faces under `pose` (world, unit). The rest pose
+/// is the bind's T-pose, palms down.
+pub fn palm(pose: &LocalPose, rig: &RigGeometry, hand: Bone) -> Vec3 {
+    carried(pose, hand) * rest_palm(rig, hand)
+}
+
+/// The palm's facing in the rest pose: down, squared to the forearm's line.
+fn rest_palm(rig: &RigGeometry, hand: Bone) -> Vec3 {
+    let forearm = hand.parent().expect("a hand hangs from its forearm");
+    let rest = forward_kinematics_on(&LocalPose::REST, rig);
+    let line = (rest[hand] - rest[forearm]).normalize();
+    (Vec3::NEG_Y - line * line.dot(Vec3::NEG_Y)).normalize()
+}
+
+/// Lays `hand`'s palm flat, facing down, its fingers along `fingers`
+/// (horizontal), as a hand bearing weight on the floor is. The arm above
+/// must be straight.
+///
+/// A hand set on the floor along its straight arm points its fingers
+/// straight down through it: 18-21 cm, live, on hands and knees. Turning
+/// the hand alone would twist the wrist by the forearm's whole turn, so the
+/// turn about the arm's own line (pronation or supination) is shared
+/// between the shoulder and the forearm, and the hand only bends back
+/// (extends) from there. The wrist joint does not move.
+fn palm_flat(pose: &mut LocalPose, rig: &RigGeometry, hand: Bone, fingers: Vec3) {
+    let forearm = hand.parent().expect("a hand hangs from its forearm");
+    let arm = forearm.parent().expect("a forearm hangs from its arm");
+    let fingers = Vec3::new(fingers.x, 0.0, fingers.z).normalize();    let at =forward_kinematics_on(pose, rig);
+    let line = (at[hand] - at[forearm]).normalize();
+    // The bend back that lays the fingers along `fingers`, and the way the
+    // palm must face before it so that it faces down after.
+    let extend = Quat::from_rotation_arc(line, fingers);
+    let wanted = extend.inverse() * Vec3::NEG_Y;
+    // The palm as the hand would carry on straight from the forearm.
+    let facing = carried(pose, forearm) * rest_palm(rig, hand);
+    let facing = (facing - line * line.dot(facing)).normalize();
+    let turn = line.dot(facing.cross(wanted)).atan2(facing.dot(wanted));
+    let set_world = |pose: &mut LocalPose, bone: Bone, world: Quat| {
+        let above = bone.parent().map_or(Quat::IDENTITY, |parent| carried(pose, parent));
+        pose.set_rotation(bone, (above.inverse() * world).normalize());
+    };
+    // Half the turn at the shoulder, about the arm's own line; the forearm
+    // rides it and adds the other half.
+    let twist = Quat::from_axis_angle(line, 0.5 * turn);
+    let forearm_world = twist * twist * carried(pose, forearm);
+    set_world(pose, arm, twist * carried(pose, arm));
+    set_world(pose, forearm, forearm_world);
+    set_world(pose, hand, extend * forearm_world);
+}
+
 /// `a` turned toward `b` by `degrees` (both unit and at right angles).
 fn toward(a: Vec3, b: Vec3, degrees: f32) -> Vec3 {
     let r = degrees.to_radians();
@@ -320,6 +385,10 @@ pub fn sit(rig: &RigGeometry) -> LocalPose {
     let thigh = solve((-170.0, -95.0), |t| gap(&build(t, 30.0), Contact::Foot(Bone::LeftFoot)));
     let arms_back = solve((0.0, 80.0), |a| gap(&build(thigh, a), Contact::Joint(Bone::LeftHand, HAND_CLEARANCE)));
     let mut pose = build(thigh, arms_back);
+    // Propped behind, the fingers point out and back.
+    let forward = rig.forward();
+    palm_flat(&mut pose, rig, Bone::LeftHand, toward(rig.left(), -forward, 45.0));
+    palm_flat(&mut pose, rig, Bone::RightHand, toward(-rig.left(), -forward, 45.0));
     set_down(&mut pose, rig, &contact_list(Key::Sit));
     pose
 }
@@ -379,6 +448,9 @@ pub fn quadruped(rig: &RigGeometry) -> LocalPose {
     };
     let pitch = solve((50.0, 120.0), |p| level(&build(p)));
     let mut pose = build(pitch);
+    for hand in [Bone::LeftHand, Bone::RightHand] {
+        palm_flat(&mut pose, rig, hand, rig.forward());
+    }
     set_down(&mut pose, rig, &contact_list(Key::Quadruped));
     pose
 }
@@ -470,6 +542,8 @@ pub fn side_sit(rig: &RigGeometry, left_down: bool) -> LocalPose {
         lean = solve((0.0, 50.0), |l| gap(&build(l, under_pitch, over_pitch), Contact::Joint(arm_under[2], HAND_CLEARANCE)));
     }
     let mut pose = build(lean, under_pitch, over_pitch);
+    // The propping hand's fingers point out and forward.
+    palm_flat(&mut pose, rig, arm_under[2], toward(under, forward, 45.0));
     set_down(&mut pose, rig, &contact_list(Key::SideSit { left_down }));
     pose
 }
@@ -508,6 +582,37 @@ mod tests {
                 let at = forward_kinematics_on(&pose, &rig);
                 for &bone in Bone::ALL.iter() {
                     assert!(at[bone].y > -0.01, "{name} {key:?}: {} is {:.0} mm under the floor", bone.name(), -at[bone].y * 1e3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_hand_a_key_stands_on_lies_flat_palm_down() {
+        // Set down along its straight arm, a hand pointed its fingers 18-21
+        // cm into the floor, live. A weight-bearing hand lies flat on its
+        // palm, the wrist bent back no further than it goes (about 90°
+        // loaded), and no joint of the arm twists by more than half a turn
+        // about its line.
+        for (name, rig) in rigs() {
+            for key in Key::ALL {
+                let pose = key.pose(&rig);
+                for contact in contacts_of(key) {
+                    let Contact::Joint(hand @ (Bone::LeftHand | Bone::RightHand), _) = contact else { continue };
+                    let at = forward_kinematics_on(&pose, &rig);
+                    let tip = fingertip(&pose, &rig, hand);
+                    assert!(tip.y > 0.0, "{name} {key:?}: {} fingertips {:.0} mm under the floor", hand.name(), -tip.y * 1e3);
+                    assert!((tip.y - at[hand].y).abs() < 0.01, "{name} {key:?}: {} not level, tip {:.0} mm off the wrist", hand.name(), (tip.y - at[hand].y) * 1e3);
+                    let facing = palm(&pose, &rig, hand);
+                    assert!(facing.y < -0.99, "{name} {key:?}: {} palm faces {facing}", hand.name());
+                    let forearm = hand.parent().unwrap();
+                    let line = (at[hand] - at[forearm]).normalize();
+                    let bent = line.angle_between(tip - at[hand]).to_degrees();
+                    assert!(bent < 95.0, "{name} {key:?}: {} wrist bent back {bent:.0}°", hand.name());
+                    // Bent back, not forward: the fingers go the way the
+                    // back of the hand faced.
+                    let straight = carried(&pose, forearm) * rest_palm(&rig, hand);
+                    assert!(straight.dot(tip - at[hand]) < 0.0, "{name} {key:?}: {} wrist bent forward", hand.name());
                 }
             }
         }

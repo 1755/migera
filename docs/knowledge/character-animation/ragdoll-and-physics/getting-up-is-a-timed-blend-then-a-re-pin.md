@@ -1,6 +1,6 @@
 ---
 title: Getting up goes through key poses chosen by how the body lies, then the bodies are set back on their bones
-description: "At rest, Ragdoll::get_up reads face up, down or on a side from the chest body, turns the character, and blends the drawn skeleton, per bone in world space, through chained, solved key poses (sit→squat, hands-and-knees→half-kneel, or side-sit first, getup.rs) to standing, tucking dipping feet; then re-pins. Read before changing get-up."
+description: "At rest, Ragdoll::get_up reads face up, down or on a side from the chest body, turns the character, and blends the drawn skeleton per bone in world space through solved key poses (getup.rs), palms flat, tucking dipping feet and hands, to standing; then re-pins. Read before changing get-up."
 type: decision
 status: current
 tags:
@@ -8,8 +8,8 @@ tags:
   - physics
   - character-animation
   - correctness
-updated: 2026-10-01
-verified: 2026-10-01
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/getup.rs
   - src/character/anim/ragdoll.rs
@@ -77,6 +77,19 @@ end, when every body is set onto its bone and the root is pinned again.
 
   Feet are grounded on the rig's own `Sole`. Knees, wrists and the seat
   use clearances (5, 3 and 10 cm), which are choices.
+- **A hand that bears weight lies flat, palm down** (`getup::palm_flat`).
+  Set down along its straight arm, the hand carried on from the forearm
+  and pointed its fingers 18-21 cm into the floor (both rigs, live).
+  Each contact hand is turned to lie along the floor, fingers forward on
+  hands and knees, out and back propped behind the sit, out and forward
+  under the side-sit. A real hand gets there by turning the forearm
+  (pronation or supination) and bending the wrist back. Turning the hand
+  alone would twist the wrist by the whole turn, so the turn about the
+  arm's line is split between the shoulder and the forearm, and the hand
+  only bends back, by at most 90° (it bends 75-90° on the floor). The
+  rest pose's palm faces down (the bind's T-pose), and the fingertip is
+  Winter's hand length on from the wrist, 0.108/0.146 of the forearm
+  (`HAND_PER_FOREARM`). The rigs have no finger joints here.
 - **Sitting is reclined and propped.** With the thighs level the knees
   are only seat-high and no shin reaches the floor from them; with the
   trunk upright the hands hung 27 cm short of the floor.
@@ -117,7 +130,11 @@ end, when every body is set onto its bone and the root is pinned again.
   standing, and the lift jumped 15 mm when the tuck let go. Hands tuck
   the same way, the elbow only bending further: lying with arms flat at
   its sides, a body sitting up swung a hand through the floor and was
-  hoisted 82 mm.
+  hoisted 82 mm. Last, each wrist bends its fingertips up to the ground
+  (`turn_up_clear`): between two flat palms a turning hand dipped them
+  38 mm in. Falling, the same turn keeps drawn toes and fingers out of
+  the floor (see
+  [a falling body is hinged and fleshed](./a-falling-body-is-hinged-and-fleshed.md)).
 - **The re-pin also undoes the fall's joints and contacts:** the knees'
   and elbows' hinges go, their ball joints return, and the body's parts
   pass through each other again (see

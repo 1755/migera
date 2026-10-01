@@ -42,6 +42,55 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Open items closed: loaded side step, backward jolt, drawn toes, palms
+
+- **Loaded side step.** A sideways push now takes the young adult's
+  loaded side step (the near leg steps out) while it needs at most
+  `SIDE_STEP_MAX` (0.4 m), swinging in `SIDE_STEP_SECONDS` (0.2 s); past
+  that, the far leg crosses over as before. Its length grows as
+  `e^{T/√K}`, so time is what made it lose: at 0.3 s, 0.6 m/s needed a
+  0.49 m lunge (146 mm sunk); at 0.2 s, 0.30 m and 44 mm (crossover
+  0.35 m, 45). Planned at once it passes `holds`: the earlier unloading
+  phase failed because it delayed the lift. Later steps of a hard catch
+  are quick side steps too, so 1.5 m/s sideways is now caught (crossover
+  and four side steps, 158 mm); 1.6 falls. Live, both rigs: a 0.6 m/s
+  side push steps the near foot first, pelvis 32-43 mm down; Front view
+  checked.
+- **Backward jolt 7.6 → 3.7 mm; every catch ≤ 4.4 mm** (was ≤ 5.1 and
+  7.6). Two causes, traced frame by frame (`probe_jolt_trace`):
+  - The weight switched feet in one frame at a landing or lift, flipping
+    the hip roll and its pivot socket together. It now moves over through
+    a 15 rad/s critically damped spring (`WEIGHT_FREQUENCY`); landings sit
+    ~6 mm deeper.
+  - Backward, the front leg's reach fell 5-11 mm a frame as the body flew
+    back from it and met the sink's spring still rising. The sink now
+    aims no higher than the ceiling 0.1 s ahead (`CEILING_LEAD`), solved
+    again with the pelvis moved on at its velocity. Only backward pushes
+    changed. A `sin²` lift landing at zero speed changed nothing;
+    finite-difference leads were non-monotonic (10.4 mm at 0.05 s); a
+    closing-speed brake reached 6.1.
+  Live, both rigs: 1.3 m/s back caught, 104-119 mm down, the pelvis's
+  vertical acceleration ≤ 15 m/s².
+- **Toes and fingers drawn out of the floor.** Falling or rising, the
+  ankle, toes and wrists turn their tips up to the ground
+  (`turn_up_clear`); the bodies are left alone. Live, both rigs, the
+  lowest drawn toe joint sat at 0.0 mm through a fall. Why the bodies dip
+  is now understood: avian solves joints after contacts in every substep,
+  splitting by inverse mass, so a 1 kg foot takes ~98% of the
+  correction. `Dominance(1)` on grounded feet removed the dip but nailed
+  them: feet moved 5-119 mm in a fall instead of 154-712, bodies rested
+  propped up; switched by the leg's lift, bodies were flung. Measured
+  with the new hand bodies: fingers dip 12-68 mm too.
+- **Palms flat in the get-up.** Hands bearing weight lie flat, palm down
+  (`getup::palm_flat`): fingers forward on hands and knees, out and back
+  propped behind, out and forward under a side-sit. The turn about the
+  arm is split between shoulder and forearm; the wrist only bends back
+  (≤ 90°). Fingertips were 18-21 cm in; now above the floor in every key
+  and through the rise. Front and Left, both rigs, mesh on and a new
+  `--camera-look-height` for floor-level views.
+- `cargo test --release --lib`: 1066 passed, 18 ignored. Clippy: 0
+  warnings.
+
 ### Small items, second pass (plan 5.6): four fixed, three measured
 
 - **Fixed: arm joints anchored where the arm is drawn.** Where a bone's

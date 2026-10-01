@@ -1,6 +1,6 @@
 ---
 title: A stumble is a capture-point step, then a join the body's momentum carries
-description: "balance::Balance steps to the predicted capture point (≤ 0.7 m), never re-using the leg just stepped, crossing over sideways; the weight moves onto the step as it lands and the trailing foot joins once that foot holds the body; a sprung pelvis cushions touchdown. Read before changing stepping in balance.rs."
+description: "balance::Balance steps to the predicted capture point (≤ 0.7 m), never re-using the leg just stepped; sideways a quick loaded side step (≤ 0.4 m), else a crossover; the weight moves onto the step through a spring and the trailing foot joins once that foot holds the body. Read before changing stepping in balance.rs."
 type: decision
 status: current
 tags:
@@ -9,8 +9,8 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-01
-verified: 2026-10-01
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/balance.rs
   - src/character/anim/stance.rs
@@ -23,6 +23,8 @@ sources:
   - "Postural reactions to external mediolateral perturbations: a review, Applied Sciences 13(3):1696 (2023), https://www.mdpi.com/2076-3417/13/3/1696 — loaded side step, unloaded crossover, unloaded medial step; young adults favour the loaded side step"
   - "Untangling biomechanical differences in perturbation-induced stepping strategies for lateral balance stability in older individuals, https://pmc.ncbi.nlm.nih.gov/articles/PMC7778461/"
   - "probe balance::tests::probe_catch_table (ignored)"
+  - "probes balance::tests::probe_max_jolt, probe_side_steps, probe_jolt_trace (ignored); test a_sideways_shove_side_steps_then_crosses_over_when_harder"
+  - "Mille et al. (2005), Clin Biomech 20:607 — young adults recover from lateral pulls mostly with one loaded side step"
 aliases:
   - crossover step
   - CROSSOVER_AHEAD
@@ -41,6 +43,11 @@ aliases:
   - touchdown V
   - MAX_TICK
   - early join
+  - loaded side step
+  - SIDE_STEP_SECONDS
+  - SIDE_STEP_MAX
+  - WEIGHT_FREQUENCY
+  - CEILING_LEAD
 ---
 
 # A stumble is a capture-point step, then a join the body's momentum carries
@@ -84,20 +91,30 @@ and physics takes over only for a fall.
 - **Which leg.** Straight ahead or back, the unloaded one. **Never the
   foot that just stepped**: stepping it again lifts it before it takes
   the weight, and a sideways push walked the stepping foot out 0.4 m at a
-  time with the COM running after it. **Sideways, whichever leg needs the
-  shorter step**, and in this model that is usually the far leg
-  **crossing over** in front. The near leg's side step stands on the far
-  foot, whose pressure drives the body on. The crossover stands on the near
-  foot, whose pressure brakes it. A 0.8 m/s side-step lunge sank the
-  pelvis 266 mm; the crossover sinks it 91 mm. People use both: the
-  literature names the loaded side step, the unloaded crossover and the
-  unloaded medial step (Maki & McIlroy's change-in-support strategy).
-  **Young adults mostly take the loaded side step**, which starts faster;
-  older adults cross over more. So the choice here is the model's
-  dynamics, not the typical young adult's. A crossover lands `CROSSOVER_AHEAD` (0.12 m)
-  forward and bows out that far mid-swing, so the legs pass rather than
-  through each other. The join uncrosses them, because the joining foot
-  goes to the stood width beside the stepped one.
+  time with the COM running after it.
+- **Sideways: a quick loaded side step, then crossovers.** The literature
+  names the loaded side step, the unloaded crossover and the unloaded
+  medial step (Maki & McIlroy's change-in-support strategy). Young adults
+  mostly take the loaded side step; older adults cross over more.
+  - **The near leg side-steps** while it needs at most `SIDE_STEP_MAX`
+    (0.4 m), swinging in `SIDE_STEP_SECONDS` (0.2 s, against 0.3 for
+    other steps). It stands on the far foot, whose pressure drives the
+    body on, so its length grows as `e^{T/√K}` with its time. At 0.3 s a
+    0.6 m/s push needed a 0.49 m lunge that sank the pelvis 146 mm. At
+    0.2 s it needs 0.30 m and sinks 44 mm, the crossover's 0.35 m and 45.
+    At 0.15 s the steps were shorter still, but harder pushes jolted up to
+    9 mm.
+  - **Past that, the far leg crosses over** in front, standing on the
+    near foot, whose pressure brakes the body. A side step's stance ends
+    wide and holds the pelvis low: 317 mm down at 1.2 m/s against the
+    crossover's 140. Side steps catch pushes to 0.7 m/s.
+  - A crossover lands `CROSSOVER_AHEAD` (0.12 m) forward and bows out
+    that far mid-swing, so the legs pass rather than through each other.
+    The join uncrosses them, because the joining foot goes to the stood
+    width beside the stepped one.
+  - Later steps of a hard sideways catch are quick side steps too. That
+    caught 1.5 m/s sideways in a crossover and four side steps, sinking
+    158 mm.
 - **The weight moves onto a recovery step as it lands** (`transfer`), and
   **the join starts as soon as that foot alone holds the body** and the
   capture point is not on the trailing foot's side of it. Both conditions
@@ -148,11 +165,33 @@ and physics takes over only for a fall.
      integrated) follows the aim, never deeper than the loaded legs'
      reach plus slack.
 
-  Jolt (second difference of the pelvis) ≤ 5.0 mm for every unclamped
-  step, headless on `puppet_base` (`probe_max_jolt`). With the spring
-  removed (instant follow), 6.0 mm on 0.6 m steps: most of the gain is
-  the lead and slack. A backward step clamped at `MAX_STEP` (1.3 m/s,
-  0.88 m asked) lands ball-first, overreaching, and still jolts 9.8 mm.
+  With the spring removed (instant follow), 6.0 mm on 0.6 m steps: most
+  of that gain is the lead and slack.
+- **The weight moves over through a spring** (`WEIGHT_FREQUENCY`, 15
+  rad/s, critically damped), not in a frame. Which feet bear weight
+  changes at a landing or a lift, and switched at once it flipped the
+  pelvis's roll and the socket it pivots on together: a 3.5 mm sideways
+  reversal at a backward landing, up to 5.6 mm jolts forward. Every leg's
+  load comes from the sprung shift, a lifted one's too. Forced to the
+  floor load the moment it lifted, the pivot still jumped (7.0 mm at a
+  0.6 m/s side push's join). The landings sit ~6 mm deeper.
+- **The sink sees the ceiling coming** (`CEILING_LEAD`, 0.1 s). It aims
+  no higher than the legs' ceiling will be with the pelvis moved on at
+  its velocity, solved again on a copy of the pose. A backward step
+  clamped at `MAX_STEP` (1.3 m/s, 0.88 m asked) jolted 7.6 mm: as the
+  body flew back from the front foot, that leg's reach fell 5-11 mm a
+  frame and met the spring still rising toward the stepped leg's need at
+  the landing. The swing's lift was not it: landing at zero vertical
+  speed (`sin²`) changed nothing. Leads estimated from the ceiling's
+  last change were not monotonic (0.05 s: 10.4 mm) because the ceiling
+  jumps when another leg sets it. A brake against the closing speed
+  reached 6.1. Swept: no lead 8.1 mm, 0.05 7.3, 0.08 4.6, 0.1 3.7
+  (sinking 120 mm against 100), 0.15 3.7 (165). Only backward pushes
+  moved.
+
+  Jolt (second difference of the pelvis) ≤ 4.4 mm for every catch,
+  headless on `puppet_base` (`probe_max_jolt`, `probe_side_steps`),
+  clamped steps included.
 - **Whole ticks of 1/60 s** (`MAX_TICK`, the forecast's step), the rest
   of a frame carried to the next. A swing lands, and the next step is
   planned, only between ticks, so every frame pattern runs the same ticks.
@@ -191,28 +230,35 @@ and physics takes over only for a fall.
 Every catch is the step's, not the validity bound's: nothing lost to the
 bound (`Balance::lost`), settled 3.2–3.5 s after a near-limit push.
 Caught on `puppet_base` as drawn (`relaxed_stand`,
-`puppet_base_as_rendered`): forward to 1.5 m/s, sideways to 1.4 (1.2 in
-one crossover and a join, harder in up to three steps), back to 1.4 (two
-steps) (`a_push_past_a_catchable_step_falls`). Forward 1.6, sideways 1.5
-and back 1.5 fall; see
+`puppet_base_as_rendered`): forward to 1.5 m/s, sideways to 1.5 (to 0.7
+in a side step and a join, 1.2 in one crossover and a join, harder in a
+crossover and up to five quick side steps), back to 1.4 (two steps)
+(`a_push_past_a_catchable_step_falls`). Forward 1.6, sideways 1.6 and
+back 1.5 fall (sideways 1.5 fell until 2026-10-02); see
 [a fall hands the body to physics](../ragdoll-and-physics/a-fall-hands-the-body-to-physics.md).
 Until 2026-10-01 these limits were measured with the arms overhead (see
 [the puppet_base fixture note](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md)),
 and read the other way round from the live character.
 
 Near-full-reach steps, headless (`a_stumble_steps_cleanly_on_the_real_rig`),
-with the cushioned touchdown (~10 mm deeper than the bare need):
+with the cushioned touchdown (~10 mm deeper than the bare need) and the
+sprung weight shift (~6 mm more), 2026-10-02:
 
-| push | step asked | pelvis sank | note |
-|---|---|---|---|
-| 1.2 m/s forward | 0.67 m | 86 mm | rear heel rises 82 mm onto the toes |
-| 1.0 m/s left | 0.66 m | 135 mm | crossover; the side-step lunge was 266 mm at 0.8 m/s |
-| 1.0 m/s back | 0.64 m | 55 mm | |
-| 1.2 m/s left or right | 0.82 m (0.7 taken) | 123–130 mm | `a_hard_side_catch_joins_early_instead_of_lunging` |
+| push | step asked | pelvis sank | jolt | note |
+|---|---|---|---|---|
+| 1.2 m/s forward | 0.67 m | 106 mm | 3.1 mm | rear heel rises onto the toes |
+| 1.0 m/s left | 0.66 m | 150 mm | 2.9 mm | crossover |
+| 0.6 m/s left | 0.30 m | 44 mm | 2.1 mm | quick side step |
+| 1.0 m/s back | 0.64 m | 72 mm | 3.2 mm | |
+| 1.3 m/s back | 0.88 m (0.7 taken) | 120 mm | 3.7 mm | was 7.6 mm |
+| 1.2 m/s left or right | 0.82 m (0.7 taken) | 140 mm | 3.2 mm | `a_hard_side_catch_joins_early_instead_of_lunging` |
 
 Live, 2026-10-01, both rigs: 1.2 m/s sideways each way, and 1.2 forward
 then 1.0 back, all caught. Planted balls held within 13 mm; the pelvis
-sank 129–138 mm at worst.
+sank 129–138 mm at worst. Live, 2026-10-02, both rigs (BRP): a 0.6 m/s
+side push side-steps the near foot first and the far one joins, the
+pelvis 32-43 mm down; 1.3 m/s back is caught, 104-119 mm down, the
+pelvis's vertical acceleration ≤ 15 m/s² (a 3.7 mm jolt at 60 Hz is 13).
 
 Until 2026-09-30 the sideways catch was the clamp's: the 8° bound, from
 the stance foot alone, held the COM with its velocity zeroed, and every
@@ -222,33 +268,23 @@ side step was posed over a body the clamp had stopped.
 
 - Pushes while walking: the balance only runs on the standing side of the
   blend.
-- Young-adult sideways stepping. Tried 2026-10-01, both ways the earlier
-  analysis suggested, and both were worse. A side step with the loaded leg
-  whenever it needs at most 0.5-0.7 m sank the pelvis 138 mm at 0.6 m/s
-  (crossover 40) and 290 at 0.8 (82). Side steps capped at 0.4 m with the
-  far leg joining between them lost catches from 0.8 m/s (crossovers catch
-  1.4) and jolted 24-34 mm. People first unload the near leg (a quick
-  weight shift onto the far foot) before stepping with it; without that
-  phase, the side step stands on the far foot, whose pressure drives the
-  body on. An unloading phase was then tried (2026-10-01): catches fell
-  from 0.8 m/s, and above 1.0 m/s the near leg never lifted. The stance
-  forbids lifting a foot while the other foot is past the 8° validity
-  bound (see
-  [a foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md)),
-  and a hard side push puts the body there at once. Revisit only with a
-  stance model valid past that bound.
-- The backward step clamped at `MAX_STEP` (1.3 m/s) still jolts 7.6 mm
-  (9.8 before the stance fixes). Located 2026-10-01: it lands with the
-  stepping leg at full stretch, and the moment its 11 mm swing lift
-  reaches zero the leg's reach ceiling pulls the pelvis down 7 mm in a
-  frame. Closing the swing slack earlier and rate-limiting the hips' roll
-  both changed nothing for it (the roll limit worsened sideways steps to
-  8 mm). A fix changes the step itself (a later landing, a shorter
-  backward reach) and so the catch limits. Tried 2026-10-01:
-  - Capping backward travel at 0.6 m: 1.3 m/s backward pushes fell, and
-    the jolt grew to 11.2 mm.
-  - Landing slack: no change.
-  - A travel lead: backward 7.3 mm, but other directions rose to 8.5.
+- A side step's swing time is a choice (0.2 s). If reaction-time data
+  for reactive lateral steps is found, check it against that; the
+  numbers that would move are in the side-step bullet above.
+
+What failed before the quick side step (2026-10-01), so it is not tried
+again: side steps with the 0.3 s swing whenever they needed at most
+0.5-0.7 m (138 mm sunk at 0.6 m/s, 290 at 0.8); side steps capped at
+0.4 m with joins between (catches lost from 0.8 m/s, 24-34 mm jolts); a
+separate 0.1 s unloading phase before the lift (catches lost from 0.8
+m/s, and above 1.0 the near leg never lifted). The last one delayed the
+lift until the COM was past what the far foot holds (see
+[a foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md));
+planned at once, the side step passes that gate. For the backward jolt,
+before the sprung weight and the ceiling lead: a 0.6 m backward cap
+(1.3 m/s fell, 11.2 mm), landing slack (no change), a lead on the
+pelvis's travel for every leg (back 7.3, others up to 8.5), a rate
+limit on the hips' roll alone (sideways 8 mm).
 
 ## Related
 

@@ -8,8 +8,8 @@ tags:
   - locomotion
   - correctness
   - testing
-updated: 2026-10-01
-verified: 2026-10-01
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/balance.rs
 sources:
@@ -76,6 +76,13 @@ depended on frame timing.
   transferred with no join to take, and the body never settles.
 - To test a lift rule, check the pelvis jolt and `lost` both, under
   uneven frames too. A jolt catches the snap; `lost` alone does not.
+- Lift as soon as the step is planned, not after a preparation phase. A
+  0.1 s unloading phase before a loaded side step held the near foot down
+  until the COM was past what the far foot holds, and above 1.0 m/s it
+  never lifted. Planned at once (and quick, 0.2 s), the side step passes
+  this gate (2026-10-02). Relaxing the gate for every step instead (the
+  far foot plus the step's landing) planned a second backward step too
+  early, and 1.4 m/s back fell.
 
 ## Evidence
 
