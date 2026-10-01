@@ -73,6 +73,7 @@ pub mod math;
 pub mod phase;
 pub mod plugin;
 pub mod poses;
+pub mod proportions;
 pub mod ragdoll;
 pub mod ragdoll_plugin;
 pub mod reference;

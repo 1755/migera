@@ -556,8 +556,8 @@ mod tests {
                 let was = [0, 1].map(|leg| leg_phase(cycle + 0.5 * leg as f32, STRIDE.duty_factor).is_stance());
                 balance.step(&STRIDE, cycle, next, K, dt);
                 cycle = next;
-                for leg in 0..2 {
-                    if !was[leg] && leg_phase(cycle + 0.5 * leg as f32, STRIDE.duty_factor).is_stance() {
+                for (leg, was_down) in was.into_iter().enumerate() {
+                    if !was_down && leg_phase(cycle + 0.5 * leg as f32, STRIDE.duty_factor).is_stance() {
                         landings += 1;
                         let nominal = nominal_step(&STRIDE, leg);
                         let step = nominal + balance.feet[leg] - balance.feet[1 - leg];

@@ -193,6 +193,7 @@ fn read_buffer_sync<T: bytemuck::Pod>(render_device: &RenderDevice, render_queue
 /// step, isolated (no contacts, no solve — just gravity + rotation
 /// prediction), so this test's "expected" values come from the real
 /// production formula, not a re-derived approximation of it.
+#[allow(clippy::too_many_arguments)]
 fn cpu_predict(position: Vec3, rotation: Quat, linear_velocity: Vec3, angular_velocity: Vec3, inverse_mass: f32, inverse_inertia_local: Vec3, gravity_center: Vec3, gravity_magnitude: f32, substep_dt: f32) -> (Vec3, Quat, Vec3) {
     let mut position = position;
     let mut linear_velocity = linear_velocity;
@@ -235,7 +236,7 @@ fn gpu_predict_matches_cpu_gravity_and_rotation_prediction() {
         inverse_mass: f32,
         inverse_inertia_local: Vec3,
     }
-    let bodies = vec![
+    let bodies = [
         Body { position: Vec3::new(0.0, -10_000.0, 0.0), rotation: Quat::IDENTITY, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, inverse_mass: 0.0, inverse_inertia_local: Vec3::ZERO },
         Body { position: Vec3::new(3.0, 100.0, -2.0), rotation: Quat::IDENTITY, linear_velocity: Vec3::new(0.5, -1.0, 0.0), angular_velocity: Vec3::ZERO, inverse_mass: 1.0, inverse_inertia_local: Vec3::ZERO },
         Body {

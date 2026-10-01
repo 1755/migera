@@ -17,7 +17,8 @@ use bevy::prelude::*;
 use bevy::render::Extract;
 use bevy::shader::Shader;
 
-use crate::sdf::components::{AnimGroup, Blend, BlendMode, MaterialLegacy, ProceduralPattern, Shape};
+use crate::sdf::assembly::ShapeQueryData;
+use crate::sdf::components::{AnimGroup, ProceduralPattern};
 use crate::sdf::world::{TileClusterRoot, assemble_infinite_scene};
 
 use super::flatten::{FlattenedScene, PrimitiveRecordCpu, flatten_scene};
@@ -194,14 +195,8 @@ pub struct RenderRaymarchLights(pub Vec<LightCpu>);
 /// Bitmask of debug flags fed into the shader's `scene.debug_flags` uniform every
 /// frame. Main-world resource, toggled by keyboard in the example; extracted into the
 /// render world each frame (trivial copy of one `u32`).
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone, Copy, Default)]
 pub struct RaymarchDebugFlags(pub u32);
-
-impl Default for RaymarchDebugFlags {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 /// `ExtractSchedule`, every frame: copies the current debug flags into the render
 /// world.
@@ -222,17 +217,11 @@ pub fn extract_raymarch_debug_flags(
 /// Cheap to check every frame (`cached.flattened.is_some()`), negligible cost to skip
 /// — the actual assemble+flatten work only ever runs the one time `TileClusterRoot`
 /// first exists with its full hierarchy spawned.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild_raymarch_static_scene(
     mut commands: Commands,
     tile_cluster_root: Option<Res<TileClusterRoot>>,
-    shapes: Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: Query<ShapeQueryData>,
     children_of: Query<&Children>,
     anim_groups_query: Query<&AnimGroup>,
     transforms: Query<&GlobalTransform>,
@@ -384,7 +373,7 @@ pub fn extract_raymarch_lights(
     for (light, transform) in &dir_lights {
         lights.push(LightCpu {
             kind: LightKindCpu::Directional,
-            color: Vec3::from(light.color.to_linear().to_vec3()),
+            color: light.color.to_linear().to_vec3(),
             direction_or_position: transform.forward().as_vec3(),
             intensity: light.illuminance,
             spot_direction: Vec3::ZERO,
@@ -397,7 +386,7 @@ pub fn extract_raymarch_lights(
     for (light, transform) in &point_lights {
         lights.push(LightCpu {
             kind: LightKindCpu::Point,
-            color: Vec3::from(light.color.to_linear().to_vec3()),
+            color: light.color.to_linear().to_vec3(),
             direction_or_position: transform.translation(),
             intensity: light.intensity,
             spot_direction: Vec3::ZERO,
@@ -410,7 +399,7 @@ pub fn extract_raymarch_lights(
     for (light, transform) in &spot_lights {
         lights.push(LightCpu {
             kind: LightKindCpu::Spot,
-            color: Vec3::from(light.color.to_linear().to_vec3()),
+            color: light.color.to_linear().to_vec3(),
             direction_or_position: transform.translation(),
             intensity: light.intensity,
             spot_direction: transform.forward().as_vec3(),

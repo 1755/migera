@@ -42,6 +42,66 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Small items, second pass (plan 5.6): four fixed, three measured
+
+- **Fixed: arm joints anchored where the arm is drawn.** Where a bone's
+  nearest simulated ancestor isn't its parent (the arm hangs from the
+  chest, the collarbone has no body), the joint anchor was computed once
+  at spawn. As the collarbone moved, the arm's bodies stood 7-9 cm off
+  the drawn arm; a fallen hand rested 7 cm inside a slope.
+  `publish_joint_targets` now re-anchors those joints every pinned frame.
+  Bodies sit 1.0-1.5 cm from their drawn segments
+  (`every_body_stands_on_its_drawn_segment`, < 2.5 cm). Live, no hand or
+  elbow went under the floor or slope.
+- **Fixed: the shoulder no longer reaches behind the back.** That stale
+  anchor was also why a second arm joint held a still arm 6° off. With
+  anchors following, a limit-only cone (135° about up-and-back,
+  compliant point) limits horizontal extension to AAOS's ~45°. The
+  closest arm-to-up-and-back angle across limp falls was 49.8/45.0/44.5/45.0°.
+  Without the cone a backward fall reached 42.2°. The turned read-back
+  was 11° before the anchor fix and is 5.0° now.
+- **Fixed: hands have bodies** (`BodyEnd::Beyond`, 0.45 of the forearm
+  past the wrist, mass 0.006 M, PD 7/60; at the default 20 a swing left
+  the hand 54° behind). Walking body error: character.glb median 8.8°,
+  max 14; puppet_base 10.3°, max 17; no spikes (was 100°). Sixteen bodies.
+- **Built: body proportions** (`proportions::winter_factors`,
+  `character_gallery --proportions winter [H]`). The thigh, shank, upper
+  arm, forearm and hip-to-shoulder height are scaled to Winter's
+  fractions. Each moved joint gets a skinning-only stretch along its
+  segment, and the hips rise so the ankles stay.
+  - Live, standing: puppet_base at 1.80 m and character.glb at 1.93 m,
+    every limb within 0.1 %.
+  - Feet: within 1 mm of their height before.
+  - Walking at 1.3 m/s: planted slip 0.022-0.040 m/s, both with and
+    without proportions.
+  - Falls and get-ups ran on both rigs.
+  - Front and Left: wrists lower on the skeleton, and the skin follows with
+    no tear.
+  - Winter's widths (hips 0.191 H, shoulders 0.259 H) are body breadths:
+    set as joint spacing they put the hip joints 34 cm apart against a real
+    ~17. Widths are left as the rig's.
+- **Open: backward step clamped at 0.7 m (7.6 mm jolt).**
+  - A 0.6 m back cap made 1.3 m/s pushes fall and jolted 11.2 mm.
+  - Landing slack: no change.
+  - A travel lead: back 7.3 mm, but other directions rose to 8.5.
+- **Open: side step.** Unloading the near leg first, the only model that
+  matches people, lost catches from 0.8 m/s, and above 1.0 m/s the near
+  leg never lifted. `holds` forbids lifting a foot while the other is
+  past the 8° validity bound, which is exactly when a side step needs it.
+  It needs a stance model past that bound.
+- **Open: toes dip 3-6 cm at fall impact**, on flat ground too
+  (`probe_fall_floor_penetration`, ignored). Soft contacts against a
+  light foot under the body's weight. Every lever cost something:
+  - contacts ×3: 20-42 mm; ×10: 13-33, but rest detection broke;
+  - 24 substeps: 23-48;
+  - feet ×4 mass: 18-25;
+  - a 20-30 mm skin: 10-19 mm, but the collapse reached 66 and feet
+    floated 13-29 mm at rest.
+- **Found: in a get-up the fingers point 18-21 cm into the floor**, wrist
+  at y = 0, on both rigs with or without proportions. Not yet looked at.
+- Clippy: zero warnings across the crate, examples and tests.
+  `cargo test --release --lib`: 1064 passed, 16 ignored.
+
 ### Small items (plan 5.5): one fixed, five measured and recorded
 
 - **Fixed: catches at the limit no longer depend on frame times.** The

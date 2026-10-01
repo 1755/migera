@@ -11,8 +11,8 @@
 
 use bevy::prelude::*;
 
-use super::assembly::{self, SdfSceneRoot};
-use super::components::{AnimGroup, Blend, BlendMode, MaterialLegacy, ProceduralPattern, Shape};
+use super::assembly::{self, SdfSceneRoot, ShapeQueryData};
+use super::components::{AnimGroup, BlendMode, MaterialLegacy, ProceduralPattern, Shape};
 use super::scene::Node;
 
 /// The minimum fillet/edge radius any hard-edged primitive in this scene uses,
@@ -241,14 +241,7 @@ pub struct TileClusterScene {
 /// primitive's current (possibly animated) `Transform`.
 pub fn assemble_infinite_scene(
     root: Entity,
-    shapes: &Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: &Query<ShapeQueryData>,
     children_of: &Query<&Children>,
     anim_groups_query: &Query<&AnimGroup>,
     transforms: &Query<&GlobalTransform>,
@@ -284,14 +277,7 @@ mod tests {
     fn infinite_scene_repeats_the_blob_at_the_next_cell() {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let scene = world.run_system_once_with(
-            move |shapes: Query<(
-                &Shape,
-                &GlobalTransform,
-                Option<&BlendMode>,
-                Option<&Blend>,
-                Option<&MaterialLegacy>,
-                Option<&ProceduralPattern>,
-            )>,
+            move |shapes: Query<ShapeQueryData>,
                   children_of: Query<&Children>,
                   anim_groups: Query<&AnimGroup>,
                   transforms: Query<&GlobalTransform>| {
@@ -325,14 +311,7 @@ mod tests {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let scene = world
             .run_system_once_with(
-                move |shapes: Query<(
-                    &Shape,
-                    &GlobalTransform,
-                    Option<&BlendMode>,
-                    Option<&Blend>,
-                    Option<&MaterialLegacy>,
-                    Option<&ProceduralPattern>,
-                )>,
+                move |shapes: Query<ShapeQueryData>,
                       children_of: Query<&Children>,
                       anim_groups: Query<&AnimGroup>,
                       transforms: Query<&GlobalTransform>| {
@@ -365,14 +344,7 @@ mod tests {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let cluster = world
             .run_system_once_with(
-                move |shapes: Query<(
-                    &Shape,
-                    &GlobalTransform,
-                    Option<&BlendMode>,
-                    Option<&Blend>,
-                    Option<&MaterialLegacy>,
-                    Option<&ProceduralPattern>,
-                )>,
+                move |shapes: Query<ShapeQueryData>,
                       children_of: Query<&Children>| {
                     assembly::assemble_scene(root, &shapes, &children_of)
                 },

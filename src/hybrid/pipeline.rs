@@ -2128,6 +2128,7 @@ pub fn prepare_hybrid_temporal(
 /// `prepare_hybrid_view_bind_groups` — see `HybridViewBindGroup`'s own
 /// doc comment) — genuinely independent of `PreviousViewUniforms`
 /// unlike every other temporal pass in this file.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_hybrid_dof(
     render_device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,

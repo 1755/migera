@@ -417,7 +417,7 @@ pub struct HexPrism {
 impl Sdf for HexPrism {
     fn distance(&self, p: Vec3) -> f32 {
         let q = p.abs();
-        let k = 0.866025404f32;
+        let k = 0.866_025_4_f32; // sqrt(3)/2
         let hex_d =
             q.x.max((0.5 * q.x + k * q.z).abs())
                 .max((0.5 * q.x - k * q.z).abs())

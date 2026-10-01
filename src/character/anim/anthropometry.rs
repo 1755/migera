@@ -47,6 +47,10 @@ pub mod fraction {
     pub const UPPER_ARM: f32 = 0.028;
     /// One forearm and hand.
     pub const FOREARM_AND_HAND: f32 = 0.022;
+    /// One forearm, elbow to ulnar styloid.
+    pub const FOREARM: f32 = 0.016;
+    /// One hand, wrist to the second knuckle.
+    pub const HAND: f32 = 0.006;
     /// One thigh.
     pub const THIGH: f32 = 0.100;
     /// One shank ("leg" in Winter).

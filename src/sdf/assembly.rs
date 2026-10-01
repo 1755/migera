@@ -18,18 +18,23 @@ use bevy::shader::Shader;
 use super::components::{AnimGroup, Blend, BlendMode, MaterialLegacy, ProceduralPattern, Shape};
 use super::scene::{Isometry, LeafMaterial, Node};
 
-/// The 6-tuple `assemble_*`'s `shapes` parameter reads a `Shape` entity through —
-/// deliberately spelled out at every call site rather than behind a type alias: a
-/// lifetime-parameterized `Query`-wrapping alias was tried and hit `Query<'w, 's,
-/// D>`'s invariance over `D` (a caller's own inline `Query<(&Shape, ...)>` system-
-/// param type — e.g. a closure passed to `run_system_once_with` in `sdf::world`'s
-/// tests, whose `'w`/`'s` are inferred by Bevy's own machinery — didn't reliably
-/// unify with a separately-aliased `Query` type even when the inner tuple was
-/// identical), so every call site (including this module's own recursive calls)
-/// repeats `Query<(&Shape, &GlobalTransform, Option<&BlendMode>, Option<&Blend>,
-/// Option<&MaterialLegacy>, Option<&ProceduralPattern>)>` literally instead of through an
-/// alias.
-///
+/// The 6-tuple `assemble_*`'s `shapes` parameter reads a `Shape` entity through,
+/// used as `Query<ShapeQueryData>`. This aliases only the query *data* (with
+/// `'static` component references, the form Bevy's `SystemParam` impl requires
+/// anyway), never the `Query` itself: a lifetime-parameterized `Query`-wrapping
+/// alias was tried and hit `Query<'w, 's, D>`'s invariance over `D` (a closure
+/// passed to `run_system_once_with` in `sdf::world`'s tests, whose `'w`/`'s` are
+/// inferred by Bevy's own machinery, didn't reliably unify with it), whereas
+/// leaving `'w`/`'s` elided at each use site sidesteps that entirely.
+pub type ShapeQueryData = (
+    &'static Shape,
+    &'static GlobalTransform,
+    Option<&'static BlendMode>,
+    Option<&'static Blend>,
+    Option<&'static MaterialLegacy>,
+    Option<&'static ProceduralPattern>,
+);
+
 /// Resolves an entity's `MaterialLegacy`/`ProceduralPattern` components (both optional) into
 /// a `LeafMaterial` for `Node::leaf_boxed_with_material` — `None` if neither component
 /// is present (see `Node::Leaf::material`'s doc comment for the fallback that produces
@@ -116,14 +121,7 @@ pub struct SdfSceneRoot;
 /// "distance to nothing" to blend against.
 pub fn assemble_scene(
     root: Entity,
-    shapes: &Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: &Query<ShapeQueryData>,
     children_of: &Query<&Children>,
 ) -> Option<Node> {
     let own = shapes
@@ -203,14 +201,7 @@ pub struct AnimGroupScene {
 /// their bead children (see `sdf::world::spawn_tile_cluster`'s ring-spawning loop).
 pub fn assemble_scene_split(
     root: Entity,
-    shapes: &Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: &Query<ShapeQueryData>,
     children_of: &Query<&Children>,
     anim_groups: &Query<&AnimGroup>,
     transforms: &Query<&GlobalTransform>,
@@ -229,14 +220,7 @@ pub fn assemble_scene_split(
 
 fn assemble_scene_excluding_groups(
     root: Entity,
-    shapes: &Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: &Query<ShapeQueryData>,
     children_of: &Query<&Children>,
     anim_groups: &Query<&AnimGroup>,
     transforms: &Query<&GlobalTransform>,
@@ -317,14 +301,7 @@ fn assemble_scene_excluding_groups(
 /// derived rotation and are shifted by the same `-pivot` translation as `root`.
 fn assemble_rest_pose_subtree(
     root: Entity,
-    shapes: &Query<(
-        &Shape,
-        &GlobalTransform,
-        Option<&BlendMode>,
-        Option<&Blend>,
-        Option<&MaterialLegacy>,
-        Option<&ProceduralPattern>,
-    )>,
+    shapes: &Query<ShapeQueryData>,
     children_of: &Query<&Children>,
     pivot: Vec3,
 ) -> Option<Node> {

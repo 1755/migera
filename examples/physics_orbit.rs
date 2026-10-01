@@ -113,7 +113,7 @@ fn auto_shot(
 /// (not just the headless test) shows the radius staying bounded over
 /// time.
 fn report_orbit_radius(bodies: Query<&Transform, With<RigidBody>>, frame: Res<FrameCount>) {
-    if frame.0 % 60 != 0 {
+    if !frame.0.is_multiple_of(60) {
         return;
     }
     for transform in &bodies {

@@ -230,7 +230,13 @@ side step was posed over a body the clamp had stopped.
   1.4) and jolted 24-34 mm. People first unload the near leg (a quick
   weight shift onto the far foot) before stepping with it; without that
   phase, the side step stands on the far foot, whose pressure drives the
-  body on. Revisit only with an unloading phase.
+  body on. An unloading phase was then tried (2026-10-01): catches fell
+  from 0.8 m/s, and above 1.0 m/s the near leg never lifted. The stance
+  forbids lifting a foot while the other foot is past the 8° validity
+  bound (see
+  [a foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md)),
+  and a hard side push puts the body there at once. Revisit only with a
+  stance model valid past that bound.
 - The backward step clamped at `MAX_STEP` (1.3 m/s) still jolts 7.6 mm
   (9.8 before the stance fixes). Located 2026-10-01: it lands with the
   stepping leg at full stretch, and the moment its 11 mm swing lift
@@ -238,7 +244,11 @@ side step was posed over a body the clamp had stopped.
   frame. Closing the swing slack earlier and rate-limiting the hips' roll
   both changed nothing for it (the roll limit worsened sideways steps to
   8 mm). A fix changes the step itself (a later landing, a shorter
-  backward reach) and so the catch limits.
+  backward reach) and so the catch limits. Tried 2026-10-01:
+  - Capping backward travel at 0.6 m: 1.3 m/s backward pushes fell, and
+    the jolt grew to 11.2 mm.
+  - Landing slack: no change.
+  - A travel lead: backward 7.3 mm, but other directions rose to 8.5.
 
 ## Related
 

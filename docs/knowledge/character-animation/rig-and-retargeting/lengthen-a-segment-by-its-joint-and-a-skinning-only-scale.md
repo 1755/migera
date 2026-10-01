@@ -1,6 +1,6 @@
 ---
 title: Lengthen a segment by moving its joint and scaling only its skinning
-description: "To change a skinned character's segment length in Bevy, move the child joint and skin the segment through a helper joint scaled along the bone; moving the joint alone stretches the knee's triangles up to 2.7x, and a scaled parent shears its children. Read before building body proportions or rescaling any bone."
+description: "In Bevy, lengthen a skinned segment by moving the child joint and skinning through a helper scaled along the bone; the joint alone stretches knee triangles 2.7x, a scaled parent shears its children. Winter proportions use it, lengths only (his widths are breadths). Read before changing proportions or bone scale."
 type: decision
 status: current
 tags:
@@ -11,6 +11,7 @@ tags:
 updated: 2026-10-01
 verified: 2026-10-01
 code:
+  - src/character/anim/proportions.rs
   - examples/character_gallery.rs
   - tools/skin_segment_stretch.py
   - src/character/anim/plugin.rs
@@ -98,11 +99,38 @@ and 1.15.
 - Anything that caches rig geometry at spawn (the ragdoll's capsules and
   joint anchors) has to be built after the change.
 
+## Built: Winter proportions (2026-10-01)
+
+`proportions::winter_factors` works out each factor on `RigGeometry`, and
+`character_gallery --proportions winter [H]` applies it in
+`build_real_mesh_skeleton`, before the anim backend and the ragdoll read
+the rig.
+- **Stature:** `H` defaults to the stature the legs imply (hip to ankle
+  is 0.491 H).
+- **Lengths:** thigh, shank, upper arm and forearm are scaled to their
+  fractions. The spine's three offsets are bisected together for the hip
+  to shoulder height (0.288 H).
+- **Skinning:** each single-child segment is skinned through a chain
+  under its joint: turn +Y onto the segment (`proportions::along`), scale
+  (1, f, 1), turn back. That makes the stretch independent of the bone
+  axis.
+- **Hips:** they rise by what the ankles dropped.
+- **Widths are left as the rig's.** Winter's hip width 0.191 H is the
+  bitrochanteric breadth (0.34 m at 1.8 m), while hip joint centres sit
+  ~0.17 m apart. His 0.259 H shoulders give a 1.14 H arm span against a
+  real ~1.0 H. Set as joint spacing, they stood puppet_base's hip joints
+  34 cm apart, where the rig had 23.
+- **Measured live:** puppet_base at 1.80 m and character.glb at 1.93 m,
+  every limb within 0.1 % of its fraction, feet within 1 mm of their
+  height before. Walking at 1.3 m/s: planted slip 0.022-0.040 m/s, the
+  same as unproportioned. Falls and get-ups ran on both. Front and Left:
+  the skin follows with no tear.
+
 ## Revisit when
 
-- Proportions are built for real: scale every segment, not just one.
-  Check the ragdoll's spawn ordering and the gallery's grounding then.
-- A rig binds its bones along an axis other than +Y.
+- A rig has several children under a scaled segment's joint (the chest):
+  its skin is not stretched today, only its joints moved.
+- Girth should follow length.
 
 ## Related
 

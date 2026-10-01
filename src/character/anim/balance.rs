@@ -694,7 +694,13 @@ impl Balance {
         // 290 mm at 0.8 (82); side steps capped at 0.4 m with the far leg
         // joining between them fell from 0.8 m/s (crossovers catch 1.4)
         // and jolted 24-34 mm. People unload the near leg first (a quick
-        // weight shift onto the far foot); this model has no such phase.
+        // weight shift onto the far foot). Tried too: 0.1 s pressing through
+        // the near foot's outer edge before it side-steps. Sideways catches
+        // then fell from 0.8 m/s, and above 1.0 the near leg never lifted:
+        // a side step stands on the far foot with the COM heading away from
+        // it, past the 8° the model is valid for, which `holds` forbids
+        // (rightly, for this model). A loaded side step needs a model of the
+        // stance foot beyond Winter's quiet-standing pendulum.
         let leg = match (self.stepped_last, sideways) {
             (Some(last), _) if last == side => 1 - side,
             (None, true) => {

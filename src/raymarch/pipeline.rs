@@ -296,6 +296,7 @@ fn light_kind_gpu(kind: LightKindCpu) -> u32 {
 /// already-flattened static `primitives` list every frame too is simpler than
 /// diffing/caching it GPU-side and is still cheap — a few hundred bytes for this demo's
 /// scene, not the expensive part of this pipeline).
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_raymarch_buffers(
     mut commands: Commands,
     render_device: Res<RenderDevice>,

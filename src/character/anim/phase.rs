@@ -938,11 +938,12 @@ mod tests {
         for col in 0..n {
             let pivot = (col..n).max_by(|&x, &y| m[x][col].abs().total_cmp(&m[y][col].abs())).unwrap();
             m.swap(col, pivot);
-            for row in 0..n {
+            let pivot_row = m[col].clone();
+            for (row, values) in m.iter_mut().enumerate() {
                 if row != col {
-                    let f = m[row][col] / m[col][col];
-                    for j in col..=n {
-                        m[row][j] -= f * m[col][j];
+                    let f = values[col] / pivot_row[col];
+                    for (cell, p) in values[col..].iter_mut().zip(&pivot_row[col..]) {
+                        *cell -= f * p;
                     }
                 }
             }

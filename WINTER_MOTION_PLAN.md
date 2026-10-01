@@ -367,7 +367,12 @@ pinned ragdoll following the animation, sole feet (4a).
     with no other change. `--proportion-spike move|proxy F`,
     `tools/skin_segment_stretch.py`, see
     [the note](./docs/knowledge/character-animation/rig-and-retargeting/lengthen-a-segment-by-its-joint-and-a-skinning-only-scale.md).
-- [ ] Height-fraction proportions (feasible; not yet requested).
+- [x] **Height-fraction proportions, done 2026-10-01.**
+  `proportions::winter_factors` + `character_gallery --proportions winter
+  [H]`: thigh, shank, upper arm, forearm and trunk height to Winter's
+  fractions (live within 0.1 %), feet unmoved, walking unchanged. Winter's
+  hip and shoulder widths are body breadths, so the rig keeps its own
+  joint spacing.
 
 ## 5. Open limits (agreed 2026-10-01)
 
@@ -393,6 +398,13 @@ pinned ragdoll following the animation, sole feet (4a).
   joint holds the arm 6° off); hand bodies (character.glb to 100°). Kept
   by decision: elbow overshoot (within passive range). See
   CHARACTER_PROGRESS.md.
+- [x] **5.6 Second pass on 5.5, worked 2026-10-01.** Fixed: arm anchors
+  follow the drawn arm (hands 7 cm in a slope); shoulder limit behind the
+  back (AAOS 45°); hand bodies; body proportions. Measured, still open:
+  the clamped backward step's jolt; the side step (needs a weight shift
+  off the near leg the 8° stance bound forbids); toes dipping 3-6 cm at
+  fall impact (soft contacts on light feet). Found: in a get-up the
+  fingers point 18-21 cm into the floor.
 
 ## Throughout
 

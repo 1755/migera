@@ -788,10 +788,10 @@ fn render_scale_config_from_args() -> RenderScaleConfig {
             *i += 1;
             args.get(*i).cloned().unwrap_or_default()
         };
-        if args[i].as_str() == "--render-scale" {
-            if let Ok(v) = val(&mut i).parse::<f32>() {
-                cfg.scale = v;
-            }
+        if args[i].as_str() == "--render-scale"
+            && let Ok(v) = val(&mut i).parse::<f32>()
+        {
+            cfg.scale = v;
         }
         i += 1;
     }

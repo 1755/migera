@@ -2409,7 +2409,7 @@ mod tests {
         // after the left heel lands.
         let (at, _) = rendered.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
         let late = (at - 0.0).rem_euclid(1.0);
-        assert!(late < 0.1 || late > 0.97, "the rendered chest's right-shoulder peak is {late:.3} of a stride after the left heel");
+        assert!(!(0.1..=0.97).contains(&late), "the rendered chest's right-shoulder peak is {late:.3} of a stride after the left heel");
     }
 
     #[test]

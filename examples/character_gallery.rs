@@ -1021,6 +1021,7 @@ fn resolve_bone_node_name<'a>(bone: Bone, descendants_by_name: &HashMap<&'a str,
 /// `spawn_real_mesh` runs, only once the glTF asset finishes loading and
 /// `bevy_world_serialization` actually instantiates it, which can take
 /// several frames.
+#[allow(clippy::too_many_arguments)]
 fn build_real_mesh_skeleton(
     mut commands: Commands,
     mut already_built: Local<bool>,
@@ -1029,6 +1030,8 @@ fn build_real_mesh_skeleton(
     children_of: Query<&Children>,
     child_of: Query<&ChildOf>,
     global_transforms: Query<&GlobalTransform>,
+    proportions: Option<Res<ProportionsConfig>>,
+    mut skins: Query<&mut bevy::mesh::skinning::SkinnedMesh>,
 ) {
     if *already_built {
         return;
@@ -1068,6 +1071,7 @@ fn build_real_mesh_skeleton(
     let mut bones = HashMap::new();
     let mut rest_rotations = HashMap::new();
     let mut rest_directions = HashMap::new();
+    let mut rest_translations = HashMap::new();
     for &bone in &Bone::ALL {
         let Some(node_name) = resolve_bone_node_name(bone, &descendants_by_name) else {
             return; // Not all joints have spawned yet this frame -- try again next frame.
@@ -1076,6 +1080,7 @@ fn build_real_mesh_skeleton(
         bones.insert(bone, entity);
         rest_rotations.insert(bone, rest_rotation);
         rest_directions.insert(bone, rest_translation.normalize_or_zero());
+        rest_translations.insert(bone, rest_translation);
     }
 
     // `Bone::Hips`'s own mapped joint (`pelvis`) needs its OWN rest
@@ -1103,15 +1108,64 @@ fn build_real_mesh_skeleton(
     // meaningful relative to that synthetic rest position -- not this
     // glTF's own, numerically-similar-but-semantically-different rest
     // position in its own scene's coordinate frame.
-    let skeleton = HumanoidSkeleton::for_other_rig(
-        bones,
-        rest_rotations,
-        rest_directions,
-        hips_local_transform.translation,
-        hips_parent_global.rotation(),
-        hips_parent_global.scale(),
-        Bone::Hips.t_pose_world_position(),
-    );
+    let build = |hips_translation: Vec3| {
+        HumanoidSkeleton::for_other_rig(
+            bones.clone(),
+            rest_rotations.clone(),
+            rest_directions.clone(),
+            hips_translation,
+            hips_parent_global.rotation(),
+            hips_parent_global.scale(),
+            Bone::Hips.t_pose_world_position(),
+        )
+    };
+    let mut skeleton = build(hips_local_transform.translation);
+
+    // `--proportions winter [H]`: every segment rescaled to Winter's
+    // fractions of stature (`proportions::winter_factors`) before anything
+    // measures the rig. Each scaled joint moves; each single-child segment
+    // is skinned through a helper scaled along it; the hips rise so the
+    // feet stay down. Everything downstream reads the live translations.
+    if let Some(config) = proportions {
+        use migera::character::anim::proportions::{along, winter_factors};
+        let rig = migera::character::anim::plugin::live_rig_geometry(&skeleton, |bone| rest_translations.get(&bone).copied());
+        let rescale = winter_factors(&rig, config.stature);
+        info!(
+            "character_gallery: proportioned to Winter's fractions of {:.2} m (hips {:+.3} m)",
+            rescale.stature, rescale.hips_rise
+        );
+        for &bone in Bone::ALL.iter() {
+            let factor = rescale.factors[bone];
+            if bone == Bone::Hips || (factor - 1.0).abs() < 1.0e-4 {
+                continue;
+            }
+            let (Some(&entity), Some(&translation)) = (bones.get(&bone), rest_translations.get(&bone)) else { continue };
+            let Ok((_, _, transform)) = named.get(entity) else { continue };
+            commands.entity(entity).insert(Transform { translation: translation * factor, ..*transform });
+            // The segment above it, skinned stretched along it, where that
+            // segment has only this child: a scale through its own frame,
+            // turned onto the segment and back.
+            let Some(parent) = bone.parent() else { continue };
+            let single = Bone::ALL.iter().filter(|b| b.parent() == Some(parent)).count() == 1;
+            let Some(&parent_entity) = bones.get(&parent) else { continue };
+            if single {
+                let turn = along(translation);
+                let onto = commands.spawn((Transform::from_rotation(turn), ChildOf(parent_entity))).id();
+                let stretch =
+                    commands.spawn((Transform::from_scale(Vec3::new(1.0, factor, 1.0)), ChildOf(onto))).id();
+                let back = commands.spawn((Transform::from_rotation(turn.inverse()), ChildOf(stretch))).id();
+                for mut skin in &mut skins {
+                    for joint in skin.joints.iter_mut().filter(|joint| **joint == parent_entity) {
+                        *joint = back;
+                    }
+                }
+            }
+        }
+        let rise = hips_parent_global.rotation().inverse() * (Vec3::Y * rescale.hips_rise) / hips_parent_global.scale();
+        let hips_translation = hips_local_transform.translation + rise;
+        commands.entity(hips_entity).insert(Transform { translation: hips_translation, ..hips_local_transform });
+        skeleton = build(hips_translation);
+    }
     if std::env::var("MIGERA_DUMP_REST").is_ok() {
         for &b in Bone::ALL.iter() {
             eprintln!(
@@ -2525,6 +2579,24 @@ fn log_debug_stats(
     );
 }
 
+/// `--proportions winter [H]`: the character rescaled to Winter's fractions
+/// of stature `H` metres (default: the stature its legs imply). See
+/// `build_real_mesh_skeleton`.
+#[derive(Resource, Clone, Copy)]
+struct ProportionsConfig {
+    stature: Option<f32>,
+}
+
+impl ProportionsConfig {
+    fn from_args() -> Option<Self> {
+        let mut args = std::env::args().skip_while(|arg| arg != "--proportions").skip(1);
+        if args.next().as_deref() != Some("winter") {
+            return None;
+        }
+        Some(Self { stature: args.next().and_then(|v| v.parse().ok()) })
+    }
+}
+
 /// The body-proportion spike (`--proportion-spike move|proxy [FACTOR]`):
 /// lengthens the LEFT thigh only, so the right leg stays beside it as the
 /// unchanged reference.
@@ -2640,6 +2712,9 @@ fn main() {
         .add_systems(PostUpdate, auto_shot);
     if let Some(spike) = ProportionSpike::from_args() {
         app.insert_resource(spike);
+    }
+    if let Some(proportions) = ProportionsConfig::from_args() {
+        app.insert_resource(proportions);
     }
 
     // The rotation-space stack is now the only animation backend. The

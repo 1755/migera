@@ -330,18 +330,15 @@ pub struct FlattenedScene {
     pub anim_group_pattern_import_paths: Vec<Option<String>>,
 }
 
+/// `(material_a, material_b, pattern_params, pattern_import_path)`, as returned by
+/// `resolve_leaf_material`; each material slot is `(base_color, metallic, roughness)`.
+type ResolvedLeafMaterial = ((Vec3, f32, f32), (Vec3, f32, f32), bevy::math::Vec4, Option<String>);
+
 /// Resolves a leaf's `LeafMaterial` (if any) into the `(material_a, material_b,
 /// pattern_params, pattern_import_path)` tuple `PrimitiveRecordCpu::leaf` and
 /// `FlattenOutput::push` need — `None` (no `LeafMaterial` at all, see `Node::Leaf::
 /// material`'s doc comment) falls back to `DEFAULT_MATERIAL` for both material slots.
-fn resolve_leaf_material(
-    material: &Option<crate::sdf::scene::LeafMaterial>,
-) -> (
-    (Vec3, f32, f32),
-    (Vec3, f32, f32),
-    bevy::math::Vec4,
-    Option<String>,
-) {
+fn resolve_leaf_material(material: &Option<crate::sdf::scene::LeafMaterial>) -> ResolvedLeafMaterial {
     use crate::sdf::scene::LeafMaterial;
     match material {
         None => (
@@ -500,8 +497,8 @@ pub fn flatten_scene(scene: &TileClusterScene) -> FlattenedScene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdf::assembly::test_app_with;
-    use crate::sdf::components::{AnimGroup, Blend, BlendMode, MaterialLegacy, ProceduralPattern, Shape};
+    use crate::sdf::assembly::{ShapeQueryData, test_app_with};
+    use crate::sdf::components::AnimGroup;
     use crate::sdf::scene::Node;
     use crate::sdf::world::{TILE_PERIOD, assemble_infinite_scene, spawn_tile_cluster};
     use bevy::ecs::system::RunSystemOnce;
@@ -600,7 +597,7 @@ mod tests {
                         let radius = record.param_a;
                         let hh = record.param_b;
                         let q = local.abs();
-                        let k = 0.866025404f32;
+                        let k = 0.866_025_4_f32; // sqrt(3)/2
                         let hex_d =
                             q.x.max((0.5 * q.x + k * q.z).abs())
                                 .max((0.5 * q.x - k * q.z).abs())
@@ -718,14 +715,7 @@ mod tests {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let scene = world
             .run_system_once_with(
-                move |shapes: Query<(
-                    &Shape,
-                    &GlobalTransform,
-                    Option<&BlendMode>,
-                    Option<&Blend>,
-                    Option<&MaterialLegacy>,
-                    Option<&ProceduralPattern>,
-                )>,
+                move |shapes: Query<ShapeQueryData>,
                       children_of: Query<&Children>,
                       anim_groups: Query<&AnimGroup>,
                       transforms: Query<&GlobalTransform>| {
@@ -782,14 +772,7 @@ mod tests {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let scene = world
             .run_system_once_with(
-                move |shapes: Query<(
-                    &Shape,
-                    &GlobalTransform,
-                    Option<&BlendMode>,
-                    Option<&Blend>,
-                    Option<&MaterialLegacy>,
-                    Option<&ProceduralPattern>,
-                )>,
+                move |shapes: Query<ShapeQueryData>,
                       children_of: Query<&Children>,
                       anim_groups: Query<&AnimGroup>,
                       transforms: Query<&GlobalTransform>| {
@@ -827,14 +810,7 @@ mod tests {
         let (mut world, root) = test_app_with(spawn_tile_cluster);
         let scene = world
             .run_system_once_with(
-                move |shapes: Query<(
-                    &Shape,
-                    &GlobalTransform,
-                    Option<&BlendMode>,
-                    Option<&Blend>,
-                    Option<&MaterialLegacy>,
-                    Option<&ProceduralPattern>,
-                )>,
+                move |shapes: Query<ShapeQueryData>,
                       children_of: Query<&Children>,
                       anim_groups: Query<&AnimGroup>,
                       transforms: Query<&GlobalTransform>| {

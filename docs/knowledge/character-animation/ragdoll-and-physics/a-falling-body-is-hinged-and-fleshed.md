@@ -108,6 +108,20 @@ things for its duration, and the end of the rise changes them back.
   crosses under the body by no more than AAOS's 30°. Before it, only the
   other leg's flesh stopped it (falls measured 48.7°). They are spawned
   with the joints and kept through falls, and fall damping skips them.
+- **The shoulder carries one more limit cone:** 135° about the direction
+  behind the body and 30° up, so the arm stops near AAOS's ~45° of
+  horizontal extension. Without it, the arm pointed almost straight back
+  at shoulder height and leaned 64° behind vertical overhead. Limp falls
+  now keep the arm at least 44.5° from up-and-back (`FallShape::arm_behind`);
+  a backward fall reached 42.2° without the cone. Its anchor point is
+  compliant (`point_compliance` 1e-3): a second rigid anchor held a still,
+  driven arm 0.1° further off.
+- **Hands have bodies** (`BodyEnd::Beyond`): a ball reaching 0.45 of the
+  forearm's length past the wrist, along the forearm's bind line. Masses
+  are Winter's hand 0.006 M and forearm 0.016 M, and the gains are
+  7 Hz × 60. At the default ×20, an arm swing left the hand 54° behind.
+  Walking body error with hands: character.glb median 8.8°, max 14°;
+  puppet_base 10.3°, max 17°.
 
 ## Alternatives considered
 
@@ -193,26 +207,35 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
   range; passive flexion, stopped by soft tissue, goes further. A fall
   driving the arm onto its stop for a moment is within what a real elbow
   does, so the authored limit was not moved to hide it.
-- **The shoulder's reach behind the back.** Its one cone lets the arm
-  point almost straight back at shoulder height and lean 64° behind
-  vertical overhead. A second limit cone excluding "back and 30° up" kept
-  every shipped pose. But any second joint on the arm, even with no limit
-  and a compliant anchor, held a still, driven arm 6° off its target
-  (`a_turned_character_reads_back_the_pose_its_bodies_hold`). The hips'
-  two extra joints don't do this. Not understood; reverted.
-- **Hand bodies.** A wrist-to-knuckle body on the forearm's bind line
-  (Winter: hand 0.006 M, forearm 0.016 M), wrist cone 45/25, gains
-  7 Hz × 60. puppet_base walked with its hands 5.8° off target. On
-  `character.glb` the worst body reached 100° (p90 31°), which looks like
-  the rig's hand axes. A fallen hand on a slope rested 3-5 cm under it with
-  or without a body, so that dip isn't the missing hand. Reverted.
+- **Toes dip 3-6 cm through the floor at impact**, on flat ground too
+  (`probe_fall_floor_penetration`, ignored; exact sole corners, since
+  `ColliderAabb` includes speculative margins). The cause is avian's soft
+  contacts: a light foot under the falling body's weight overlaps the
+  floor until its contact catches up. Every lever cost more than the dip:
+  - `contact_frequency_factor` ×3: 20-42 mm; ×10: 13-33 mm. Rest
+    detection broke ("never came to rest"), and landing tests landed
+    differently. `SolverConfig` is global to the app, too.
+  - 24 substeps: 23-48 mm. ×3 contacts and 24 substeps: 16-25 mm.
+  - Feet ×4 mass: 18-25 mm, with balance tuned on the real masses.
+  - A 20-30 mm `CollisionMargin` skin: pushed falls 10-19 mm, but the
+    collapse reached 66 and feet floated 13-29 mm at rest.
+- **In a get-up the fingers point 18-21 cm into the floor** with the
+  wrist at the floor, both rigs. Fingers have no bodies; the rise's hand
+  key, not physics. Not yet looked at.
+
+Was open until 2026-10-01: the shoulder's second cone and the hand
+bodies. Both were blocked by a stale arm anchor (see
+[Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md)):
+any second arm joint held a still arm 6° off, hand bodies sent
+character.glb's worst body to 100°, and a fallen hand rested 3-5 cm in a
+slope.
 
 ## Revisit when
 
 - Another lopsided joint (an ankle): a second cone on the same pivot is
-  the tool, but see the shoulder above.
-- Hand bodies again: per-rig hand axes first, and find what puts a fallen
-  wrist under a slope.
+  the tool. Give its anchor a compliant point.
+- Toe dip matters (a close camera on a landing): try per-body contact
+  stiffness if avian gains it, before anything global.
 
 ## Related
 

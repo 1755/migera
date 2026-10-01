@@ -1205,8 +1205,7 @@ mod tests {
         // the implementation against a restatement of the implementation.
         // `the_world_rotations_agree_with_what_retargeting_actually_writes` is
         // the one that checks against an independent authority.
-        let mut rig = RigGeometry::default();
-        rig.root_rotation = Quat::from_axis_angle(Vec3::Y, 0.3);
+        let mut rig = RigGeometry { root_rotation: Quat::from_axis_angle(Vec3::Y, 0.3), ..Default::default() };
         rig.bind_rotations[Bone::Spine] = Quat::from_axis_angle(Vec3::X, 0.2);
 
         let mut pose = LocalPose::REST;

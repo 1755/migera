@@ -136,6 +136,9 @@ pub struct Ragdoll {
     pub hinges: BoneSet<Option<Hinge>>,
     /// The hinge joints standing in for those ball joints while falling.
     pub hinge_joints: BoneSet<Option<Entity>>,
+    /// Each bone's limit-only joints (`ragdoll_plugin::LimitOnly`), which
+    /// share its main joint's anchors and so move them with it.
+    pub limit_joints: BoneSet<Vec<Entity>>,
     /// Each body's position and rotation the last frame a fall was checked
     /// for rest: rest is judged by how the bodies move, not by their
     /// velocities (`ragdoll_plugin::REST_SPEED`).
@@ -264,6 +267,7 @@ impl Default for Ragdoll {
             joints: BoneSet::splat(None),
             hinges: BoneSet::splat(None),
             hinge_joints: BoneSet::splat(None),
+            limit_joints: BoneSet::from_fn(|_| Vec::new()),
             last_seen: BoneSet::splat(None),
         }
     }
@@ -622,6 +626,10 @@ pub fn default_joint_params() -> BoneSet<PdParams> {
         Bone::LeftShoulder | Bone::RightShoulder => pd(8.0, 90.0),
         Bone::LeftArm | Bone::RightArm => pd(8.0, 70.0),
         Bone::LeftForeArm | Bone::RightForeArm => pd(7.0, 40.0),
+        // A hand follows everything the arm does above it: its ceiling is
+        // the forearm's and more. At the default 20, an arm swing left it
+        // 54° behind.
+        Bone::LeftHand | Bone::RightHand => pd(7.0, 60.0),
         Bone::Neck | Bone::Head => pd(7.0, 30.0),
         _ => pd(6.0, 20.0),
     })
