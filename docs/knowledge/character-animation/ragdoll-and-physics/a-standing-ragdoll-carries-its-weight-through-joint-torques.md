@@ -1,6 +1,6 @@
 ---
 title: A standing ragdoll carries its weight through joint torques, fed forward, on planted feet
-description: "Ragdoll::stand_on_own_feet: unpinned under full gravity, each joint applies +τ/−τ to its two bodies, solved implicitly every avian substep; each joint is fed the weight it carries; planted feet are Dominance 1. Stands 5-9 s, hips within 5 mm. Read before changing joint_drive.rs or unpinning a ragdoll."
+description: "Ragdoll::stand_on_own_feet: unpinned, full gravity, joint torques +τ/−τ solved implicitly every substep, each joint fed its load and Winter's COP law as statics, planted feet dominant, ankles held to the sole. Stands a minute; 0.4 m/s pushes caught. Read before changing joint_drive.rs or unpinning a ragdoll."
 type: decision
 status: current
 tags:
@@ -15,7 +15,8 @@ code:
   - src/character/anim/ragdoll_plugin.rs
   - src/character/anim/ragdoll.rs
 sources:
-  - "tests ragdoll_plugin::tests::a_ragdoll_stands_on_its_own_feet_with_its_joints_carrying_it, a_ragdoll_on_its_own_feet_still_falls; joint_drive::tests"
+  - "tests ragdoll_plugin::tests::a_ragdoll_stands_on_its_own_feet_with_its_joints_carrying_it, a_ragdoll_on_its_own_feet_still_falls, a_ragdoll_on_its_own_feet_stands_a_minute_without_drifting, a_ragdoll_on_its_own_feet_recovers_a_push_within_its_ankles_budget, a_push_beyond_its_feet_makes_a_ragdoll_on_its_own_feet_fall; joint_drive::tests"
+  - "Winter, Biomechanics and Motor Control of Human Movement, 4th ed., §11.2.1 (ankle strategy, hip load/unload)"
   - "probe ragdoll_plugin::tests::probe_driven_ragdoll_stands (ignored)"
   - "live BRP, character_gallery --ragdoll on --stand-on-own-feet 180, puppet_base and character.glb"
   - "avian3d 0.7 source: dynamics/solver/schedule.rs (SubstepSchedule order), solver_body/mod.rs (SolverBody, SolverBodyInertia), rigid_body Dominance"
@@ -30,9 +31,17 @@ aliases:
   - gravity compensation
   - feed-forward torque
   - planted foot dominance
+  - within_sole
+  - UNCATCHABLE
+  - standing balance on the bodies
+  - virtual model control
 ---
 
 # A standing ragdoll carries its weight through joint torques, fed forward, on planted feet
+
+Contents: [Context](#context) · [Decision](#decision) ·
+[Alternatives](#alternatives-considered) · [Consequences](#consequences) ·
+[Revisit when](#revisit-when)
 
 `Ragdoll::stand_on_own_feet` (plan step 4b) releases the pinned root and
 puts gravity back in full. From then on each joint holds its pose with a
@@ -81,6 +90,27 @@ integrated once per 64 Hz step against a light foot.
    alone and puts nothing on the foot (`child_grounded`): the ground
    carries the reaction.
 
+4. **Balance (step 4c): Winter's law on the measured COM, as
+   statics.** `carry_weight` puts the pressure at
+   `COP = COM + (COM − rest)·k·ω² + v·2ζωk`, the kinematic balance's own
+   law and gains (`RECOVERY_FREQUENCY` 3.5, `RECOVERY_DAMPING` 1). It is
+   held inside the planted soles' hull. `rest` is the COM's place over the
+   feet when both were first planted.
+   - The ground then pushes on each planted foot at its share of the COP,
+     with its load's weight and the horizontal force the pendulum needs
+     (`g·(COM − COP)/height`).
+   - Every stance-leg joint carries that push's moment about itself, less
+     the segments below it. Every other joint carries its hanging part
+     under the effective gravity `g − a` (d'Alembert). Static, this is
+     item 2 exactly.
+   - Each leg's share follows where the COP stands between the feet: the
+     hips' load/unload.
+   - A planted ankle's total torque is held to what keeps its pressure
+     inside its sole (`within_sole`).
+   - If the capture point (`COM + v·√k`) leaves the soles by more than
+     `UNCATCHABLE` (2 cm), it falls: with no step to take on its own feet
+     yet, nothing can catch it.
+
 The old per-body controller is off for a body that carries itself
 (`apply_joint_torques` skips it), and a fall removes the drives and the
 dominance (`manage_joint_drives`).
@@ -107,6 +137,19 @@ after 1 s pinned:
   [a falling body is hinged and fleshed](./a-falling-body-is-hinged-and-fleshed.md)),
   where dominance was rejected because a falling leg must drag its foot.
   A planted foot should not move.
+- **The balance as a COP on the ankles alone** (the extra torque on the
+  shins only, knees and hips fed the static weight): the sway fell to
+  ±5 mm but never settled, and the COM sat 2 cm from rest while the COP
+  asked 2.7 cm the other way. The knees gave way instead of passing the
+  push on. Carrying the ground reaction's moment up every stance joint
+  settled it within 1.5 s.
+- **Planted ankles without pose stiffness**, so the balance alone sets
+  their torque: the shins tipped 60° on the feet while the rest of the
+  body bent to keep the COM over them.
+- **No limit on the ankle torque**: with the foot glued, the ankle
+  pushed as if the pressure stood anywhere. 1.2 m/s each way was "caught",
+  and a 0.8 m/s side push was held by the unloaded foot pulling on the
+  floor, which a real foot would lift off.
 - **Why stiffness alone cannot carry weight**: a drive's correction is
   sized on its two bodies, but the shin cannot turn without the body
   above it. Its effective stiffness is capped near the light bodies'
@@ -122,10 +165,22 @@ after 1 s pinned:
 - Live, both rigs, BRP (`--stand-on-own-feet 180`), ~9 s: hips height
   within 2 mm, sway ≤ 25 mm (`puppet_base`) and 41 (`character.glb`),
   feet 0.0 mm.
-- **The whole body sways over its ankles, undamped**, ±2 cm with a ~2 s
-  period. The weight fed forward cancels gravity at the present lean, so
-  only the weak drive stiffness resists it. Steering the COM over the feet
-  is the balance controller's job (step 4c).
+- **With the balance (4c):** still within 1.5 s; over a further 55 s the
+  COM stays within 5 mm (`a_ragdoll_on_its_own_feet_stands_a_minute_without_drifting`).
+  It settles 16 mm from its recorded rest, where the pose targets and the
+  law agree. Before the balance, the body swayed ±2 cm with a ~2 s
+  period, undamped.
+  - **Pushes on the body (feet excluded):**
+    - 0.4 m/s each way: caught, the COM back within 1 cm, feet ≤ 3 mm,
+      ankles ≤ 1.6 N·m/kg
+      (`a_ragdoll_on_its_own_feet_recovers_a_push_within_its_ankles_budget`).
+    - Forward: 0.5 caught, 0.6 falls. Back: 0.4 caught, 0.6 falls.
+      Sideways: 0.6 caught, 0.8 falls
+      (`a_push_beyond_its_feet_makes_a_ragdoll_on_its_own_feet_fall`).
+  - **Live, both rigs:** the last 5 s within 5-6 mm (the idle animation's
+    breathing moves the targets).
+- The plan's co-contraction ratio is not logged: one feed-forward split
+  by share and relative drives cannot co-contract by construction.
 - The screen still draws the animation while the body carries itself: the
   read-back hangs the skeleton on the bodies only while falling. Read the
   bodies over BRP.
@@ -134,8 +189,8 @@ after 1 s pinned:
 
 ## Revisit when
 
-- A balance controller (4c) adds an ankle and hip torque: add it to the
-  feed-forward, not as more stiffness.
+- The body should step on its own feet: the capture-point fall is then
+  where the step starts.
 - A planted foot must roll onto its toes or heel, or a hand bears weight:
   the planted test is "touches the ground", and dominance pins the whole
   foot.

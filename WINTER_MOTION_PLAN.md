@@ -347,6 +347,14 @@ pinned ragdoll following the animation, sole feet (4a).
   (ankle ≈ 1.6 N·m/kg), converted to an acceleration ceiling through
   `limb_mass_properties`. Only in a new `Balancing` mode. Test: ceilings
   equal the budgets within 1 %.
+- [x] **4c balance controller, done 2026-10-02** (4.3 below). Winter's
+  COP law on the measured COM, fed to the joints as statics (each stance
+  joint carries the ground reaction's moment, the rest `g − a`); the leg
+  shares follow the COP (hip load/unload); planted ankles held to their
+  sole; past the capture point it falls. Stands a minute within 5 mm;
+  0.4 m/s each way caught with ankles < 1.6 N·m/kg; falls from 0.6
+  forward and back, 0.8 sideways. Live both rigs: still within 5-6 mm.
+  Not built: the co-contraction log (none possible by construction).
 - [ ] **4.3 Balance controller.** Part 2's controller on the measured COM:
   A/P ankle torque = W·(COP target − ankle); M/L hip abductor load/unload.
   Log the co-contraction ratio Σ|τ|/|Στ| (§11.2.2: alternating, not

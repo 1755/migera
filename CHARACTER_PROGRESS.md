@@ -42,6 +42,36 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Step 4c: the body on its own feet balances
+
+- **Winter's law on the measured COM** (`carry_weight`):
+  `COP = COM + (COM − rest)·k·ω² + v·2ζωk` with the kinematic balance's
+  gains, held in the planted soles' hull. Fed as statics: the ground pushes
+  each planted foot at its share of the COP with the load's weight and the
+  pendulum's horizontal force. Every stance joint carries that push's
+  moment, every other part its load under `g − a`. Each leg's share
+  follows the COP, which is the hips' load/unload.
+- **Physical limits.** Each planted ankle's torque is held to what keeps
+  its pressure in its sole (`within_sole`). A capture point more than 2 cm
+  outside the soles makes it fall, through the existing fall.
+- **Measured** (headless, `puppet_base`):
+  - Still within 1.5 s, then within 5 mm for 55 s; the 4b sway was ±2 cm,
+    undamped.
+  - 0.4 m/s pushes each way are caught: the COM is back within 1 cm, the
+    feet move ≤ 3 mm, the ankles carry < 1.6 N·m/kg.
+  - Limits without a step: forward 0.5 caught, 0.6 falls; back 0.4
+    caught, 0.6 falls; sideways 0.6 caught, 0.8 falls.
+  - Live, both rigs: hips within 5-6 mm over the last 5 s, feet 0.0 mm.
+- **Tried and dropped:**
+  - the COP on the ankles alone: the knees gave way, ±5 mm sway, never
+    settled;
+  - planted ankles without pose stiffness: the shins tipped 60°;
+  - no ankle limit: 1.2 m/s "caught" by feet glued to the floor.
+- **Each part fails a test when removed.** Without the law, the COM ended
+  49 mm off after a push and wandered 27 mm in a minute. The sole limit
+  has its own unit test.
+- `cargo test --release --lib`: 1076 passed. Clippy: 0 warnings.
+
 ### Step 4b: a ragdoll standing on its own feet
 
 - **`Ragdoll::stand_on_own_feet`**: the root is released, gravity acts in

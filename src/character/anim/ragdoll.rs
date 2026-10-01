@@ -147,6 +147,10 @@ pub struct Ragdoll {
     /// is not pinned, gravity acts in full, and the joints carry the weight
     /// through joint torques (`joint_drive`).
     pub self_supporting: bool,
+    /// Standing on its own feet, where the centre of mass rests over them:
+    /// its horizontal offset from the planted feet's middle, world, taken
+    /// when both were first planted (`joint_drive::carry_weight`).
+    pub stand_rest: Option<Vec3>,
 }
 
 /// A knee or elbow as the hinge it is: one bending axis fixed in the parent
@@ -274,6 +278,7 @@ impl Default for Ragdoll {
             limit_joints: BoneSet::from_fn(|_| Vec::new()),
             last_seen: BoneSet::splat(None),
             self_supporting: false,
+            stand_rest: None,
         }
     }
 }
@@ -283,11 +288,11 @@ impl Ragdoll {
     /// released, gravity acts on every body in full, and every joint
     /// carries its load with a joint torque between its two bodies
     /// (`joint_drive::JointDrive`) instead of the pose controller's
-    /// per-body acceleration. A fall still takes over as before. No way
-    /// back to a pinned root yet (that is mode switching, step 4.5).
-    ///
-    /// Without a balance controller (step 4c), nothing yet steers the
-    /// whole body's lean over its feet.
+    /// per-body acceleration, and balances over its feet by Winter's
+    /// pendulum law (`joint_drive::carry_weight`). A push its feet cannot
+    /// catch makes it fall, and the fall takes over as before. No way back
+    /// to a pinned root yet (that is mode switching, step 4.5), and no
+    /// step yet.
     pub fn stand_on_own_feet(&mut self) {
         self.self_supporting = true;
     }

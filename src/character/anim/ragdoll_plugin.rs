@@ -3522,6 +3522,100 @@ mod tests {
         }
     }
 
+    /// The centre of mass of every body in `ragdoll`, world.
+    fn centre_of_mass(app: &App, ragdoll: &Ragdoll) -> Vec3 {
+        let (mut sum, mut mass) = (Vec3::ZERO, 0.0);
+        for (_, body) in ragdoll.bodies.iter() {
+            let Some(body) = *body else { continue };
+            let m = app.world().get::<ComputedMass>(body).unwrap().value();
+            let centre = app.world().get::<Position>(body).unwrap().0 + rotation_of(app, body) * app.world().get::<ComputedCenterOfMass>(body).unwrap().0;
+            sum += centre * m;
+            mass += m;
+        }
+        sum / mass
+    }
+
+    /// Gives every body above the feet `velocity`: a shove on the body.
+    fn shove(app: &mut App, ragdoll: &Ragdoll, velocity: Vec3) {
+        for (bone, body) in ragdoll.bodies.iter() {
+            if let Some(body) = *body
+                && !matches!(bone, Bone::LeftFoot | Bone::RightFoot)
+            {
+                app.world_mut().get_mut::<LinearVelocity>(body).unwrap().0 += velocity;
+            }
+        }
+    }
+
+    #[test]
+    fn a_ragdoll_on_its_own_feet_stands_a_minute_without_drifting() {
+        // Plan 4.3's `an_unpinned_ragdoll_stands_60s`. Without the balance
+        // the body swayed ±2 cm over its ankles, undamped, with a ~2 s
+        // period; with it, still within 1.5 s.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, (5.0 / TIMESTEP) as usize);
+        let settled = centre_of_mass(&app, &ragdoll);
+        let mut furthest = 0.0f32;
+        for _ in 0..(55.0 / TIMESTEP) as usize {
+            app.update();
+            let now = centre_of_mass(&app, &ragdoll);
+            assert!(now.is_finite(), "the body went non-finite");
+            furthest = furthest.max(now.distance(settled));
+        }
+        assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_none(), "it fell");
+        assert!(furthest < 0.005, "the centre of mass wandered {:.1} mm from where it settled", furthest * 1e3);
+    }
+
+    #[test]
+    fn a_ragdoll_on_its_own_feet_recovers_a_push_within_its_ankles_budget() {
+        // Winter's pendulum law on the measured COM moves the pressure; the
+        // ankles carry it, held to what the sole can give. 0.4 m/s each way
+        // is caught on the feet; the COM comes back where it stood. The
+        // ankles stay under Winter's per-kg peak (§7.4.5, ~1.6 N·m/kg).
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, (2.0 / TIMESTEP) as usize);
+        let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
+        let stood = centre_of_mass(&app, &ragdoll);
+        let feet = [Bone::LeftFoot, Bone::RightFoot].map(|b| app.world().get::<Position>(ragdoll.bodies[b].unwrap()).unwrap().0);
+        for push in [Vec3::Z, Vec3::NEG_Z, Vec3::X, Vec3::NEG_X].map(|d| d * 0.4) {
+            shove(&mut app, &ragdoll, push);
+            let (mut furthest, mut strongest) = (0.0f32, 0.0f32);
+            for _ in 0..(3.0 / TIMESTEP) as usize {
+                app.update();
+                furthest = furthest.max(Vec3::new(1.0, 0.0, 1.0).dot((centre_of_mass(&app, &ragdoll) - stood).abs()));
+                for foot in [Bone::LeftFoot, Bone::RightFoot] {
+                    let drive = app.world().get::<super::super::joint_drive::JointDrive>(ragdoll.bodies[foot].unwrap()).unwrap();
+                    strongest = strongest.max(drive.feedforward.length());
+                }
+            }
+            assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_none(), "{push}: it fell");
+            let back = centre_of_mass(&app, &ragdoll) - stood;
+            assert!(Vec3::new(back.x, 0.0, back.z).length() < 0.01, "{push}: the COM stopped {:.0} mm off", back.length() * 1e3);
+            assert!(furthest > 0.02, "{push}: the push hardly moved it ({:.0} mm)", furthest * 1e3);
+            assert!(strongest / mass < 1.6, "{push}: an ankle carried {:.2} N·m/kg", strongest / mass);
+            for (leg, foot) in [Bone::LeftFoot, Bone::RightFoot].into_iter().enumerate() {
+                let moved = app.world().get::<Position>(ragdoll.bodies[foot].unwrap()).unwrap().0 - feet[leg];
+                assert!(moved.length() < 0.003, "{push}: the {} moved {:.1} mm", foot.name(), moved.length() * 1e3);
+            }
+        }
+    }
+
+    #[test]
+    fn a_push_beyond_its_feet_makes_a_ragdoll_on_its_own_feet_fall() {
+        // Its capture point leaves the soles: no pressure can bring it back
+        // and it has no step yet, so it falls at once, and limply. Held up
+        // instead, it pivoted stiffly over feet the ground would not let go.
+        for push in [Vec3::Z, Vec3::NEG_Z, Vec3::X].map(|d| d * 0.9) {
+            let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+            step(&mut app, (1.0 / TIMESTEP) as usize);
+            shove(&mut app, &ragdoll, push);
+            step(&mut app, (0.2 / TIMESTEP) as usize);
+            assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_some(), "{push}: it should be falling");
+        }
+    }
+
     #[test]
     fn a_ragdoll_on_its_own_feet_still_falls() {
         // A fall takes over from the joints: the drives go, the fall's own
@@ -3574,8 +3668,36 @@ mod tests {
             line
         };
         println!("ERRORS at unpin:{}", errors(&app));
+        let com_of = |app: &App| {
+            let (mut sum, mut mass) = (Vec3::ZERO, 0.0);
+            for (_, body) in ragdoll.bodies.iter() {
+                let Some(body) = *body else { continue };
+                let m = app.world().get::<ComputedMass>(body).unwrap().value();
+                sum += (app.world().get::<Position>(body).unwrap().0 + rotation_of(app, body) * app.world().get::<ComputedCenterOfMass>(body).unwrap().0) * m;
+                mass += m;
+            }
+            sum / mass
+        };
+        let com_start = com_of(&app);
+        // `PUSH_V=x,z`: every body given that velocity (m/s) at 2 s.
+        let push = std::env::var("PUSH_V")
+            .ok()
+            .and_then(|v| v.split_once(',').and_then(|(x, z)| Some(Vec3::new(x.parse().ok()?, 0.0, z.parse().ok()?))));
+        let mut lowest_after = f32::MAX;
         for frame in 1..=(10.0 / TIMESTEP) as usize {
+            if frame == (2.0 / TIMESTEP) as usize
+                && let Some(push) = push
+            {
+                for (bone, body) in ragdoll.bodies.iter() {
+                    if let Some(body) = *body
+                        && !matches!(bone, Bone::LeftFoot | Bone::RightFoot)
+                    {
+                        app.world_mut().get_mut::<LinearVelocity>(body).unwrap().0 += push;
+                    }
+                }
+            }
             app.update();
+            lowest_after = lowest_after.min(pose(&app, hips).translation.y);
             if frame == 15 || frame == 30 || frame == 300 {
                 println!("ERRORS frame {frame}:{}", errors(&app));
             }
@@ -3614,15 +3736,19 @@ mod tests {
                     .map(|(now, then)| format!("{:.0}", (now - then).length() * 1e3))
                     .collect::<Vec<_>>()
                     .join("/");
+                let com = com_of(&app) - com_start;
                 println!(
-                    "DRIVE t {:.1}s: hips drop {:+.0} mm, drift {:.0} mm, tilt {:.1}°, feet moved {slid} mm",
+                    "DRIVE t {:.1}s: hips drop {:+.0} mm, drift {:.0} mm, tilt {:.1}°, feet moved {slid} mm, COM off ({:+.0}, {:+.0}) mm",
                     frame as f32 * TIMESTEP,
                     (start.translation.y - now.translation.y) * 1e3,
                     drift * 1e3,
-                    tilt
+                    tilt,
+                    com.x * 1e3,
+                    com.z * 1e3
                 );
             }
         }
+        println!("PUSHED {push:?}: hips lowest {:.0} mm below the start", (start.translation.y - lowest_after) * 1e3);
     }
 
     // SPIKE (plan step 4.1) — an unpinned ragdoll on the real rig, full

@@ -36,7 +36,7 @@
 
 use avian3d::dynamics::solver::solver_body::{SolverBody, SolverBodyInertia};
 use avian3d::prelude::*;
-use bevy::math::{Mat3, Quat, Vec3};
+use bevy::math::{Mat3, Quat, Vec2, Vec3};
 use bevy::prelude::*;
 
 use super::math::quat_ext::{neighborhood, to_scaled_angle_axis};
@@ -50,6 +50,11 @@ use crate::character::skeleton::Bone;
 /// alike (knees 5-7° off their targets either way, the stiffness the light
 /// bodies let through), 10 at the lightest.
 pub const DRIVE_STIFFNESS_PER_KG: f32 = 10.0;
+
+/// How far outside the planted soles the capture point may run before a
+/// body standing on its own feet falls, metres: past the edge the COP
+/// cannot bring it back, and it has no step to take yet.
+pub const UNCATCHABLE: f32 = 0.02;
 
 /// A drive's damping per unit stiffness, seconds.
 pub const DRIVE_DAMPING_SECONDS: f32 = 0.1;
@@ -83,6 +88,11 @@ pub struct JointDrive {
     /// Whether the ground holds the child (a foot flat on the floor): the
     /// drive is then sized on the parent's inertia alone.
     pub child_grounded: bool,
+    /// For a planted foot: what the ground can hold the ankle with, the
+    /// sole's corners (horizontal `x`, `z`), the joint point, and the
+    /// weight on the foot, N. The ankle's torque is held to what keeps
+    /// its pressure inside the sole.
+    pub sole: Option<([Vec2; 4], Vec3, f32)>,
 }
 
 /// The angular impulse on the child for one substep `h` (the parent gets
@@ -133,7 +143,12 @@ pub(crate) fn apply_joint_drives(
         let (child_inverse, parent_inverse) =
             (child_inertia.effective_inv_angular_inertia().to_mat3(), parent_inertia.effective_inv_angular_inertia().to_mat3());
         let sized_on = if drive.child_grounded { parent_inverse } else { child_inverse + parent_inverse };
-        let impulse = drive_impulse(error, relative, sized_on, drive.stiffness, drive.damping, h) + drive.feedforward * h;
+        let mut impulse = drive_impulse(error, relative, sized_on, drive.stiffness, drive.damping, h) + drive.feedforward * h;
+        if drive.child_grounded
+            && let Some((sole, _, weight)) = drive.sole
+        {
+            impulse = within_sole(impulse / h, &sole, weight) * h;
+        }
         if !drive.child_grounded {
             child_body.angular_velocity += child_inverse * impulse;
         }
@@ -168,6 +183,7 @@ pub(crate) fn manage_joint_drives(
                         stiffness,
                         damping: stiffness * DRIVE_DAMPING_SECONDS,
                         child_grounded: false,
+                        sole: None,
                     });
                 }
             }
@@ -188,6 +204,16 @@ fn touches_ground(body: Entity, contacts: &ContactGraph, kinds: &Query<&RigidBod
         pair.is_touching() && kinds.get(other).is_ok_and(|kind| *kind == RigidBody::Static)
     })
 }
+
+/// What [`carry_weight`] reads of each body.
+type BodyState = (
+    &'static Position,
+    &'static Rotation,
+    &'static ComputedMass,
+    &'static ComputedCenterOfMass,
+    &'static LinearVelocity,
+    Option<&'static Collider>,
+);
 
 /// Once per physics step, for every character carrying itself: which feet
 /// are planted, and the weight each joint carries (`JointDrive::feedforward`).
@@ -216,26 +242,42 @@ fn touches_ground(body: Entity, contacts: &ContactGraph, kinds: &Query<&RigidBod
 ///
 /// With nothing planted, nothing is fed: a body in the air carries no
 /// weight.
+///
+/// # Balance (plan step 4c)
+///
+/// Winter's pendulum law, as the standing balance poses it
+/// (`balance::Balance`), on the measured centre of mass: the pressure goes
+/// to `COP = COM + (COM − rest)·k·ω² + v·2ζω·k`, held inside the planted
+/// soles. `rest` is where the COM stood over the feet when both were first
+/// planted; `k` the COM's height over the ankles over `g`. Each planted
+/// ankle then carries its load as pushed up at its own share of that COP
+/// (Winter's ankle moment, `W·(COP − ankle)`), and each leg's share of
+/// everything else follows where the COP stands between the feet: the
+/// hips' load/unload (§11.2.1).
 pub(crate) fn carry_weight(
-    characters: Query<&Ragdoll>,
+    mut characters: Query<&mut Ragdoll>,
     mut drives: Query<&mut JointDrive>,
-    bodies: Query<(&Position, &Rotation, &ComputedMass, &ComputedCenterOfMass)>,
+    bodies: Query<BodyState>,
     kinds: Query<&RigidBody>,
     contacts: Res<ContactGraph>,
     mut commands: Commands,
     gravity: Res<Gravity>,
 ) {
     const FEET: [Bone; 2] = [Bone::LeftFoot, Bone::RightFoot];
-    for ragdoll in &characters {
+    for mut ragdoll in &mut characters {
         if !ragdoll.carries_itself() {
+            ragdoll.stand_rest = None;
             continue;
         }
         let all: Vec<Bone> = Bone::ALL.iter().copied().filter(|&bone| ragdoll.bodies[bone].is_some()).collect();
         // Each body's centre of mass and mass, and its bone's joint point.
         let mut state = super::rig::BoneSet::splat((Vec3::ZERO, 0.0f32, Vec3::ZERO));
+        let (mut momentum, mut total) = (Vec3::ZERO, 0.0f32);
         for &bone in &all {
-            let Ok((position, rotation, mass, centre)) = bodies.get(ragdoll.bodies[bone].unwrap()) else { return };
+            let Ok((position, rotation, mass, centre, velocity, _)) = bodies.get(ragdoll.bodies[bone].unwrap()) else { return };
             state[bone] = (position.0 + rotation.0 * centre.0, mass.value(), position.0 - rotation.0 * ragdoll.body_offsets[bone]);
+            momentum += velocity.0 * mass.value();
+            total += mass.value();
         }
         let below = |top: Bone| -> Vec<Bone> {
             all.iter()
@@ -257,44 +299,219 @@ pub(crate) fn carry_weight(
                 commands.entity(body).insert(Dominance(down as i8));
             }
         }
-        // Each planted leg's share of what no planted leg carries.
+        let flat = |v: Vec3| Vec2::new(v.x, v.z);
+        let com = all.iter().fold(Vec3::ZERO, |sum, &b| sum + state[b].0 * state[b].1) / total;
+        let velocity = momentum / total;
+        // Each planted sole's footprint, its block's bottom corners, and
+        // the height of the ground under it.
+        let soles: Vec<(Vec<Vec2>, f32)> = planted
+            .iter()
+            .map(|&leg| {
+                let Some(Ok((position, rotation, _, _, _, Some(collider)))) = ragdoll.bodies[FEET[leg]].map(|body| bodies.get(body)) else {
+                    return (vec![flat(state[FEET[leg]].2)], state[FEET[leg]].2.y);
+                };
+                let mut corners = Vec::new();
+                if let Some(compound) = collider.shape_scaled().as_compound() {
+                    for (iso, shape) in compound.shapes() {
+                        let Some(cuboid) = shape.as_cuboid() else { continue };
+                        let half = Vec3::new(cuboid.half_extents.x, cuboid.half_extents.y, cuboid.half_extents.z);
+                        let (offset, turn) = (Vec3::new(iso.translation.x, iso.translation.y, iso.translation.z), iso.rotation);
+                        for corner in 0..8 {
+                            let sign = |bit: u32| if corner & (1 << bit) == 0 { -1.0 } else { 1.0 };
+                            let local = Vec3::new(sign(0) * half.x, sign(1) * half.y, sign(2) * half.z);
+                            corners.push(position.0 + rotation.0 * (offset + turn * local));
+                        }
+                    }
+                }
+                let lowest = corners.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+                let bottom: Vec<Vec2> = corners.iter().filter(|c| c.y < lowest + 0.005).map(|&c| flat(c)).collect();
+                if bottom.is_empty() { (vec![flat(state[FEET[leg]].2)], state[FEET[leg]].2.y) } else { (convex_hull(bottom), lowest) }
+            })
+            .collect();
+        // Where the pressure goes: Winter's law on the measured COM, held
+        // inside the soles.
+        let mut cop = flat(com);
+        if !planted.is_empty() {
+            let middle = planted.iter().fold(Vec3::ZERO, |sum, &leg| sum + state[FEET[leg]].2) / planted.len() as f32;
+            if planted.len() == 2 && ragdoll.stand_rest.is_none() {
+                ragdoll.stand_rest = Some(Vec3::new(com.x - middle.x, 0.0, com.z - middle.z));
+            }
+            let rest = flat(middle + ragdoll.stand_rest.unwrap_or(Vec3::new(com.x - middle.x, 0.0, com.z - middle.z)));
+            let ankles = planted.iter().map(|&leg| state[FEET[leg]].2.y).sum::<f32>() / planted.len() as f32;
+            let k = ((com.y - ankles) / gravity.0.length().max(1.0e-6)).max(0.0);
+            let (w, zeta) = (super::balance::RECOVERY_FREQUENCY, super::balance::RECOVERY_DAMPING);
+            let wanted = flat(com) + (flat(com) - rest) * (k * w * w) + flat(velocity) * (2.0 * zeta * w * k);
+            let hull = convex_hull(soles.iter().flat_map(|(sole, _)| sole.iter().copied()).collect());
+            // Beyond what the feet can catch: the capture point (Hof) out of
+            // the soles. With no step to take on its own feet yet, it
+            // falls, and the fall's own machinery takes the body.
+            let capture = flat(com) + flat(velocity) * k.sqrt();
+            let (edge, caught) = nearest_in_polygon(capture, &hull);
+            if !caught && edge.distance(capture) > UNCATCHABLE {
+                ragdoll.fall(super::ragdoll::FALL_TONE, super::ragdoll::FALL_DAMPING);
+                continue;
+            }
+            let (held, inside) = nearest_in_polygon(wanted, &hull);
+            let centre = hull.iter().copied().sum::<Vec2>() / hull.len().max(1) as f32;
+            cop = if inside { held } else { held + (centre - held).normalize_or_zero() * super::balance::SUPPORT_MARGIN };
+        }
+        // Each planted leg's share of what no planted leg carries, by where
+        // the pressure stands between the feet.
         let upper: Vec<Bone> = all.iter().copied().filter(|b| !planted.iter().any(|&leg| legs[leg].contains(b))).collect();
         let mut share = [0.0f32; 2];
         match planted[..] {
             [leg] => share[leg] = 1.0,
             [left, right] => {
-                let total: f32 = all.iter().map(|&b| state[b].1).sum();
-                let com = all.iter().fold(Vec3::ZERO, |sum, &b| sum + state[b].0 * state[b].1) / total;
-                let (l, r) = (state[FEET[left]].2, state[FEET[right]].2);
-                let across = Vec3::new(r.x - l.x, 0.0, r.z - l.z);
-                let t = (Vec3::new(com.x - l.x, 0.0, com.z - l.z).dot(across) / across.length_squared().max(1.0e-6)).clamp(0.0, 1.0);
+                let centre = |i: usize| soles[i].0.iter().copied().sum::<Vec2>() / soles[i].0.len() as f32;
+                let (l, r) = (centre(0), centre(1));
+                let t = ((cop - l).dot(r - l) / (r - l).length_squared().max(1.0e-6)).clamp(0.0, 1.0);
                 share[left] = 1.0 - t;
                 share[right] = t;
             }
             _ => {}
         }
+        // The body's horizontal acceleration under that pressure (the
+        // pendulum: g·(COM − COP)/height), carried by every part as
+        // d'Alembert's effective gravity `g − a`.
+        let effective = if planted.is_empty() {
+            gravity.0
+        } else {
+            let floor = soles.iter().map(|(_, y)| *y).fold(f32::MAX, f32::min);
+            let height = (com.y - floor).max(0.1);
+            let lean = flat(com) - cop;
+            gravity.0 - Vec3::new(lean.x, 0.0, lean.y) * (gravity.0.length() / height)
+        };
         for &bone in &all {
             let Ok(mut drive) = drives.get_mut(ragdoll.bodies[bone].unwrap()) else { continue };
             let joint = state[bone].2;
-            let moment = |set: &[Bone], weight: f32| {
-                set.iter().fold(Vec3::ZERO, |sum, &b| sum + (state[b].0 - joint).cross(gravity.0 * state[b].1 * weight))
-            };
+            let moment = |set: &[Bone]| set.iter().fold(Vec3::ZERO, |sum, &b| sum + (state[b].0 - joint).cross(effective * state[b].1));
             let subtree = below(bone);
+            drive.sole = None;
             drive.feedforward = if planted.is_empty() {
                 Vec3::ZERO
             } else if let Some(leg) = planted.iter().copied().find(|&leg| legs[leg].contains(&bone)) {
-                let above: Vec<Bone> = legs[leg].iter().copied().filter(|b| !subtree.contains(b)).collect();
-                moment(&above, 1.0) + moment(&upper, share[leg])
+                // On a planted leg: the ground pushes on this foot at its
+                // share of the pressure (the point of its sole nearest the
+                // COP), with its load's weight and the force that moves it.
+                // The joint carries that push's moment about itself, less
+                // the segments below it.
+                let index = planted.iter().position(|&p| p == leg).unwrap();
+                let (at, _) = nearest_in_polygon(cop, &soles[index].0);
+                let at = Vec3::new(at.x, soles[index].1, at.y);
+                let load = legs[leg].iter().map(|&b| state[b].1).sum::<f32>() + share[leg] * upper.iter().map(|&b| state[b].1).sum::<f32>();
+                if bone == FEET[leg] {
+                    drive.sole = <[Vec2; 4]>::try_from(soles[index].0.iter().map(|&c| c - flat(joint)).collect::<Vec<_>>())
+                        .ok()
+                        .map(|corners| (corners, joint, load * -effective.y));
+                }
+                (at - joint).cross(effective * load) - moment(&subtree)
             } else {
-                -moment(&subtree, 1.0)
+                -moment(&subtree)
             };
         }
     }
 }
 
+/// `torque` on a planted foot (N·m, world) held to what the ground can
+/// give it: the pressure it implies, `weight` (N) pushing up at a
+/// horizontal offset `d` from the ankle (`τ = d × (0, −W, 0)`), kept inside
+/// `sole` (the sole's corners as offsets from the ankle, counter-clockwise).
+/// The twist about the vertical is left alone.
+pub fn within_sole(torque: Vec3, sole: &[Vec2; 4], weight: f32) -> Vec3 {
+    if weight <= 0.0 {
+        return Vec3::new(0.0, torque.y, 0.0);
+    }
+    // τx = dz·W, τz = −dx·W.
+    let offset = Vec2::new(-torque.z / weight, torque.x / weight);
+    let (held, _) = nearest_in_polygon(offset, sole);
+    Vec3::new(held.y * weight, torque.y, -held.x * weight)
+}
+
+/// The convex hull of `points` (horizontal, `x` and `z` as a `Vec2`),
+/// counter-clockwise, by Andrew's monotone chain.
+pub fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
+    points.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    points.dedup_by(|a, b| a.distance_squared(*b) < 1.0e-12);
+    if points.len() < 3 {
+        return points;
+    }
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    let mut hull: Vec<Vec2> = Vec::with_capacity(points.len() * 2);
+    for pass in 0..2 {
+        let start = hull.len();
+        let ordered: Box<dyn Iterator<Item = &Vec2>> = if pass == 0 { Box::new(points.iter()) } else { Box::new(points.iter().rev()) };
+        for &p in ordered {
+            while hull.len() >= start + 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+    }
+    hull
+}
+
+/// The point of the convex polygon `hull` (counter-clockwise) nearest `p`,
+/// and whether `p` was inside it.
+pub fn nearest_in_polygon(p: Vec2, hull: &[Vec2]) -> (Vec2, bool) {
+    if hull.len() < 3 {
+        return (hull.first().copied().unwrap_or(p), false);
+    }
+    let edges = || hull.iter().zip(hull.iter().cycle().skip(1));
+    if edges().all(|(&a, &b)| (b - a).perp_dot(p - a) >= 0.0) {
+        return (p, true);
+    }
+    let nearest = edges()
+        .map(|(&a, &b)| {
+            let t = ((p - a).dot(b - a) / (b - a).length_squared().max(1.0e-12)).clamp(0.0, 1.0);
+            a + (b - a) * t
+        })
+        .min_by(|x, y| x.distance_squared(p).total_cmp(&y.distance_squared(p)))
+        .unwrap_or(p);
+    (nearest, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ankle_torque_is_held_to_what_the_sole_can_give() {
+        // A 700 N foot, its sole 0.06 m behind the ankle to 0.18 ahead (+z)
+        // and ±0.05 across (x). Without the hold, a glued foot let the
+        // ankle push as if the pressure stood anywhere, and a 1.2 m/s push
+        // was "caught".
+        let sole = [Vec2::new(-0.05, -0.06), Vec2::new(0.05, -0.06), Vec2::new(0.05, 0.18), Vec2::new(-0.05, 0.18)];
+        let weight = 700.0;
+        // Pressure 0.1 m ahead: τx = dz·W = 70, inside, untouched.
+        let inside = Vec3::new(70.0, 3.0, 0.0);
+        assert!((within_sole(inside, &sole, weight) - inside).length() < 1.0e-3);
+        // 0.3 m ahead is past the toe: held at 0.18 (τx = 126); the twist
+        // is kept.
+        let held = within_sole(Vec3::new(210.0, 3.0, 0.0), &sole, weight);
+        assert!((held - Vec3::new(126.0, 3.0, 0.0)).length() < 1.0e-3, "{held}");
+        // 0.1 m to the side (τz = −dx·W = −70): held at 0.05.
+        let held = within_sole(Vec3::new(0.0, 0.0, -70.0), &sole, weight);
+        assert!((held - Vec3::new(0.0, 0.0, -35.0)).length() < 1.0e-3, "{held}");
+    }
+
+    #[test]
+    fn a_polygon_holds_what_is_inside_and_clamps_what_is_not() {
+        // Two soles side by side, as boxes' corners, and a stray inside.
+        let soles = vec![
+            Vec2::new(-0.15, -0.05), Vec2::new(-0.05, -0.05), Vec2::new(-0.15, 0.20), Vec2::new(-0.05, 0.20),
+            Vec2::new(0.05, -0.05), Vec2::new(0.15, -0.05), Vec2::new(0.05, 0.20), Vec2::new(0.15, 0.20),
+            Vec2::new(0.0, 0.1),
+        ];
+        let hull = convex_hull(soles);
+        assert_eq!(hull.len(), 4, "the two soles' hull is their outer box: {hull:?}");
+        let (at, inside) = nearest_in_polygon(Vec2::new(0.0, 0.05), &hull);
+        assert!(inside && at == Vec2::new(0.0, 0.05));
+        let (at, inside) = nearest_in_polygon(Vec2::new(0.0, 0.5), &hull);
+        assert!(!inside && (at - Vec2::new(0.0, 0.2)).length() < 1.0e-6, "{at}");
+        let (at, _) = nearest_in_polygon(Vec2::new(0.4, -0.3), &hull);
+        assert!((at - Vec2::new(0.15, -0.05)).length() < 1.0e-6, "a corner: {at}");
+    }
 
     /// One body on a fixed parent, driven toward zero error; returns the
     /// angle each step.
