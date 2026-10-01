@@ -42,6 +42,31 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Hip adduction capped the same way; a camera that follows the fall
+
+- A third limit-only joint on each hip's pivot: 120° about the
+  direction straight out to the side, so a thigh crosses under the body
+  by no more than AAOS's 30°. Sideways falls measured 48.7° before, 30.3°
+  after. The fall test fails without it, and the pose-limits test checks
+  every shipped pose against all of a hip's cones.
+- `character_gallery --camera-follow`: a preset view tracks the hips
+  across the floor, so a fall stays in frame for `--shot`. Front view of
+  a 1.6 m/s sideways fall, both rigs: the legs land in a small V, never
+  splayed.
+- **Found, not fixed: the standing spine is over-arched.** Measured
+  (`poses::tests::probe_spine_profile`), the segments' forward lean from
+  the pelvis up is +16.4 / +1.5 / −12.0 / −23.6°, against the bind's
+  +16.4 / +5.8 / +1.3 / −13.0°. `relaxed_stand` stores the idle mocap's
+  absolute spine lean (straight synthetic bind) as its bends, but Mixamo's
+  own bind spine already leans 0.3 / 14.1 / 12.2° back
+  (`assets/models/idle.glb` inverse bind matrices). Relative to its bind,
+  the idle bends only −4.1 / +0.8 / +1.6°. So the Mixamo curvature is
+  applied again on top of puppet_base's own, about 11–13° of extra arch
+  per segment. The import (`import_reference_pose`) should convert
+  relative to the source rig's bind.
+
+1045 tests pass.
+
 ### Hip abduction capped by a second cone on the same pivot
 
 Closes the open item below. avian's one cone could not fit the hip:

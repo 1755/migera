@@ -1656,9 +1656,10 @@ pub fn spawn_ragdoll(
             segment,
             bind_rotation_between(parent_bone, bone, |b| skeleton.rest_rotation(b)),
         );
-        // A hip's side cone (`anatomical_side_cone`), sharing the anchors,
-        // its parent frame turned from the bind's as the tilt turns it.
-        if let Some((centre, half_angle)) = anatomical_side_cone(bone, bind.forward()) {
+        // A hip's side cones (`anatomical_side_cones`), sharing the
+        // anchors, each parent frame turned from the bind's as the tilt
+        // turns it.
+        for (centre, half_angle) in anatomical_side_cones(bone, bind.forward()) {
             let to = bind_world[parent_bone].inverse() * centre;
             let on_parent = Quat::from_rotation_arc(basis_on_parent * Vec3::Y, to) * basis_on_parent;
             let mut side = SphericalJoint::new(parent_body, body)
@@ -2215,17 +2216,23 @@ pub fn anatomical_cone_centre(bone: Bone, forward: Vec3) -> Option<Vec3> {
 /// degrees centred straight across the body (toward the other leg)
 /// excludes just the 45 degrees around pointing straight out: abduction
 /// stops at 45 standing and flexed alike, and flexion and extension are
-/// untouched. The two joints share their anchors ([`LimitOnly`]).
-pub fn anatomical_side_cone(bone: Bone, forward: Vec3) -> Option<(Vec3, f32)> {
+/// untouched. The joints share their anchors ([`LimitOnly`]).
+///
+/// **Hip adduction**, the same way mirrored: 120 degrees about the
+/// direction straight out to the side excludes the 60 around pointing
+/// across under the body, so a thigh crosses the midline by no more than
+/// AAOS's 30. Before, only the other leg's flesh stopped it in a fall.
+pub fn anatomical_side_cones(bone: Bone, forward: Vec3) -> Vec<(Vec3, f32)> {
     let left = Vec3::Y.cross(forward).normalize_or_zero();
-    match bone {
-        Bone::LeftUpLeg => Some((-left, 135f32.to_radians())),
-        Bone::RightUpLeg => Some((left, 135f32.to_radians())),
-        _ => None,
-    }
+    let outward = match bone {
+        Bone::LeftUpLeg => left,
+        Bone::RightUpLeg => -left,
+        _ => return Vec::new(),
+    };
+    vec![(-outward, 135f32.to_radians()), (outward, 120f32.to_radians())]
 }
 
-/// A joint that only limits ([`anatomical_side_cone`]): its bodies are
+/// A joint that only limits ([`anatomical_side_cones`]): its bodies are
 /// already joined, and the fall's damping is the main joint's alone.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct LimitOnly;
@@ -3600,6 +3607,8 @@ mod tests {
         /// and the furthest out to the side (abduction).
         hip_sagittal: (f32, f32),
         hip_abduction: f32,
+        /// The furthest a thigh crossed toward the other side (adduction).
+        hip_adduction: f32,
     }
 
     fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
@@ -3686,6 +3695,7 @@ mod tests {
                 let sagittal = d.dot(ahead).atan2(d.dot(down)).to_degrees();
                 shape.hip_sagittal = (shape.hip_sagittal.0.min(sagittal), shape.hip_sagittal.1.max(sagittal));
                 shape.hip_abduction = shape.hip_abduction.max(d.dot(outward).clamp(-1.0, 1.0).asin().to_degrees());
+                shape.hip_adduction = shape.hip_adduction.max((-d.dot(outward)).clamp(-1.0, 1.0).asin().to_degrees());
             }
             for (i, (parent, child, axis)) in hinges.iter().enumerate() {
                 let axis = world_rotation(&app, *parent) * *axis;
@@ -3751,9 +3761,10 @@ mod tests {
         for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
             let s = measure_fall(launch * 1.5, 4.0);
             assert!(s.hip_sagittal.0 > -31.0, "{name}: the hips bent {:.1} degrees back", -s.hip_sagittal.0);
-            // Out to the side, AAOS's 45 (`anatomical_side_cone`): 52 with
-            // the hip's one cone.
+            // Out to the side, AAOS's 45, and across under the body, its 30
+            // (`anatomical_side_cones`): 52 out with the hip's one cone.
             assert!(s.hip_abduction < 46.0, "{name}: a hip opened {:.1} degrees out to the side", s.hip_abduction);
+            assert!(s.hip_adduction < 31.0, "{name}: a thigh crossed {:.1} degrees under the body", s.hip_adduction);
             deepest_flexion = deepest_flexion.max(s.hip_sagittal.1);
             let (knee, elbow) = (super::super::ragdoll::KNEE_RANGE, super::super::ragdoll::ELBOW_RANGE);
             assert!(
@@ -3786,9 +3797,9 @@ mod tests {
         for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
             let s = measure_fall(launch * 1.5, 4.0);
             println!(
-                "FALL {name:7}: knee bend {:6.1}..{:6.1} off {:5.1} | elbow bend {:6.1}..{:6.1} off {:5.1} | hip {:6.1}..{:6.1} abd {:5.1} | overlap {:5.1} mm {:?} | hips {:.2} m",
+                "FALL {name:7}: knee bend {:6.1}..{:6.1} off {:5.1} | elbow bend {:6.1}..{:6.1} off {:5.1} | hip {:6.1}..{:6.1} abd {:5.1} add {:5.1} | overlap {:5.1} mm {:?} | hips {:.2} m",
                 s.knee_bend.0, s.knee_bend.1, s.knee_off, s.elbow_bend.0, s.elbow_bend.1, s.elbow_off,
-                s.hip_sagittal.0, s.hip_sagittal.1, s.hip_abduction,
+                s.hip_sagittal.0, s.hip_sagittal.1, s.hip_abduction, s.hip_adduction,
                 s.overlap * 1e3, s.overlap_pair, s.rest_height
             );
         }
@@ -4692,8 +4703,8 @@ mod tests {
         Some(current)
     }
 
-    /// Swing, twist, and a side cone's (swing, half-angle), degrees.
-    type SwingTwistSide = (f32, f32, Option<(f32, f32)>);
+    /// Swing, twist, and each side cone's (swing, half-angle), degrees.
+    type SwingTwistSide = (f32, f32, Vec<(f32, f32)>);
 
     /// A joint's swing and twist under `pose`, in degrees, measured in the
     /// frames [`joint_bases`] gives the physical joint — between `bone`'s
@@ -4703,7 +4714,7 @@ mod tests {
     /// joint that spans a skipped bone (the arm hangs from the upper torso
     /// through the collarbone) counts the skipped bone's motion too. Splits
     /// about `+Y` into swing and twist exactly as avian's constraint reads
-    /// it. With a side cone (`anatomical_side_cone`), its swing and
+    /// it. With side cones (`anatomical_side_cones`), each one's swing and
     /// half-angle too.
     fn swing_and_twist(
         pose: &LocalPose,
@@ -4740,13 +4751,16 @@ mod tests {
         let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);
 
         let (swing, twist) = avian_limit_angles(relative);
-        // And the side cone's swing, in the frame `spawn_ragdoll` gives it.
-        let side = anatomical_side_cone(bone, rig.forward()).map(|(centre, half)| {
-            let to = bind[parent].inverse() * centre;
-            let on_parent = Quat::from_rotation_arc(untilted * Vec3::Y, to) * untilted;
-            let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);
-            (avian_limit_angles(relative).0.to_degrees(), half.to_degrees())
-        });
+        // And each side cone's swing, in the frame `spawn_ragdoll` gives it.
+        let side = anatomical_side_cones(bone, rig.forward())
+            .into_iter()
+            .map(|(centre, half)| {
+                let to = bind[parent].inverse() * centre;
+                let on_parent = Quat::from_rotation_arc(untilted * Vec3::Y, to) * untilted;
+                let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);
+                (avian_limit_angles(relative).0.to_degrees(), half.to_degrees())
+            })
+            .collect();
         Some((swing.to_degrees(), twist.to_degrees(), side))
     }
 
@@ -4796,10 +4810,10 @@ mod tests {
                 else {
                     continue;
                 };
-                if let Some((side, cone)) = side
-                    && side > cone
-                {
-                    violations.push(format!("{name}: {} side cone {side:.1} (cone {cone:.0})", bone.name()));
+                for (side, cone) in side {
+                    if side > cone {
+                        violations.push(format!("{name}: {} side cone {side:.1} (cone {cone:.0})", bone.name()));
+                    }
                 }
                 // Against what avian will actually enforce.
                 let cone = limit.swing_half_angle.to_degrees();

@@ -28,8 +28,9 @@ aliases:
   - knee bends backward
   - anatomical_cone_centre
   - tilted_parent_basis
-  - anatomical_side_cone
+  - anatomical_side_cones
   - LimitOnly
+  - hip adduction
   - hip abduction
   - hip extension limit
 ---
@@ -94,16 +95,19 @@ things for its duration, and the end of the rise changes them back.
   - **The centre comes from the rig's bind frame,** the same in
     `spawn_ragdoll` and the pose-limits test, so the test measures the
     frames the joints have.
-- **Hip abduction is a second cone on the same pivot**
-  (`anatomical_side_cone`, `LimitOnly`). The tilted hip cone alone
+- **Hip abduction and adduction are more cones on the same pivot**
+  (`anatomical_side_cones`, `LimitOnly`). The tilted hip cone alone
   reaches about 68° out to the side at neutral flexion (AAOS 45; falls
   measured 52). A second `SphericalJoint` with the same anchors carries
   only a swing limit: 135° about the direction straight across the body,
   toward the other leg. That excludes just the 45° around pointing
   straight out. The allowed region is the two cones' intersection, an
   oval one cone cannot make. Abduction stops at 45° standing and flexed
-  alike; flexion and extension are untouched. It is spawned with the
-  joints and kept through falls, and fall damping skips it.
+  alike; flexion and extension are untouched. Mirrored, a third joint
+  carries 120° about the direction straight out to the side, so a thigh
+  crosses under the body by no more than AAOS's 30°. Before it, only the
+  other leg's flesh stopped it (falls measured 48.7°). They are spawned
+  with the joints and kept through falls, and fall damping skips them.
 
 ## Alternatives considered
 
@@ -139,6 +143,7 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
 | hip extension, forward fall | 43° | 30.0° |
 | hip flexion, deepest | 75° (cone) | 116° |
 | hip abduction | 52° | 45.1° |
+| hip adduction | 48.7° | 30.3° |
 
 - **Lying side:** side falls lie on the flank (hips 0.18 m, the pelvis's
   half-breadth). Forward lands face down and back face up on both rigs.
@@ -184,9 +189,6 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
 
 ## Revisit when
 
-- Hip adduction: nothing but the other leg's flesh stops a thigh
-  crossing under the body while falling (the side cone's centre points
-  there). AAOS allows 30.
 - Another lopsided joint (the shoulder's reach behind the back, an ankle):
   a second cone on the same pivot is the tool.
 - A wrist or hand body is added: it needs its own hinge-like limits.

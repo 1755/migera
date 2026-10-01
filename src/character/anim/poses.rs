@@ -303,6 +303,31 @@ mod tests {
         }
     }
 
+    // `cargo test --release -- --ignored --nocapture probe_spine_profile`.
+    #[test]
+    #[ignore]
+    fn probe_spine_profile() {
+        use crate::character::anim::gltf_rig::puppet_base_as_rendered;
+        use crate::character::anim::rig::offset_from;
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let rig = puppet_base_as_rendered();
+        let forward = rig.forward();
+        let stood = stance_on_rig(&relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let chain = [Bone::Hips, Bone::Spine, Bone::Spine1, Bone::Spine2, Bone::Neck, Bone::Head];
+        for (name, pose) in [("bind", LocalPose::REST), ("stand", stood)] {
+            let at = |bone| offset_from(&pose, &rig, Bone::Hips, bone);
+            let mut line = format!("{name:5}:");
+            for pair in chain.windows(2) {
+                let v = at(pair[1]) - at(pair[0]);
+                line += &format!(" {}→{} {:+.1}° ({:.0} mm)", pair[0].name(), pair[1].name(), v.dot(forward).atan2(v.y).to_degrees(), v.length() * 1e3);
+            }
+            let sockets = (at(Bone::LeftUpLeg) + at(Bone::RightUpLeg)) * 0.5;
+            let v = at(Bone::Spine) - sockets;
+            line += &format!(" | sockets→Spine {:+.1}°", v.dot(forward).atan2(v.y).to_degrees());
+            println!("{line}");
+        }
+    }
+
     #[test]
     fn the_relaxed_stand_stands_upright_and_balanced() {
         // Measured on the rig as RENDERED (`puppet_base_as_rendered`): this

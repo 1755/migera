@@ -285,6 +285,8 @@ struct CameraConfig {
     look_at_height: f32,
     preset: ViewPreset,
     preset_distance: f32,
+    /// The preset view follows the character's hips (`--camera-follow`).
+    follow: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -304,6 +306,7 @@ impl Default for CameraConfig {
             look_at_height: 0.95,
             preset: ViewPreset::Front,
             preset_distance: 2.6,
+            follow: false,
         }
     }
 }
@@ -343,6 +346,7 @@ impl CameraConfig {
                 "--camera-preset-distance" => {
                     cfg.preset_distance = val(&mut i).parse().unwrap_or(cfg.preset_distance);
                 }
+                "--camera-follow" => cfg.follow = true,
                 _ => {}
             }
             i += 1;
@@ -356,10 +360,23 @@ impl CameraConfig {
     }
 }
 
-fn camera_controller(time: Res<Time>, cfg: Res<CameraConfig>, mut cams: Query<&mut Transform, With<Camera3d>>) {
+fn camera_controller(
+    time: Res<Time>,
+    cfg: Res<CameraConfig>,
+    mut cams: Query<&mut Transform, With<Camera3d>>,
+    skeletons: Query<&HumanoidSkeleton>,
+    globals: Query<&GlobalTransform>,
+) {
     match cfg.mode {
         CameraMode::Preset => {
-            let transform = cfg.preset_transform();
+            let mut transform = cfg.preset_transform();
+            // `--camera-follow`: the view moves with the character's hips
+            // across the floor, so a fall stays in frame.
+            if cfg.follow
+                && let Some(hips) = skeletons.iter().next().and_then(|s| globals.get(s.entity(Bone::Hips)).ok())
+            {
+                transform.translation += Vec3::new(hips.translation().x, 0.0, hips.translation().z);
+            }
             for mut cam_transform in &mut cams {
                 *cam_transform = transform;
             }
