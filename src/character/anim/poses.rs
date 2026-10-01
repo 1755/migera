@@ -255,51 +255,129 @@ mod tests {
         // The exact world positions the Mixamo-derived source authored,
         // via `tools/dump_animation_pose.py`. Carried over verbatim when
         // the position-space module was deleted.
-        let reference = [
+        //
+        // Compared as the pose means them: bends from a bind. The spine,
+        // posed on a rig bound as the clip's source was
+        // (`assets/anim/idle_bind.positions.ron`), points where the clip's
+        // did (`convert::rebase_onto_bind`). Until 2026-10-01 these were
+        // matched on the straight synthetic rig, which stored the source's
+        // curved bind spine as a bend: puppet_base stood with its back
+        // over-arched (`probe_spine_profile`). The arms, which the rebase
+        // left in place, still point where the clip's do on the synthetic
+        // rig.
+        #[derive(serde::Deserialize)]
+        struct Dump {
+            positions: std::collections::HashMap<String, (f32, f32, f32)>,
+        }
+        let bind: Dump = ron::from_str(include_str!("../../../assets/anim/idle_bind.positions.ron")).unwrap();
+        let rest = crate::character::anim::rig::BoneSet::from_fn(|bone: Bone| {
+            bind.positions.get(bone.name()).map_or(bone.t_pose_world_position(), |&(x, y, z)| Vec3::new(x, y, z))
+        });
+        let on_source = crate::character::anim::convert::forward_kinematics_against(&relaxed_stand(), &rest);
+        let spine = [
             (Bone::Spine, Vec3::new(0.0, 1.11, 0.0)),
             (Bone::Spine1, Vec3::new(-0.0132, 1.2793, 0.013)),
             (Bone::Spine2, Vec3::new(-0.0132, 1.435, 0.0498)),
             (Bone::Neck, Vec3::new(-0.0064, 1.5331, 0.0681)),
-            // The clip's `Head` (0.0112, 1.7387, -0.0545) is deliberately no
-            // longer matched: its neck bowed the head 30.5 degrees toward the
-            // floor, and the neck angle was solved for a level gaze instead.
-            // See `the_relaxed_stand_stands_upright_and_balanced`.
-            (Bone::LeftArm, Vec3::new(-0.20900002, 1.5811, 0.0412)),
-            (Bone::LeftForeArm, Vec3::new(-0.24670005, 1.3039, 0.0293)),
-            (Bone::LeftHand, Vec3::new(-0.27730006, 1.0461999, 0.0133)),
-            (Bone::RightArm, Vec3::new(0.20900002, 1.5811, 0.0412)),
-            (Bone::RightForeArm, Vec3::new(0.24670005, 1.3039, 0.0293)),
-            (Bone::RightHand, Vec3::new(0.27730006, 1.0461999, 0.0133)),
         ];
+        for pair in spine.windows(2) {
+            let ((from, a), (to, b)) = (pair[0], pair[1]);
+            let (wanted, got) = ((b - a).normalize(), (on_source[to] - on_source[from]).normalize());
+            let error = wanted.angle_between(got).to_degrees();
+            assert!(error < 0.5, "on the source's bind, {}→{} points {error:.2} degrees from the clip's", from.name(), to.name());
+        }
 
+        // The clip's `Head` (0.0112, 1.7387, -0.0545) is deliberately not
+        // matched: its neck bowed the head 30.5 degrees toward the floor,
+        // and the neck angle was solved for a level gaze instead. See
+        // `the_relaxed_stand_stands_upright_and_balanced`.
+        let arms = [
+            [
+                (Bone::LeftArm, Vec3::new(-0.20900002, 1.5811, 0.0412)),
+                (Bone::LeftForeArm, Vec3::new(-0.24670005, 1.3039, 0.0293)),
+                (Bone::LeftHand, Vec3::new(-0.27730006, 1.0461999, 0.0133)),
+            ],
+            [
+                (Bone::RightArm, Vec3::new(0.20900002, 1.5811, 0.0412)),
+                (Bone::RightForeArm, Vec3::new(0.24670005, 1.3039, 0.0293)),
+                (Bone::RightHand, Vec3::new(0.27730006, 1.0461999, 0.0133)),
+            ],
+        ];
         let positions = forward_kinematics(&relaxed_stand());
+        for arm in arms {
+            for pair in arm.windows(2) {
+                let ((from, a), (to, b)) = (pair[0], pair[1]);
+                let (wanted, got) = ((b - a).normalize(), (positions[to] - positions[from]).normalize());
+                let error = wanted.angle_between(got).to_degrees();
+                assert!(error < 1.0, "relaxed_stand's {}→{} points {error:.2} degrees from the clip's", from.name(), to.name());
+            }
+        }
+    }
 
-        for (bone, expected) in reference {
-            let actual = positions[bone];
-            // The arms inherit the shoulders' unrepresentable displacement,
-            // so they are checked at the looser bound `convert`'s own tests
-            // measured; the spine chain converts essentially exactly.
-            let tolerance = if matches!(
-                bone,
-                Bone::LeftArm
-                    | Bone::LeftForeArm
-                    | Bone::LeftHand
-                    | Bone::RightArm
-                    | Bone::RightForeArm
-                    | Bone::RightHand
-            ) {
-                0.15
-            } else {
-                0.01
+    // How far each segment points from the mocap actor's, posed on
+    // puppet_base as drawn: the committed `idle_stand` against a candidate
+    // file (POSE env var). Ground truth is the clip's own positions.
+    // `POSE=path cargo test --release -- --ignored --nocapture probe_pose_against_clip`.
+    #[test]
+    #[ignore]
+    fn probe_pose_against_clip() {
+        use crate::character::anim::gltf_rig::puppet_base_as_rendered;
+        use crate::character::anim::rig::forward_kinematics_on;
+        #[derive(serde::Deserialize)]
+        struct Dump {
+            positions: std::collections::HashMap<String, (f32, f32, f32)>,
+        }
+        let clip: Dump = ron::from_str(include_str!("../../../assets/anim/idle_stand.positions.ron")).unwrap();
+        let at = |bone: Bone| clip.positions.get(bone.name()).map(|&(x, y, z)| Vec3::new(x, y, z));
+        let rig = puppet_base_as_rendered();
+        let candidate = std::env::var("POSE").ok().map(|path| embedded("candidate", Box::leak(std::fs::read_to_string(path).unwrap().into_boxed_str())));
+        for (name, pose) in [("committed", Some(idle_stand())), ("candidate", candidate)] {
+            let Some(pose) = pose else { continue };
+            let fk = forward_kinematics_on(&pose, &rig);
+            let mut line = format!("{name:9}:");
+            let mut total = 0.0;
+            for bone in Bone::ALL {
+                let Some(parent) = bone.parent() else { continue };
+                let (Some(a), Some(b)) = (at(parent), at(bone)) else { continue };
+                if matches!(bone, Bone::LeftUpLeg | Bone::RightUpLeg | Bone::LeftShoulder | Bone::RightShoulder | Bone::Spine) {
+                    continue; // lateral attachments: set by the parent, not aimed
+                }
+                let want = (b - a).normalize();
+                let got = (fk[bone] - fk[parent]).normalize();
+                let error = want.angle_between(got).to_degrees();
+                total += error;
+                if error > 5.0 {
+                    line += &format!(" {}→{} {error:.0}°", parent.name(), bone.name());
+                }
+            }
+            println!("{line} | sum {total:.0}°");
+        }
+    }
+
+    // How far `balance_over_feet` leans each stance, and where its centre
+    // of mass stood before.
+    #[test]
+    #[ignore]
+    fn probe_balance_lean() {
+        use crate::character::anim::anthropometry::centre_of_mass;
+        use crate::character::anim::gltf_rig::puppet_base_as_rendered;
+        use crate::character::anim::rig::{offset_from, RigGeometry};
+        use crate::character::anim::stance::{balance_over_feet, stance_on_rig, DEFAULT_KNEE_FLEX};
+        for (name, base, rig) in [
+            ("relaxed / drawn", relaxed_stand(), puppet_base_as_rendered()),
+            ("rest / drawn", LocalPose::REST, puppet_base_as_rendered()),
+            ("rest / synthetic", LocalPose::REST, RigGeometry::default()),
+        ] {
+            let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, &rig);
+            // What the stance was before balancing: undo by re-deriving
+            // without it is not possible here, so measure the lean instead.
+            let ahead = |p: &LocalPose| {
+                let ankles = 0.5 * (offset_from(p, &rig, Bone::Hips, Bone::LeftFoot) + offset_from(p, &rig, Bone::Hips, Bone::RightFoot));
+                (centre_of_mass(p, &rig) - ankles).dot(rig.forward())
             };
-
-            assert!(
-                actual.distance(expected) < tolerance,
-                "relaxed_stand's {} has drifted from its reference data: authored at \
-                 {expected:?}, now at {actual:?} ({:.4} m away, tolerance {tolerance})",
-                bone.name(),
-                actual.distance(expected),
-            );
+            let again = balance_over_feet(&stood, &rig);
+            let lean = stood.rotation(Bone::Hips).angle_between(base.rotation(Bone::Hips)).to_degrees();
+            println!("{name:17}: COM {:.3} m ahead of the ankles, hips turned {lean:.2}° from the base (rebalanced again: {:.3})", ahead(&stood), ahead(&again));
         }
     }
 
@@ -314,7 +392,10 @@ mod tests {
         let forward = rig.forward();
         let stood = stance_on_rig(&relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
         let chain = [Bone::Hips, Bone::Spine, Bone::Spine1, Bone::Spine2, Bone::Neck, Bone::Head];
-        for (name, pose) in [("bind", LocalPose::REST), ("stand", stood)] {
+        let candidate = std::env::var("POSE")
+            .ok()
+            .map(|path| stance_on_rig(&embedded("candidate", Box::leak(std::fs::read_to_string(path).unwrap().into_boxed_str())), DEFAULT_KNEE_FLEX, &rig));
+        for (name, pose) in [("bind", LocalPose::REST), ("stand", stood)].into_iter().chain(candidate.map(|c| ("cand", c))) {
             let at = |bone| offset_from(&pose, &rig, Bone::Hips, bone);
             let mut line = format!("{name:5}:");
             for pair in chain.windows(2) {
@@ -324,6 +405,14 @@ mod tests {
             let sockets = (at(Bone::LeftUpLeg) + at(Bone::RightUpLeg)) * 0.5;
             let v = at(Bone::Spine) - sockets;
             line += &format!(" | sockets→Spine {:+.1}°", v.dot(forward).atan2(v.y).to_degrees());
+            for bone in [Bone::Spine2, Bone::Neck, Bone::LeftShoulder, Bone::LeftArm] {
+                line += &format!(" {} {:+.0}", bone.name(), (at(bone) - sockets).dot(forward) * 1e3);
+            }
+            let shoulders = (at(Bone::LeftArm) + at(Bone::RightArm)) * 0.5 - sockets;
+            line += &format!(" | trunk {:+.1}° ({:+.0} mm ahead)", shoulders.dot(forward).atan2(shoulders.y).to_degrees(), shoulders.dot(forward) * 1e3);
+            let ankles = (at(Bone::LeftFoot) + at(Bone::RightFoot)) * 0.5;
+            let up = sockets - ankles;
+            line += &format!(" | legs {:+.1}°", up.dot(forward).atan2(up.y).to_degrees());
             println!("{line}");
         }
     }
@@ -337,10 +426,14 @@ mod tests {
         // - Balance: in quiet standing the centre of pressure averages under
         //   the centre of mass, about 4 cm ahead of the ankle joints (Winter,
         //   Example 5.1: the ground reaction of a static stance 4 cm
-        //   anterior to the ankle). Measured 4.8 cm; the bind, 4.2.
+        //   anterior to the ankle). The stance now leans the body about its
+        //   ankles to put it there (`stance::balance_over_feet`).
         // - Gaze level: the clip bowed the head 30.5 degrees at the floor.
-        // - Trunk upright: the hips-to-shoulders line within a few degrees of
-        //   the bind's own.
+        // - Trunk upright: the line from the hip sockets to the base of the
+        //   neck within a few degrees of the bind's own. Measured to the
+        //   shoulder joints instead, it passed an over-arched back (the base
+        //   of the neck 79 mm behind the bind's, about 8 degrees): the
+        //   rounded collarbones carried the shoulder joints forward again.
         // - Arms at the sides: hands below the shoulders and beside the hips.
         use crate::character::anim::anthropometry::centre_of_mass;
         use crate::character::anim::gltf_rig::puppet_base_as_rendered;
@@ -367,7 +460,7 @@ mod tests {
 
         let lean = |p: &LocalPose| {
             let at = |bone| offset_from(p, &rig, Bone::Hips, bone);
-            let v = (at(Bone::LeftArm) + at(Bone::RightArm) - at(Bone::LeftUpLeg) - at(Bone::RightUpLeg)) * 0.5;
+            let v = at(Bone::Neck) - (at(Bone::LeftUpLeg) + at(Bone::RightUpLeg)) * 0.5;
             v.dot(forward).atan2(v.y).to_degrees()
         };
         let trunk = lean(&pose) - lean(&LocalPose::REST);

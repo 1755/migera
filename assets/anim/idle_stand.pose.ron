@@ -1,124 +1,124 @@
 (
     bones: {
-        "LeftLeg": (
+        "RightArm": (
             swing: (
-                axis: (-0.9987203, -0.0, -0.050573155),
-                degrees: 17.864483,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "Spine2": (
-            swing: (
-                axis: (-0.5804124, 0.0, -0.81432265),
-                degrees: 4.7303166,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "RightLeg": (
-            swing: (
-                axis: (-0.9985058, -0.0, -0.054646146),
-                degrees: 11.925316,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "LeftArm": (
-            swing: (
-                axis: (0.0, 0.21179375, 0.97731435),
-                degrees: 71.01631,
+                axis: (0.0011135616, -0.002869406, -0.9999952),
+                degrees: 62.7258,
             ),
             twist_degrees: 0.0,
         ),
         "RightForeArm": (
             swing: (
-                axis: (0.0, 0.72086614, -0.69307435),
-                degrees: 6.6937876,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "Hips": (
-            swing: (
-                axis: (0.71043664, -0.0, 0.7037611),
-                degrees: 5.269862,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "LeftForeArm": (
-            swing: (
-                axis: (0.0, -0.8335043, 0.5525129),
-                degrees: 1.4590989,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "LeftUpLeg": (
-            swing: (
-                axis: (0.71472377, 0.0, -0.6994068),
-                degrees: 13.51669,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "LeftFoot": (
-            swing: (
-                axis: (-0.91576403, 0.39767915, -0.056811303),
-                degrees: 29.289705,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "LeftShoulder": (
-            swing: (
-                axis: (0.0, -0.69169, 0.72219443),
-                degrees: 25.260672,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "Neck": (
-            swing: (
-                axis: (-0.9992901, 0.0, -0.037675146),
-                degrees: 41.22611,
+                axis: (-0.010380546, 0.8038382, -0.59475744),
+                degrees: 5.7691627,
             ),
             twist_degrees: 0.0,
         ),
         "RightShoulder": (
             swing: (
-                axis: (0.0, 0.425443, -0.9049852),
-                degrees: 17.579172,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "RightUpLeg": (
-            swing: (
-                axis: (-0.03716513, -0.0, -0.9993091),
-                degrees: 3.454321,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "Spine1": (
-            swing: (
-                axis: (0.99827135, 0.0, -0.058773894),
-                degrees: 12.687723,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "RightFoot": (
-            swing: (
-                axis: (-0.6540594, -0.7488405, 0.10697722),
-                degrees: 36.22873,
-            ),
-            twist_degrees: 0.0,
-        ),
-        "RightArm": (
-            swing: (
-                axis: (0.0, -0.2183902, -0.97586155),
-                degrees: 62.619244,
+                axis: (-0.0013224878, 0.56762654, -0.82328516),
+                degrees: 19.36518,
             ),
             twist_degrees: 0.0,
         ),
         "Spine": (
             swing: (
-                axis: (-0.7230049, 0.0, -0.69084305),
-                degrees: 4.306626,
+                axis: (-0.72282994, 0.0039086198, -0.6910149),
+                degrees: 4.308504,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Neck": (
+            swing: (
+                axis: (-0.88425857, -0.18519531, -0.42870665),
+                degrees: 6.415068,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftArm": (
+            swing: (
+                axis: (0.0011155498, 0.006573075, 0.99997777),
+                degrees: 71.083046,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftUpLeg": (
+            swing: (
+                axis: (0.6948544, 0.010717626, -0.71907055),
+                degrees: 13.115986,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightLeg": (
+            swing: (
+                axis: (-0.99680924, -0.00511254, -0.079656586),
+                degrees: 8.1744175,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftShoulder": (
+            swing: (
+                axis: (0.0010143726, -0.8604715, 0.50949746),
+                degrees: 23.93066,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Spine1": (
+            swing: (
+                axis: (-0.8238484, 0.13778624, -0.5498078),
+                degrees: 1.3091472,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Spine2": (
+            swing: (
+                axis: (-0.44053897, 0.20529197, -0.8739455),
+                degrees: 1.9936296,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftLeg": (
+            swing: (
+                axis: (-0.99751484, -0.004718132, -0.070297755),
+                degrees: 12.925,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "Hips": (
+            swing: (
+                axis: (0.6777282, -0.00418993, 0.73530066),
+                degrees: 5.0467596,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftForeArm": (
+            swing: (
+                axis: (-0.014789108, -0.529226, 0.84835196),
+                degrees: 0.5534474,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightFoot": (
+            swing: (
+                axis: (-0.014195836, -0.797229, 0.60351014),
+                degrees: 21.054052,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "LeftFoot": (
+            swing: (
+                axis: (-0.3724342, 0.7623399, -0.5292737),
+                degrees: 6.38054,
+            ),
+            twist_degrees: 0.0,
+        ),
+        "RightUpLeg": (
+            swing: (
+                axis: (0.06992894, -0.0008288708, -0.9975516),
+                degrees: 3.4442317,
             ),
             twist_degrees: 0.0,
         ),
     },
-    root_translation: (0.0, 0.0, 0.0),
+    root_translation: (-0.0015015495, -0.010849953, 0.00098288),
 )

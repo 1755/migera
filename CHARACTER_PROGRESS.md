@@ -42,6 +42,49 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### The over-arched back fixed: poses are bends from the source's bind
+
+Closes the finding below. Distilled in
+[a clip's world positions carry its rig's bind shape](./docs/knowledge/character-animation/rig-and-retargeting/a-clips-positions-carry-its-rigs-bind-shape.md).
+
+- **Cause.** Clips were converted into bends from the straight synthetic
+  T-pose, so Mixamo's curved bind spine (0.3 / 0.3 / 14.1 / 12.2° back)
+  was stored as a bend and applied again on puppet_base's own curved
+  bind. `relaxed_stand`'s chest stood 23.6° back, the neck base 79 mm
+  behind the bind's.
+- **Import.** `tools/dump_bind_positions.py` dumps a skin's bind
+  (`assets/anim/idle_bind.positions.ron`), and `import_reference_pose`
+  takes it to convert bind-relatively
+  (`convert::pose_from_world_positions_against`). `idle_stand` was
+  re-imported (worst direction error 0.028°; the old path reproduced the
+  committed file exactly first).
+- **`relaxed_stand`** was hand-finished, so its spine was rebased
+  (`examples/rebase_pose_onto_bind`, `convert::rebase_onto_bind`). Every
+  other bone keeps its world orientation, so arms, gaze and legs are as
+  they were. The spine now stands +14.6 / −0.4 / −0.1 / −13.5° (bind
+  +16.4 / +5.8 / +1.3 / −13.0).
+- **Balance.** The arch had held mass back; straightened, the stance stood
+  7.5 cm ahead of its ankles (Winter: 4). `stance::balance_over_feet` now
+  leans every real-rig stance about its ankles to 4.0 cm, feet flat and
+  gaze kept: 2.1° on puppet_base, 0.5° for its T-pose. It's skipped on the
+  synthetic rig, whose 7 cm ankle stub has no foot to balance over (it
+  leaned 3.9°).
+- **Tests that hid it.** The reference test pinned the double-counted
+  positions; it now checks the spine bind-relatively (the old pose fails
+  by 14.07°). The upright test measured the trunk to the shoulder joints,
+  which the rounded collarbones carried forward; measured to the neck,
+  the old pose fails by 8.3°.
+- **Knock-ons, re-measured.** Catch limits unchanged (1.5 / 1.4 / 1.4).
+  Edge catches under uneven frames: 4 of 12 fall with ticking, 9 without.
+  The fall probe now measures hips in the pelvis's bind frame (extension
+  exactly 30.0°, adduction 30.2°). Sideways-fall elbows overshoot their
+  150° stop by 1.4 and 2.2° on impact.
+- **Seen live,** both rigs, Left and Front with gizmos and mesh, against
+  064a6df: the spine line near straight where it bowed back, head level,
+  arms at the sides, symmetric.
+
+1045 tests pass.
+
 ### Hip adduction capped the same way; a camera that follows the fall
 
 - A third limit-only joint on each hip's pivot: 120° about the

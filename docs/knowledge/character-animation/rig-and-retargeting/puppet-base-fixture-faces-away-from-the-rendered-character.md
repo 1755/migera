@@ -105,4 +105,5 @@ number gets trusted.
 - [A pose delta names a world axis](./a-pose-delta-names-a-world-axis.md) — prerequisite: why a world-axis delta depends on the rig's orientation.
 - [Knee axis positive swings forward](./knee-axis-positive-swings-forward.md) — same-trap: the leg-side version of a facing assumption, fixed with `facing_sign`.
 - [Synthetic-rig tests are blind to retargeting](./synthetic-rig-tests-are-blind-to-retargeting.md) — contrast: a different fixture limitation (synthetic translations), not orientation.
+- [A clip's world positions carry its rig's bind shape](./a-clips-positions-carry-its-rigs-bind-shape.md) — same-trap: another frame `relaxed_stand`'s data silently assumed (the source rig's bind).
 - [A stumble is a capture-point step, then a join](../ik-and-locomotion/a-stumble-is-a-capture-point-step-then-a-join.md) — example: its catch limits were measured on this fixture, inverted, until 2026-10-01.

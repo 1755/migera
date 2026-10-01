@@ -72,6 +72,7 @@ Commit 026d9e8 (2026-09-27). `world_correction_frame` is used by
 
 ## Related
 
+- [A clip's world positions carry its rig's bind shape](./a-clips-positions-carry-its-rigs-bind-shape.md) — applies: a bend is from a rig's bind, so a clip must be converted from its source's bind, not the straight T-pose.
 - [A pose delta's world is the character's frame](./a-pose-deltas-world-is-the-characters-frame.md) — deeper: "world" here is the character as bound; it turns with the character, so scene conversions apply the turn at the boundary.
 - [Conjugate pose deltas by the bind rotation](./conjugate-pose-deltas-by-the-bind-rotation.md) — prerequisite: the same conjugation at write-back time.
 - [Same function both sides is a vacuous test](../../engineering-practice/testing/same-function-both-sides-is-a-vacuous-test.md) — same-trap: tests that could not distinguish right from wrong.

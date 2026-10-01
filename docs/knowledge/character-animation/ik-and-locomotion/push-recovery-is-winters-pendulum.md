@@ -101,6 +101,7 @@ Stepping now exists: `needs_step` plans a recovery step, see
 
 - [11.2.1 Quiet standing](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.2-standing-balance-ml-and-ap/11.2.1-quiet-standing.md) — source: Eq. 11.3, stiffness control, load/unload.
 - [The walk's step width and sideways sway](./walk-step-width-and-sideways-sway.md) — contrast: the same pendulum driven by the stride instead of a push.
+- [A clip's world positions carry its rig's bind shape](../rig-and-retargeting/a-clips-positions-carry-its-rigs-bind-shape.md) — context: the stance this sways about is leaned over its feet so its centre of mass stands 4 cm ahead of the ankles (`stance::balance_over_feet`).
 - [A gait-timed motion cannot ride a weighty spring](./a-gait-timed-motion-cannot-ride-a-weighty-spring.md) — same-trap: a fast pelvis against lagging leg springs.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — context: the locks a one-frame push released.
 - [A stumble is a capture-point step, then a join](./a-stumble-is-a-capture-point-step-then-a-join.md) — deeper: what a flagged push now does.

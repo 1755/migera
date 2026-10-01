@@ -166,6 +166,24 @@ pub fn pose_from_world_positions_with_twist(
 /// authored positions were describing — and lets each chain hang correctly
 /// beneath wherever its attachment really sits.
 pub fn pose_from_world_positions(targets: &WorldPositions) -> LocalPose {
+    pose_from_world_positions_against(targets, &BoneSet::from_fn(|bone| bone.t_pose_world_position()))
+}
+
+/// [`pose_from_world_positions`], measured from `rest`: the source rig's
+/// own bind pose, as world positions in the targets' frame.
+///
+/// # Why the source's bind, not this crate's T-pose
+///
+/// A pose here is a bend away from a rig's bind (the renderer applies it to
+/// whatever shape each rig was bound in). Measured from the straight
+/// synthetic T-pose, a clip's positions store the source rig's own bind
+/// shape as part of the bend. Mixamo's bind spine leans back 0.3, 14.1 and
+/// 12.2 degrees in its segments; converted that way, `relaxed_stand` bent
+/// the target's spine by that much on top of the target's own bind curve,
+/// and puppet_base stood with its chest thrown 23.6 degrees back. Measured
+/// from the source's bind, a pose keeps only what the actor did: the idle's
+/// spine bends −4.1, +0.8 and +1.6 degrees.
+pub fn pose_from_world_positions_against(targets: &WorldPositions, rest: &WorldPositions) -> LocalPose {
     let mut pose = LocalPose::REST;
 
     // Each bone's accumulated rest-relative rotation, built as we go. We
@@ -192,7 +210,7 @@ pub fn pose_from_world_positions(targets: &WorldPositions) -> LocalPose {
             None => Quat::IDENTITY,
         };
 
-        let rest_direction = child.t_pose_offset().normalize_or_zero();
+        let rest_direction = (rest[child] - rest[bone]).normalize_or_zero();
         let target_direction =
             (targets[child] - targets[bone]).normalize_or_zero();
 
@@ -210,7 +228,7 @@ pub fn pose_from_world_positions(targets: &WorldPositions) -> LocalPose {
         accumulated[bone] = parent_frame * local_rotation;
     }
 
-    pose.root_translation = targets[Bone::Hips] - Bone::Hips.t_pose_world_position();
+    pose.root_translation = targets[Bone::Hips] - rest[Bone::Hips];
     pose
 }
 
@@ -307,6 +325,69 @@ pub fn direction_error_degrees(
         let wanted = (targets[bone] - targets[parent]).normalize_or_zero();
         let got = (achieved[bone] - achieved[parent]).normalize_or_zero();
 
+        if wanted == Vec3::ZERO || got == Vec3::ZERO {
+            return 0.0;
+        }
+        wanted.dot(got).clamp(-1.0, 1.0).acos().to_degrees()
+    })
+}
+
+/// `pose`, converted against this crate's straight T-pose, rebased for
+/// `bones` onto a source rig bound in `rest`: each of those bones now bends
+/// from the source's bind direction to where it pointed, as
+/// [`pose_from_world_positions_against`] would have converted it. Every
+/// other bone keeps its world orientation (its local rotation absorbs the
+/// change), so a hand-finished pose's arms, gaze and legs stay as they were.
+///
+/// For a pose whose source positions are gone or that was finished by hand
+/// since (`relaxed_stand`): the bind-relative fix for its spine.
+pub fn rebase_onto_bind(pose: &LocalPose, rest: &WorldPositions, bones: &[Bone]) -> LocalPose {
+    let old = super::rig::accumulate_rest_relative_rotations(pose);
+    let mut world = old;
+    for &bone in bones {
+        let Some(child) = rotation_driving_child(bone) else { continue };
+        let (straight, bound) = (child.t_pose_offset().normalize_or_zero(), (rest[child] - rest[bone]).normalize_or_zero());
+        if straight == Vec3::ZERO || bound == Vec3::ZERO {
+            continue;
+        }
+        // Old: straight → posed. New: bound → the same posed direction.
+        world[bone] = old[bone] * shortest_arc(bound, straight);
+    }
+    let mut rebased = *pose;
+    for &bone in Bone::ALL.iter() {
+        let parent = bone.parent().map_or(Quat::IDENTITY, |parent| world[parent]);
+        rebased.set_rotation(bone, (parent.inverse() * world[bone]).normalize());
+    }
+    rebased
+}
+
+/// [`forward_kinematics`] on a rig bound in `rest` (world positions): each
+/// bone's rest offset from its parent carried through the parent's
+/// accumulated rotation, as the synthetic table's are.
+pub fn forward_kinematics_against(pose: &LocalPose, rest: &WorldPositions) -> WorldPositions {
+    let accumulated = super::rig::accumulate_rest_relative_rotations(pose);
+    let mut positions = BoneSet::splat(Vec3::ZERO);
+    for &bone in Bone::ALL.iter() {
+        positions[bone] = match bone.parent() {
+            Some(parent) => positions[parent] + accumulated[parent] * (rest[bone] - rest[parent]),
+            None => rest[bone] + pose.root_translation,
+        };
+    }
+    positions
+}
+
+/// [`direction_error_degrees`] for a pose converted against `rest`
+/// ([`pose_from_world_positions_against`]): posed on a rig bound in `rest`,
+/// how far each bone points from where `targets` has it.
+pub fn direction_error_degrees_against(targets: &WorldPositions, rest: &WorldPositions, pose: &LocalPose) -> BoneSet<f32> {
+    let achieved = forward_kinematics_against(pose, rest);
+    BoneSet::from_fn(|bone| {
+        if !direction_is_controllable(bone) {
+            return 0.0;
+        }
+        let Some(parent) = bone.parent() else { return 0.0 };
+        let wanted = (targets[bone] - targets[parent]).normalize_or_zero();
+        let got = (achieved[bone] - achieved[parent]).normalize_or_zero();
         if wanted == Vec3::ZERO || got == Vec3::ZERO {
             return 0.0;
         }

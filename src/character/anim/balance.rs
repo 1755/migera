@@ -149,7 +149,7 @@ const FORECAST_DT: f32 = 1.0 / 60.0;
 /// live run sees nearly the steps its forecast did, however long its
 /// frames. Below the catch limit the stepping gates (`Balance::holds`)
 /// make frame times irrelevant on their own; at the limit, catches fell
-/// in 1 of 4 uneven frame patterns with it, 3 of 4 without.
+/// in 4 of 12 uneven frame patterns with it, 9 of 12 without.
 const MAX_TICK: f32 = FORECAST_DT;
 
 /// How much outward velocity the validity bound may take before the body
@@ -1127,9 +1127,10 @@ mod tests {
     fn a_catch_at_the_limit_mostly_survives_uneven_frames() {
         // At the edge of what the steps catch, frame timing decides some
         // catches whatever the ticks: over four uneven frame patterns,
-        // sideways 1.4 and back 1.4 each fell in 1 of 4 with `MAX_TICK`,
-        // 3 of 4 stepped a whole frame at a time. Below the edge, frame
-        // times decide nothing (`a_catch_does_not_depend_on_frame_times`).
+        // sideways 1.4 and back 1.4 fell in 4 of 12 with `MAX_TICK`, 9 of
+        // 12 stepped a whole frame at a time (on the stance balanced over
+        // its feet; 3 and 9 before it). Below the edge, frame times decide
+        // nothing (`a_catch_does_not_depend_on_frame_times`).
         let (stood, rig) = real_stood();
         let support = Support::of(&stood, &rig);
         let k = pendulum_k(&stood, &rig);
@@ -1156,7 +1157,7 @@ mod tests {
                 fell += b.falls as usize;
             }
         }
-        assert!(fell <= 3, "{fell} of 12 catches at the limit fell at uneven frame times");
+        assert!(fell <= 4, "{fell} of 12 catches at the limit fell at uneven frame times");
     }
 
     // Per stepping push: the worst pelvis jolt (mm, second difference) and

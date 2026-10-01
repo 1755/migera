@@ -115,7 +115,11 @@ pub const DEFAULT_KNEE_FLEX: f32 = 0.16;
 /// take half of it in the opposite direction so the shin stays vertical and
 /// the sole stays flat. See the module doc for why all three are needed.
 pub fn stance_on(base: &LocalPose, knee_flex: f32) -> LocalPose {
-    stance_on_rig(base, knee_flex, &super::rig::RigGeometry::default())
+    // Not balanced over the feet (`balance_over_feet`): the synthetic rig's
+    // ankle is a 0.07 m stub with no foot to stand a centre of mass over,
+    // and balanced on it the T-pose leaned 3.9 degrees, a body the real
+    // rigs' walks were then measured on.
+    bent_knees_on_rig(base, knee_flex, &super::rig::RigGeometry::default())
 }
 
 /// [`stance_on`], bending the knees the way THIS rig's own geometry says is
@@ -141,11 +145,18 @@ pub fn stance_on(base: &LocalPose, knee_flex: f32) -> LocalPose {
 /// the knee folds. See [`RigGeometry::knee_forward_offset`], which is the
 /// signed measurement, and
 /// `the_stance_bends_both_knees_forward_on_every_rig`, which asserts it.
+///
+/// And balanced over the feet: [`balance_over_feet`].
 pub fn stance_on_rig(
     base: &LocalPose,
     knee_flex: f32,
     rig: &super::rig::RigGeometry,
 ) -> LocalPose {
+    balance_over_feet(&bent_knees_on_rig(base, knee_flex, rig), rig)
+}
+
+/// [`stance_on_rig`]'s knee bend alone, not balanced over the feet.
+fn bent_knees_on_rig(base: &LocalPose, knee_flex: f32, rig: &super::rig::RigGeometry) -> LocalPose {
     let mut pose = *base;
 
     if knee_flex == 0.0 {
@@ -183,6 +194,63 @@ pub fn stance_on_rig(
     pose.root_translation.y -= ankles(&pose) - before;
 
     pose
+}
+
+/// Where quiet standing carries the whole-body centre of mass, metres ahead
+/// of the ankle joints: Winter, Example 5.1, the ground reaction of a static
+/// stance 4 cm anterior to the ankle.
+pub const STANDING_COM_AHEAD: f32 = 0.04;
+
+/// `pose` leaned as one piece about its ankles, feet flat where they were,
+/// so the centre of mass stands [`STANDING_COM_AHEAD`] of them: Winter's
+/// ankle strategy, how a person aligns in quiet standing.
+///
+/// A standing pose's mass distribution decides where its centre falls, and
+/// nothing else put it over the feet. `relaxed_stand`'s back used to be
+/// over-arched (its source rig's bind curvature counted twice), which held
+/// the upper body's mass back; straightened, the stance stood 7.5 cm ahead
+/// of its ankles, tipping onto its toes. Leaning about 2 degrees back
+/// brings it to Winter's 4.
+pub fn balance_over_feet(pose: &LocalPose, rig: &super::rig::RigGeometry) -> LocalPose {
+    use super::anthropometry::centre_of_mass;
+    use super::rig::{delta_after_world_turn, offset_from};
+    let forward = rig.forward();
+    let left = Vec3::Y.cross(forward).normalize_or_zero();
+    if left == Vec3::ZERO {
+        return *pose;
+    }
+    let ankles = |pose: &LocalPose| 0.5 * (offset_from(pose, rig, Bone::Hips, Bone::LeftFoot) + offset_from(pose, rig, Bone::Hips, Bone::RightFoot));
+    let ahead = |pose: &LocalPose| {
+        let from = centre_of_mass(pose, rig) - ankles(pose);
+        (from.dot(forward), from.y)
+    };
+    let lean = |pose: &LocalPose, angle: f32| {
+        // About `left`, a positive turn tips the top toward `forward`... or
+        // away: which, is the rig's. Measured, not assumed.
+        let turn = Quat::from_axis_angle(left, angle);
+        let mut leaned = *pose;
+        leaned.set_rotation(Bone::Hips, delta_after_world_turn(pose, rig, Bone::Hips, turn));
+        // The feet stay flat, and the head keeps its gaze, as a person
+        // leaning at the ankles does: leaned with the body, it looked 2.1
+        // degrees up.
+        for bone in [Bone::LeftFoot, Bone::RightFoot, Bone::Head] {
+            leaned.set_rotation(bone, delta_after_world_turn(&leaned, rig, bone, turn.inverse()));
+        }
+        // The ankles stay where they stood.
+        leaned.root_translation += ankles(pose) - ankles(&leaned);
+        leaned
+    };
+    let mut balanced = *pose;
+    for _ in 0..2 {
+        let (along, up) = ahead(&balanced);
+        if up <= 0.0 {
+            return balanced;
+        }
+        let angle = (along - STANDING_COM_AHEAD).atan2(up);
+        let (back, other) = (lean(&balanced, angle), lean(&balanced, -angle));
+        balanced = if (ahead(&back).0 - STANDING_COM_AHEAD).abs() <= (ahead(&other).0 - STANDING_COM_AHEAD).abs() { back } else { other };
+    }
+    balanced
 }
 
 /// `+1` if this rig faces the way the poses here were authored, `-1` if it
