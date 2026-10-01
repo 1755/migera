@@ -143,6 +143,10 @@ pub struct Ragdoll {
     /// for rest: rest is judged by how the bodies move, not by their
     /// velocities (`ragdoll_plugin::REST_SPEED`).
     pub last_seen: BoneSet<Option<(Vec3, Quat)>>,
+    /// Standing on its own feet ([`Ragdoll::stand_on_own_feet`]): the root
+    /// is not pinned, gravity acts in full, and the joints carry the weight
+    /// through joint torques (`joint_drive`).
+    pub self_supporting: bool,
 }
 
 /// A knee or elbow as the hinge it is: one bending axis fixed in the parent
@@ -269,11 +273,31 @@ impl Default for Ragdoll {
             hinge_joints: BoneSet::splat(None),
             limit_joints: BoneSet::from_fn(|_| Vec::new()),
             last_seen: BoneSet::splat(None),
+            self_supporting: false,
         }
     }
 }
 
 impl Ragdoll {
+    /// Lets the body stand on its own feet (plan step 4b): the root is
+    /// released, gravity acts on every body in full, and every joint
+    /// carries its load with a joint torque between its two bodies
+    /// (`joint_drive::JointDrive`) instead of the pose controller's
+    /// per-body acceleration. A fall still takes over as before. No way
+    /// back to a pinned root yet (that is mode switching, step 4.5).
+    ///
+    /// Without a balance controller (step 4c), nothing yet steers the
+    /// whole body's lean over its feet.
+    pub fn stand_on_own_feet(&mut self) {
+        self.self_supporting = true;
+    }
+
+    /// Whether the joints carry the body now: standing on its own feet and
+    /// not falling.
+    pub fn carries_itself(&self) -> bool {
+        self.self_supporting && self.fall.is_none()
+    }
+
     /// Sets every joint's strength at once — the whole-body dial between
     /// animated and limp.
     pub fn set_strength(&mut self, strength: f32) {
@@ -340,9 +364,10 @@ impl Ragdoll {
 
     /// How much of its own weight `bone`'s body carries against gravity,
     /// `0..=1`: its strength (see `ragdoll_plugin::support_own_weight`),
-    /// and none while falling.
+    /// and none while falling or standing on its own feet, when gravity
+    /// acts in full and the joints carry the weight.
     pub fn carried_weight(&self, bone: Bone) -> f32 {
-        if self.fall.is_some() { 0.0 } else { self.effective_strength(bone).0 }
+        if self.fall.is_some() || self.self_supporting { 0.0 } else { self.effective_strength(bone).0 }
     }
 
     /// Lets the body fall (H2): the root is released at the next

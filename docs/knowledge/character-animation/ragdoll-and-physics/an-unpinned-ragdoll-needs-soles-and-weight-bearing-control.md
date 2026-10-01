@@ -8,8 +8,8 @@ tags:
   - physics
   - balance
   - correctness
-updated: 2026-09-30
-verified: 2026-09-30
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/ragdoll_plugin.rs
   - src/character/anim/foot.rs
@@ -68,15 +68,18 @@ With soles on, the whole ragdoll's feet no longer roll (2° instead of 11°).
 They still crawl ~0.85 m, because the legs buckle and re-extend: that part
 is the controller.
 
-## Still to do
+## Weight-bearing control
 
-The load-bearing joints (legs, trunk) need torque-shaped control against
-real gravity, capped by Winter's per-kg budgets (§7.4.5). The budgets
-then become the controller, not just its limits. See step 4 of
-`WINTER_MOTION_PLAN.md`.
+Built 2026-10-02 (plan step 4b): joint torques between each joint's two
+bodies, the weight each joint carries fed forward, planted feet held by
+the ground. Unpinned, it stands with the hips within 5 mm. See
+[a standing ragdoll carries its weight through joint torques](./a-standing-ragdoll-carries-its-weight-through-joint-torques.md).
+Steering the body's lean over its feet (the balance, step 4c) and capping
+the torques at Winter's per-kg budgets (§7.4.5) remain.
 
 ## Related
 
+- [A standing ragdoll carries its weight through joint torques](./a-standing-ragdoll-carries-its-weight-through-joint-torques.md) — deeper: the weight-bearing control this note asked for.
 - [Use avian's apply_angular_acceleration, not apply_torque](./avian-apply-angular-acceleration-not-torque.md) — context: why the PD is acceleration-shaped, and what changes if it carries load.
 - [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) — same-trap: at full strength both the screen and the gravity say nothing about the physics.
 - [8.1 Review of forward solution models](../../biomechanics-winter/ch08-synthesis-forward-solutions/8.1-review-of-forward-solution-models.md) — source: the ~500 ms collapse.

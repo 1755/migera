@@ -2061,6 +2061,11 @@ struct RagdollConfig {
     /// live. A push no step can catch does it by itself
     /// (`Balance::falls`).
     fall_at_frame: Option<u32>,
+    /// `--stand-on-own-feet N`: from frame N the ragdoll stands on its own
+    /// feet (`Ragdoll::stand_on_own_feet`): unpinned, full gravity, its
+    /// joints carrying it. The screen still shows the animation; read the
+    /// bodies over BRP.
+    stand_at_frame: Option<u32>,
     /// `--fall-damping PER_SECOND`: the falling joints' damping (default
     /// `FALL_DAMPING`).
     fall_damping: f32,
@@ -2079,6 +2084,7 @@ impl RagdollConfig {
             strength: 1.0,
             hit_at_frame: None,
             fall_at_frame: None,
+            stand_at_frame: None,
             fall_damping: FALL_DAMPING,
             hit_bone: Bone::LeftForeArm,
             hit_velocity: Vec3::new(0.0, 4.0, 0.0),
@@ -2095,6 +2101,7 @@ impl RagdollConfig {
                 }
                 "--hit-at-frame" => config.hit_at_frame = args.next().and_then(|v| v.parse().ok()),
                 "--fall-at-frame" => config.fall_at_frame = args.next().and_then(|v| v.parse().ok()),
+                "--stand-on-own-feet" => config.stand_at_frame = args.next().and_then(|v| v.parse().ok()),
                 "--fall-damping" => {
                     if let Some(value) = args.next().and_then(|v| v.parse().ok()) {
                         config.fall_damping = value;
@@ -2145,6 +2152,18 @@ fn deliver_ragdoll_hits(
             frame.0,
         );
         hits.write(RagdollHit::new(character, config.hit_bone, config.hit_velocity));
+    }
+}
+
+/// Plan step 4b: at `--stand-on-own-feet N`, every ragdoll stands on its
+/// own feet.
+fn stand_when_asked(config: Res<RagdollConfig>, frame: Res<FrameCount>, mut rigs: Query<&mut Ragdoll>) {
+    if config.stand_at_frame != Some(frame.0) {
+        return;
+    }
+    for mut ragdoll in &mut rigs {
+        info!("character_gallery: standing on its own feet at frame {}", frame.0);
+        ragdoll.stand_on_own_feet();
     }
 }
 
@@ -2771,6 +2790,7 @@ fn main() {
                     deliver_ragdoll_hits.before(RagdollSet::Hit),
                     fall_when_uncaught.after(drive_walk_cycle).before(RagdollSet::Hit),
                     get_up_when_rested.before(RagdollSet::Hit),
+                    stand_when_asked.before(RagdollSet::Hit),
                     follow_the_fallen_body.before(ride_rendered_feet),
                 ),
             );

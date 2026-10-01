@@ -64,6 +64,7 @@ pub mod getup;
 /// approximation of it.
 #[cfg(test)]
 pub mod gltf_rig;
+pub mod joint_drive;
 pub mod legik;
 pub mod locomotion;
 pub mod lookat;

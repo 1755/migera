@@ -238,6 +238,9 @@ foot a little at a time. Every physics lever cost more than the dip:
   the feet moved 5-119 mm in a fall instead of 154-712, and bodies came
   to rest propped up (hips 0.35 m high, not 0.11-0.19). Switched on and
   off with the leg's lift, bodies were flung metres. On hands, flung too.
+  Standing on its own feet, where a planted foot should not move,
+  dominance is the answer (see
+  [a standing ragdoll carries its weight](./a-standing-ragdoll-carries-its-weight-through-joint-torques.md)).
 
 ## Open, with what was tried
 

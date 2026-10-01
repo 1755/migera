@@ -72,6 +72,7 @@ impl Plugin for AnimRagdollPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<JointTarget>();
         app.register_type::<JointTargetVelocity>();
+        app.register_type::<super::joint_drive::JointDrive>();
 
         add_hit_systems(app);
         app.configure_sets(Update, RagdollSet::Hit.before(RagdollSet::PublishTargets));
@@ -765,7 +766,11 @@ fn add_physics_step_systems(app: &mut App) {
     app.get_schedule_mut(PhysicsSchedule)
         .expect("AnimRagdollPlugin requires PhysicsPlugins")
         .add_systems(
-            (follow_kinematic_roots, apply_joint_torques)
+            (
+                follow_kinematic_roots,
+                apply_joint_torques,
+                (super::joint_drive::manage_joint_drives, super::joint_drive::carry_weight).chain(),
+            )
                 .in_set(PhysicsStepSystems::First)
                 // avian's interpolation bookkeeping also writes velocities
                 // in this set, which Bevy flags as an ambiguity. It is
@@ -778,6 +783,11 @@ fn add_physics_step_systems(app: &mut App) {
                 // question is private to avian and cannot be named.
                 .ambiguous_with_all(),
         );
+    // Joint drives act every substep, on the solver's own body state.
+    app.add_systems(
+        avian3d::dynamics::solver::schedule::SubstepSchedule,
+        super::joint_drive::apply_joint_drives.before(avian3d::dynamics::integrator::IntegrationSystems::Velocity),
+    );
 }
 
 /// Applies each joint's PD torque. Runs inside `PhysicsSchedule`.
@@ -797,6 +807,10 @@ fn apply_joint_torques(
 
     for (target, target_velocity, mut forces) in &mut bodies {
         let Ok(ragdoll) = characters.get(target.character) else { continue };
+        // Its joints carry it (`joint_drive`): no hand per body as well.
+        if ragdoll.carries_itself() {
+            continue;
+        }
 
         // Read the orientation and spin through `Forces` rather than
         // querying `Rotation`/`AngularVelocity` alongside it: `Forces`
@@ -2492,7 +2506,7 @@ pub fn bind_rotation_between(ancestor: Bone, bone: Bone, rest: impl Fn(Bone) -> 
 /// Walking up rather than using `bone.parent()` directly means a skipped
 /// bone does not detach the whole chain below it — a hand with no body
 /// still leaves the forearm jointed to the arm.
-fn nearest_simulated_ancestor(bone: Bone, ragdoll: &Ragdoll) -> Option<Bone> {
+pub(crate) fn nearest_simulated_ancestor(bone: Bone, ragdoll: &Ragdoll) -> Option<Bone> {
     let mut current = bone.parent()?;
     loop {
         if ragdoll.bodies[current].is_some() {
@@ -3461,6 +3475,154 @@ mod tests {
         // 25.1 mm.
         let (capsule_turned, _) = settle_a_foot(None);
         assert!(capsule_turned > 10.0, "the capsule foot is the reason: it should roll or tip, turned {capsule_turned:.1}°");
+    }
+
+    #[test]
+    fn a_ragdoll_stands_on_its_own_feet_with_its_joints_carrying_it() {
+        // Plan step 4b. Unpinned under full gravity, the old per-body
+        // controller buckled at 0.5 s; driven by joint torques without the
+        // weight fed forward it fell over in 1.5-3 s; without planted feet
+        // its soles sank 52 mm into the floor. Here it stands 5 s: the hips
+        // drop ≤ 5 mm, the body sways a few centimetres over its ankles
+        // (nothing steers that yet: step 4c), the feet stay put.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let at = |app: &App, body: Entity| app.world().get::<Position>(body).unwrap().0;
+        let (start, feet) = (at(&app, hips), [Bone::LeftFoot, Bone::RightFoot].map(|b| at(&app, ragdoll.bodies[b].unwrap())));
+        let (mut lowest, mut furthest, mut slid) = (0.0f32, 0.0f32, 0.0f32);
+        for _ in 0..(5.0 / TIMESTEP) as usize {
+            app.update();
+            let now = at(&app, hips);
+            lowest = lowest.max(start.y - now.y);
+            furthest = furthest.max(Vec3::new(now.x - start.x, 0.0, now.z - start.z).length());
+            for (leg, foot) in [Bone::LeftFoot, Bone::RightFoot].into_iter().enumerate() {
+                let moved = at(&app, ragdoll.bodies[foot].unwrap()) - feet[leg];
+                slid = slid.max(Vec3::new(moved.x, 0.0, moved.z).length());
+            }
+        }
+        // Really on its own: nothing pinned, gravity in full, the old
+        // controller's hand per body off.
+        assert!(app.world().get::<KinematicRoot>(hips).is_none(), "the root is still pinned");
+        for (bone, body) in ragdoll.bodies.iter() {
+            let Some(body) = *body else { continue };
+            assert_eq!(app.world().get::<GravityScale>(body).unwrap().0, 1.0, "{} carries no weight", bone.name());
+        }
+        assert!(lowest < 0.015, "the hips sank {:.0} mm", lowest * 1e3);
+        assert!(furthest < 0.08, "the hips swayed {:.0} mm", furthest * 1e3);
+        assert!(slid < 0.005, "a planted foot slid {:.1} mm", slid * 1e3);
+        // What the joints carry is a standing body's: each ankle under
+        // Winter's per-kg peak (§7.4.5, ~1.6 N·m/kg) by far.
+        let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
+        for foot in [Bone::LeftFoot, Bone::RightFoot] {
+            let drive = app.world().get::<super::super::joint_drive::JointDrive>(ragdoll.bodies[foot].unwrap()).unwrap();
+            assert!(drive.child_grounded, "the {} is not planted", foot.name());
+            let per_kg = drive.feedforward.length() / mass;
+            assert!((0.1..1.0).contains(&per_kg), "the {} carries {per_kg:.2} N·m/kg", foot.name());
+        }
+    }
+
+    #[test]
+    fn a_ragdoll_on_its_own_feet_still_falls() {
+        // A fall takes over from the joints: the drives go, the fall's own
+        // tone, hinges and damping act, and it comes to lie on the floor.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, 30);
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall_moving(FALL_TONE, FALL_DAMPING, Vec3::Z * 1.5);
+        step(&mut app, (3.0 / TIMESTEP) as usize);
+        for (bone, body) in ragdoll.bodies.iter() {
+            let Some(body) = *body else { continue };
+            assert!(app.world().get::<super::super::joint_drive::JointDrive>(body).is_none(), "{} still has its drive", bone.name());
+        }
+        let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
+        assert!(hips.y < 0.4, "it should lie on the floor, hips at {:.2} m", hips.y);
+    }
+
+    // Plan step 4b: the drawn stance, stood pinned for 1 s, then on its own
+    // feet (`Ragdoll::stand_on_own_feet`): full gravity, the joints
+    // carrying it. Prints the hips, the feet, the joints' errors and what
+    // each carries.
+    #[test]
+    #[ignore]
+    fn probe_driven_ragdoll_stands() {
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let pose =|app: &App, body: Entity| app.world().get::<GlobalTransform>(body).unwrap().compute_transform();
+        let start = pose(&app, hips);
+        let feet = [Bone::LeftFoot, Bone::RightFoot].map(|b| pose(&app, ragdoll.bodies[b].unwrap()).translation);
+        let foot_start_rotation = pose(&app, ragdoll.bodies[Bone::LeftFoot].unwrap()).rotation;
+        println!(
+            "hips at {:.3} m, soles at {:.1}/{:.1} mm",
+            start.translation.y,
+            sole_lowest(&app, ragdoll.bodies[Bone::LeftFoot].unwrap()) * 1e3,
+            sole_lowest(&app, ragdoll.bodies[Bone::RightFoot].unwrap()) * 1e3
+        );
+        let errors = |app: &App| {
+            let mut line = String::new();
+            for &bone in Bone::ALL.iter() {
+                let (Some(body), Some(parent)) = (ragdoll.bodies[bone], nearest_simulated_ancestor(bone, &ragdoll)) else { continue };
+                let parent = ragdoll.bodies[parent].unwrap();
+                let (c, p) = (rotation_of(app, body), rotation_of(app, parent));
+                let (ct, pt) = (app.world().get::<JointTarget>(body).unwrap().target, app.world().get::<JointTarget>(parent).unwrap().target);
+                let error = super::super::joint_drive::drive_error(c, p, ct, pt).length().to_degrees();
+                if error > 1.0 {
+                    line += &format!(" {} {error:.1}°", bone.name());
+                }
+            }
+            line
+        };
+        println!("ERRORS at unpin:{}", errors(&app));
+        for frame in 1..=(10.0 / TIMESTEP) as usize {
+            app.update();
+            if frame == 15 || frame == 30 || frame == 300 {
+                println!("ERRORS frame {frame}:{}", errors(&app));
+            }
+            if frame == 300 {
+                let mut line = String::new();
+                for &bone in Bone::ALL.iter() {
+                    if let Some(body) = ragdoll.bodies[bone]
+                        && let Some(drive) = app.world().get::<super::super::joint_drive::JointDrive>(body)
+                    {
+                        line += &format!(" {} {:.0}", bone.name(), drive.feedforward.length());
+                    }
+                }
+                println!("FEEDFORWARD N·m:{line}");
+            }
+            if frame <= 30 && frame % 3 == 0 {
+                let body = ragdoll.bodies[Bone::LeftFoot].unwrap();
+                let now = pose(&app, body);
+                let moved = now.translation - feet[0];
+                println!(
+                    "FOOT frame {frame}: tilt {:.1}°, moved horizontal {:.1} mm, up {:+.1} mm, sole {:+.1} mm, hips {:+.1} mm",
+                    foot_start_rotation.angle_between(now.rotation).to_degrees(),
+                    Vec3::new(moved.x, 0.0, moved.z).length() * 1e3,
+                    moved.y * 1e3,
+                    sole_lowest(&app, body) * 1e3,
+                    (pose(&app, hips).translation.y - start.translation.y) * 1e3
+                );
+            }
+            if frame % 30 == 0 {
+                let now = pose(&app, hips);
+                let drift = Vec3::new(now.translation.x - start.translation.x, 0.0, now.translation.z - start.translation.z).length();
+                let tilt = start.rotation.angle_between(now.rotation).to_degrees();
+                let slid = [Bone::LeftFoot, Bone::RightFoot]
+                    .map(|b| pose(&app, ragdoll.bodies[b].unwrap()).translation)
+                    .iter()
+                    .zip(feet)
+                    .map(|(now, then)| format!("{:.0}", (now - then).length() * 1e3))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                println!(
+                    "DRIVE t {:.1}s: hips drop {:+.0} mm, drift {:.0} mm, tilt {:.1}°, feet moved {slid} mm",
+                    frame as f32 * TIMESTEP,
+                    (start.translation.y - now.translation.y) * 1e3,
+                    drift * 1e3,
+                    tilt
+                );
+            }
+        }
     }
 
     // SPIKE (plan step 4.1) — an unpinned ragdoll on the real rig, full

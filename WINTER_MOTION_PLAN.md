@@ -190,7 +190,7 @@ Live on both rigs: pushes of 0.2–0.3 m/s peak at 2–3 cm (`puppet_base`)
 and return; feet ≤ 1.3 mm (balls), ≤ 4.9 mm (ankles). The support is also
 bounded to Winter's 8° per plane. Tests in `balance::tests`.
 
-- [ ] **2.1 Balance state** (new `balance.rs`). `Balance` component: COM
+- [x] **2.1 Balance state** (new `balance.rs`). `Balance` component: COM
   offset and velocity (A/P, M/L), pendulum `COM̈ = −(COP − COM)/K`. COP
   controller `COP = COM + gains·(offset, velocity)`, clamped to the support
   polygon from the `Sole` points less a margin. `Balance::push(impulse, mass)`.
@@ -198,12 +198,12 @@ bounded to Winter's 8° per plane. Tests in `balance::tests`.
     threshold; settles in ~1–2 s); `the_cop_leads_the_com_with_the_opposite_sign`;
     `a_push_beyond_the_support_saturates_and_flags_a_step` (hook for a
     future stepping reaction).
-- [ ] **2.2 Posing the offset.** A/P through `sway_over_feet` (whole-leg
+- [x] **2.2 Posing the offset.** A/P through `sway_over_feet` (whole-leg
   ankle lean, trunk upright); M/L through `shift_weight`'s load/unload,
   scaled continuously.
   - Tests: planted feet ≤ 1 mm in the target, ≤ 5 mm in the sprung pose;
     sway angle < 8° (the model's validity range).
-- [ ] **2.3 Wire and verify.** Compose after the idle weight shift; gallery
+- [x] **2.3 Wire and verify.** Compose after the idle weight shift; gallery
   `--push-schedule T:X,Z` for reproducible BRP capture. Live check, progress,
   KB note. Checkpoint: commit.
 
@@ -334,6 +334,15 @@ pinned ragdoll following the animation, sole feet (4a).
   foot colliders and ground friction, drive only the pose PD. Measure time
   to fall; Winter §8.1's null result predicts ~0.5 s. Stop and report if
   contact itself is unstable.
+- [x] **4b torque-shaped control, done 2026-10-02.**
+  `Ragdoll::stand_on_own_feet`: unpinned, full gravity, each joint a
+  torque between its two bodies (`joint_drive`), solved implicitly every
+  avian substep; each joint fed the weight it carries; planted feet
+  `Dominance` 1, the ankle's reaction carried by the ground. Stands 5 s
+  headless (hips ≤ 5 mm down, feet ≤ 1 mm) and ~9 s live on both rigs
+  (hips within 2 mm, sway ≤ 41 mm). Ankles carry 0.54 N·m/kg. Left for
+  4c: the body sways ±2 cm over its ankles, undamped. See the
+  [note](./docs/knowledge/character-animation/ragdoll-and-physics/a-standing-ragdoll-carries-its-weight-through-joint-torques.md).
 - [ ] **4.2 Torque budgets.** Per joint: Winter per-kg peak × body mass
   (ankle ≈ 1.6 N·m/kg), converted to an acceleration ceiling through
   `limb_mass_properties`. Only in a new `Balancing` mode. Test: ceilings

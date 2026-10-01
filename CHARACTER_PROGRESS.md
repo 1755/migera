@@ -42,6 +42,37 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Step 4b: a ragdoll standing on its own feet
+
+- **`Ragdoll::stand_on_own_feet`**: the root is released, gravity acts in
+  full, and every joint holds its pose with a torque between its two
+  bodies (`joint_drive::JointDrive`), not the old per-body acceleration.
+  Three parts, each load-bearing (removed, the standing test fails):
+  - **Implicit drives every substep.** `apply_joint_drives` runs in
+    avian's `SubstepSchedule` on `SolverBody`, as a soft constraint
+    (`P = −(1 + cK)⁻¹(h·kp·e + c·v)`): stable at any gain.
+  - **Weight fed forward** (`carry_weight`). The drives alone sagged and
+    toppled in 1.5-3 s at every gain (kp 10-80 N·m/rad/kg): sized on two
+    light bodies, their correction is capped. Each joint now carries the
+    gravity moment of the side the ground does not hold. Without it the
+    hips sank 607 mm.
+  - **Planted feet `Dominance` 1, the ankle's reaction on the ground.**
+    The early "sag" was both soles sinking 52 mm into the floor (joints
+    solved after contacts, split by inverse mass). Without it, 837 mm.
+    The ankle reaction put on the foot instead: NaN in a frame.
+- **Measured.** Headless 5 s: hips ≤ 5 mm down, sway ≤ 6 cm, feet ≤ 1 mm,
+  knees 2-3° and ankles ~3.4° off target. Ankles carry 38 N·m
+  (0.54 N·m/kg), knees 34, hips 27-29. Live on both rigs (BRP,
+  `--stand-on-own-feet 180`), ~9 s: hips within 2 mm, sway 25 / 41 mm,
+  feet 0.0 mm.
+- **Tried and dropped:** sizing each drive on the rigid lump of body each
+  side of the joint (torques 1e8 N·m in a frame).
+- **Left for 4c:** an undamped ±2 cm sway over the ankles (~2 s period),
+  which only a balance controller can steer. The screen still draws the
+  animation while the body carries itself.
+- `cargo test --release --lib`: 1071 passed, 19 ignored. Clippy: 0
+  warnings.
+
 ### Open items closed: loaded side step, backward jolt, drawn toes, palms
 
 - **Loaded side step.** A sideways push now takes the young adult's
