@@ -6,7 +6,7 @@ animation system, as ordered, gated steps. Progress with measured numbers
 goes to [CHARACTER_PROGRESS.md](./CHARACTER_PROGRESS.md); this file only
 tracks the plan and which steps are done.
 
-Order: **1 → 2 → 3a → 4 → 3b.**
+Order: **1 → 2 → 3a → 4 → 3b → 5.**
 
 ## Scope findings
 
@@ -209,6 +209,8 @@ bounded to Winter's 8° per plane. Tests in `balance::tests`.
 
 ## 3a. Per-character knee style (§11.1)
 
+**Skipped (2026-10-01, by decision).** Not to be built.
+
 **Premise withdrawn (2026-09-30).** §11.1 shows hip/knee *moment* splits
 varying day to day at near-identical *angles* (rms s.d. < 2°). That
 supports no knee-angle style for the walk; the KB note that said so was
@@ -223,6 +225,9 @@ ragdoll may trade stance hip and knee torque as long as their sum holds.
   commit.
 
 ## 4. Self-balancing active ragdoll (§11.2, §7.4.5, §9.0.5, §9.2, §8.1)
+
+**4.2–4.5 deferred (2026-10-01):** kept as a later improvement, if and
+when the self-balancing ragdoll is taken up again. Not in the current work.
 
 **Re-scoped 2026-09-30: physics as a hybrid.** Animation stands and walks;
 physics takes over only for falling, stumbling and hits. The self-balancing
@@ -349,9 +354,45 @@ pinned ragdoll following the animation, sole feet (4a).
 
 ## 3b. Body proportions (§4.0.1), spike only
 
-- [ ] Scale one `character.glb` segment (thigh +10 %) by (a) moving the
-  joint alone and (b) bone scale with child compensation; inspect the knee
-  skinning. Build height-fraction proportions only if one is acceptable.
+- [x] **Spike, done 2026-10-01.** Scale one `character.glb` segment
+  (thigh +10 %) by (a) moving the joint alone and (b) bone scale with
+  child compensation; inspect the knee skinning.
+  - (a) stretches the knee's blend triangles: p50 1.13, max 2.71 at a 90°
+    bend. Not acceptable.
+  - (b) as planned can't work in Bevy: a scaled parent shears a rotated
+    child. Replaced by a skinning-only scale (a helper joint under the
+    thigh, scaled along +Y, swapped into `SkinnedMesh::joints`) plus the
+    moved joint: blend p50 1.000, max 1.16. Acceptable.
+  - The foot IK reads live translations, so the longer leg stood planted
+    with no other change. `--proportion-spike move|proxy F`,
+    `tools/skin_segment_stretch.py`, see
+    [the note](./docs/knowledge/character-animation/rig-and-retargeting/lengthen-a-segment-by-its-joint-and-a-skinning-only-scale.md).
+- [ ] Height-fraction proportions (feasible; not yet requested).
+
+## 5. Open limits (agreed 2026-10-01)
+
+- [x] **5.1 Pushes and hits while walking, done 2026-10-01.**
+  `WalkBalance`: footfalls placed at the capture point (Hof), forward
+  pushes a speed surge; hits handed over; the fall's root launches at the
+  walk's pace. See
+  [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-push-while-walking-moves-the-next-footfalls.md).
+- [x] **5.2 Uneven ground, done 2026-10-01.** Locks take the body's
+  rise; foot IK samples the ground in the world; the rise keeps clear of
+  the `AnimGround` under each joint. Keys still posed flat. See
+  [the note](./docs/knowledge/character-animation/ik-and-locomotion/sample-the-ground-in-the-world-not-the-pose.md).
+- [x] **5.3 Getting up from lying on the side, done 2026-10-01.**
+  Side-sit → hands and knees → half-kneel; see the get-up note.
+- [x] **5.4 Walking ragdoll lag, done 2026-10-01.** Velocity
+  feedforward: median 11.5 → 9.5° (puppet_base), 10.4 → 8.1°
+  (character.glb), max ≤ 15°; the arms' ~5° is shoulder coupling. See
+  [the note](./docs/knowledge/character-animation/ragdoll-and-physics/a-pinned-ragdoll-tracks-its-targets-velocity.md).
+- [x] **5.5 Small items, worked 2026-10-01.** Fixed: edge catches (whole
+  ticks; 0/12 fall). Measured and left open, with causes: the clamped
+  backward step's jolt (7.6 mm); the loaded side step (138-290 mm lunges,
+  or lost catches as a shuffle); a shoulder second cone (any second arm
+  joint holds the arm 6° off); hand bodies (character.glb to 100°). Kept
+  by decision: elbow overshoot (within passive range). See
+  CHARACTER_PROGRESS.md.
 
 ## Throughout
 

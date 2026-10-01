@@ -163,6 +163,33 @@ pub fn pd_torque(
     pd_torque_at(current, target, angular_velocity, params, 0.0)
 }
 
+/// [`pd_torque_at`] toward a target that is itself turning at
+/// `target_velocity` (world, rad/s): the damping pulls the body's spin
+/// toward the target's, not toward rest. Within the joint's ceiling, so a
+/// joint with none (falling, limp) is driven by nothing.
+///
+/// Damped toward rest, a body chasing a moving target trails it by
+/// `2ζ·ω_target/ω` in steady state: at 8 Hz critically damped, 0.04 s
+/// worth of the target's motion. A walking ragdoll's limbs trailed their
+/// targets by 10-12° (median of the worst body) that way.
+///
+/// The target's acceleration is not fed forward: taken frame to frame from
+/// targets published at a jittery frame rate, it bought at most 0.7° on
+/// that median and raised the worst sample from 20° to 28°.
+pub fn pd_torque_tracking(
+    current: Quat,
+    target: Quat,
+    angular_velocity: Vec3,
+    target_velocity: Vec3,
+    params: &PdParams,
+    dt: f32,
+) -> Vec3 {
+    let target = neighborhood(current, target);
+    let error = to_scaled_angle_axis(target * current.inverse());
+    let torque = error * params.stiffness() + (target_velocity - angular_velocity) * params.stable_damping(dt);
+    torque.clamp_length_max(params.max_torque.max(0.0))
+}
+
 /// [`pd_torque`], with the timestep it will be integrated over.
 ///
 /// Prefer this wherever `dt` is known. It clamps the damping gain to what
@@ -551,5 +578,36 @@ mod tests {
             clamped_peak.is_finite(),
             "the clamped controller should stay finite, got {clamped_peak}",
         );
+    }
+
+    #[test]
+    fn a_tracked_target_is_followed_without_the_damping_lag() {
+        // A target spinning steadily at 5 rad/s, like a swinging limb's.
+        // Damped toward rest, the body trails it by 2ζ·ω_target/ω, here
+        // 0.2 rad (11°, what the walking ragdoll's limbs showed); damped
+        // toward the target's own spin, by nothing in steady state.
+        let params = PdParams { frequency_hz: 8.0, damping_ratio: 1.0, max_torque: 1.0e4 };
+        let dt = 1.0 / 64.0;
+        let spin = Vec3::Y * 5.0;
+        // The error as the controller sees it, when it computes the torque.
+        let trail = |tracking: bool| {
+            let (mut orientation, mut velocity) = (Quat::IDENTITY, Vec3::ZERO);
+            let (mut target, mut error) = (Quat::IDENTITY, 0.0);
+            for _ in 0..128 {
+                target = (Quat::from_scaled_axis(spin * dt) * target).normalize();
+                error = to_scaled_angle_axis(neighborhood(orientation, target) * orientation.inverse()).length();
+                let fed = if tracking { spin } else { Vec3::ZERO };
+                velocity += pd_torque_tracking(orientation, target, velocity, fed, &params, dt) * dt;
+                orientation = (Quat::from_scaled_axis(velocity * dt) * orientation).normalize();
+            }
+            error
+        };
+        let expected = 2.0 * params.damping_ratio * spin.length() / (std::f32::consts::TAU * params.frequency_hz);
+        let (resting, tracking) = (trail(false), trail(true));
+        assert!(
+            (resting - expected).abs() < 0.03,
+            "damped toward rest it should trail by about {expected:.3} rad, trailed {resting:.3}"
+        );
+        assert!(tracking < 0.1 * resting, "tracking the target's spin it still trails {tracking:.4} rad (vs {resting:.3})");
     }
 }

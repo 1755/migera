@@ -89,10 +89,8 @@ All return. Left view: the body leans from the ankles, trunk in line, feet
 flat. Not in `anim_bench` (the gallery drives it); it runs only while the
 body is unsettled.
 
-## Revisit when
-
-- Pushes arrive while walking: only the standing side of the blend sways
-  now.
+Pushes while walking are their own model, see
+[a push while walking moves the next footfalls](./a-push-while-walking-moves-the-next-footfalls.md).
 
 Stepping now exists: `needs_step` plans a recovery step, see
 [a stumble is a capture-point step, then a join](./a-stumble-is-a-capture-point-step-then-a-join.md).

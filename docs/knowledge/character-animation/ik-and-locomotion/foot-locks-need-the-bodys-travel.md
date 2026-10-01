@@ -1,14 +1,14 @@
 ---
 title: Foot locks need the body's travel
-description: "A foot lock works in the pose's frame; with root motion moving the entity, a locked foot rode along (~14 cm first-step slide) and a planted one never locked mid-walk. Pass the body's travel (Turn::travel). Read before touching footlock.rs or anything that moves the character entity."
+description: "A foot lock works in the pose's frame; with root motion moving the entity, a locked foot rode along (~14 cm first-step slide), a planted one never locked mid-walk, and up a slope a planted foot rose 9 cm with the body. Pass all the body's travel, rise included (Turn::travel). Read before touching footlock.rs or anything that moves the character entity."
 type: lesson
 status: current
 tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-09-29
-verified: 2026-09-29
+updated: 2026-10-01
+verified: 2026-10-01
 code:
   - src/character/anim/footlock.rs
   - src/character/anim/plugin.rs
@@ -46,12 +46,22 @@ judged in the world. `ride_rendered_feet` in the gallery and
 `advance_turning_with` in `Authoritative` mode fill it in. A new mover that
 forgets it gets the old behaviour back.
 
+**All of the travel, rise and fall included.** Until 2026-10-01 the lock
+dropped the vertical part and the gallery reported only the horizontal
+one, which is harmless on flat ground, where the entity's height never
+changes. Walking up a 0.2 grade, the entity rose about 9 cm under each
+planted foot, and the foot rose with it while held horizontally. Within a
+stance it changed height by 64 mm (median); now 13 mm, as on flat ground
+(17 mm, the heel rising). `ride_rendered_feet` reports the rise the ground
+gave the entity.
+
 ## Measured
 
 Live, start of a walk, worst slide of the planted ball: 17.6 mm → 2.7 mm.
 Unit test: zero world slip over 40 frames of acceleration past the unlock
 speed. It fails on the first frame (1.1 mm) with the travel removed from the
-anchor.
+anchor. `a_planted_foot_stays_put_while_the_body_climbs_over_it` fails on
+its first frame (4 mm) with the rise dropped.
 
 ## Related
 

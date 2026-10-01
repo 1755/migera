@@ -100,8 +100,8 @@ pub struct Turn {
     pub pivot: Vec3,
     /// How far it turned this frame, radians about `+Y`.
     pub yaw_delta: f32,
-    /// How far the body travelled this frame, horizontally, in the frame
-    /// the lock's points are given in (the pose's). On
+    /// How far the body travelled this frame, rise and fall included, in
+    /// the frame the lock's points are given in (the pose's). On
     /// `plugin::AnimFootIk::turn` it is in WORLD axes, and the IK stage
     /// rotates it into the pose's before handing it here.
     ///
@@ -244,9 +244,11 @@ impl FootLock {
         // now is rather than where it was a turn ago.
         //
         // And it stays behind as the body travels: the travel is removed
-        // from it, which is what keeps it where it is in the world.
-        let travel = Vec3::new(turn.travel.x, 0.0, turn.travel.z);
-        let travel = if travel.is_finite() { travel } else { Vec3::ZERO };
+        // from it, which is what keeps it where it is in the world. Up and
+        // down too: walking up a 0.2 grade, the body rose under a foot locked
+        // horizontally only, and carried it 9 cm up off the slope through
+        // every stance.
+        let travel = if turn.travel.is_finite() { turn.travel } else { Vec3::ZERO };
         if self.state == LockState::Locked {
             self.anchor = turn.applied_to(self.anchor) - travel;
         }
@@ -878,6 +880,30 @@ mod tests {
             let slid = (body + target - world_foot).length();
             assert!(lock.is_locked(), "frame {frame}: a planted foot let go at {speed} m/s");
             assert!(slid < 1.0e-4, "frame {frame}: the planted foot slid {slid} m in the world");
+        }
+    }
+
+    #[test]
+    fn a_planted_foot_stays_put_while_the_body_climbs_over_it() {
+        // Up a 0.2 grade the body rises as it travels. A lock told only the
+        // horizontal part carried the foot up with the body: 9 cm off the
+        // slope by the end of a live stance.
+        let config = FootLockConfig::default();
+        let mut lock = FootLock::new();
+        let world_foot = Vec3::new(-0.11, 0.0, -0.1);
+        for _ in 0..5 {
+            lock.update(world_foot, 0.0, &config, DT);
+        }
+        let mut body = Vec3::ZERO;
+        for frame in 0..30 {
+            let travel = Vec3::new(0.0, 0.2 * 1.2 * DT, -1.2 * DT);
+            body += travel;
+            let animated = world_foot - body;
+            // The ground under the foot, in the body's frame, falls as the
+            // body rises.
+            let target = lock.update_turning(animated, -body.y, &config, DT, Turn { travel, ..Turn::NONE });
+            let moved = (body + target - world_foot).length();
+            assert!(moved < 1.0e-4, "frame {frame}: the planted foot moved {moved} m in the world");
         }
     }
 

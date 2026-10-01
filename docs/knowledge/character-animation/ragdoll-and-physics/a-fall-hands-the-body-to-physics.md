@@ -171,3 +171,5 @@ rotations only, and the gallery had no physics floor.
 - [An unpinned ragdoll needs soles and weight-bearing control](./an-unpinned-ragdoll-needs-soles-and-weight-bearing-control.md) — context: why the ragdoll only falls, and doesn't balance.
 - [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) — same-trap: verify bodies over BRP, not the picture.
 - [PD damping has an explicit-integration bound](./pd-damping-explicit-integration-bound.md) — contrast: the PD's damping; joint damping is avian's implicit one.
+- [A fall test samples one chaotic landing](./a-fall-test-samples-one-chaotic-landing.md) — same-trap: why a fall test can fail on a change that doesn't touch falls.
+- [A pinned root's velocity is not its pace](./a-pinned-roots-velocity-is-not-its-pace.md) — deeper: the release launches the root at its target's pace, not its last physics step's velocity.

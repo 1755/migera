@@ -1,6 +1,6 @@
 ---
 title: Getting up goes through key poses chosen by how the body lies, then the bodies are set back on their bones
-description: "At rest, Ragdoll::get_up reads face up/down from the chest body, turns the character along its body, and blends the drawn skeleton, per bone in world space, through chained, solved key poses (sit→squat or hands-and-knees→half-kneel, getup.rs) to standing, tucking dipping feet; then re-pins. Read before changing get-up."
+description: "At rest, Ragdoll::get_up reads face up, down or on a side from the chest body, turns the character, and blends the drawn skeleton, per bone in world space, through chained, solved key poses (sit→squat, hands-and-knees→half-kneel, or side-sit first, getup.rs) to standing, tucking dipping feet; then re-pins. Read before changing get-up."
 type: decision
 status: current
 tags:
@@ -19,7 +19,8 @@ sources:
   - "VanSant (1988), Rising from a supine position to erect stance, Phys Ther 68(2):185-192, https://pubmed.ncbi.nlm.nih.gov/3340655/ — 32 young adults; most common: symmetrical push, symmetrical trunk, symmetrical squat, through sitting to squatting"
   - "Floor-to-stand studies (quadruped push-up to half-kneel), e.g. The Biomechanics of Healthy Older Adults Rising from the Floor Independently, IJERPH 20(4):3507, https://doi.org/10.3390/ijerph20043507"
   - "tests getup::tests (incl. chained_keys_keep_their_shared_contacts_in_place), ragdoll_plugin::tests::a_fallen_ragdoll_gets_up_and_is_pinned_again, a_rise_moves_no_limb_far_above_where_its_keys_put_it"
-  - "character_gallery --anim-pose getup:sit|squat|quadruped|half_kneel (static keys, Front and Left, gizmos)"
+  - "character_gallery --anim-pose getup:sit|squat|quadruped|half_kneel|side_sit_left|side_sit_right (static keys, Front and Left, gizmos)"
+  - "probe ragdoll_plugin::tests::probe_how_falls_lie (ignored); BRP recording of a live side rise, character.glb"
 aliases:
   - H3
   - get up
@@ -36,12 +37,26 @@ aliases:
 
 # Getting up goes through key poses chosen by how the body lies, then the bodies are set back on their bones
 
-A fallen body rises the way people do, by one of two documented routes:
+A fallen body rises the way people do, by one of three documented routes:
 
 - **Face up:** lying → sitting propped on both hands → squatting → standing.
   This is VanSant's most common adult pattern.
 - **Face down:** lying → hands and knees → half-kneeling → standing. This
   is the quadruped route of floor-to-stand studies.
+- **On the side** (chest within 45° of level, `getup::Lying::of`): lying →
+  side-sitting on the hand underneath, legs folded to the other side →
+  hands and knees → half-kneeling → standing (3.5 s). Read as face up or
+  down instead, the first blend rolled the body 90° about its own length.
+  The side-sit is authored by segment directions (`getup::aim`), since its
+  legs fold sideways; it is solved like the others (knees, then the lean
+  for the hand, iterated, since the lean moves the hips) and mirrors
+  exactly left to right. Of 18 test falls pushed sideways and diagonally,
+  two came to rest on a side (0.8 m/s forward and out, chest 53° from face
+  down); the gallery's plain collapse does on some runs. Live, recorded
+  over BRP, a side rise went side-sit → hands and knees → half-kneel →
+  standing with no joint under the floor. Moving from the side-sit to
+  hands and knees, the propping hand steps 0.4 m forward and arcs 128 mm
+  up, as a stepping foot does.
 
 The screen blends through these keys. The physics does nothing until the
 end, when every body is set onto its bone and the root is pinned again.
@@ -154,11 +169,10 @@ end, when every body is set onto its bone and the root is pinned again.
 
 - Authored get-up motion exists: it replaces the keys, and the choice by
   lying side stays.
-- A side-lying body: it is read as face up or down by the chest's sign; a
-  rolling key (side-sit, per the floor-to-stand studies) would suit it
-  better.
-- The ground isn't at the entity's height (slopes, steps): the clearance
-  and the keys' floor need the ground probe.
+- The keys' floor on uneven ground: the clearance samples the character's
+  `AnimGround` under each joint (since 2026-10-01, see
+  [sample the ground in the world](../ik-and-locomotion/sample-the-ground-in-the-world-not-the-pose.md)),
+  but the keys are still posed against a flat floor.
 
 ## Related
 

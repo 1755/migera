@@ -154,6 +154,12 @@ pub struct AnimFootIk {
     /// Written each frame by whatever owns contact, such as a standing
     /// balance; `[false; 2]` leaves contact to the locks' own speed test.
     pub planted: [bool; 2],
+    /// How far each foot (left, right) goes from where the animation puts
+    /// it, metres, the pose's frame, horizontal: where a walking balance
+    /// sets a foot down to catch a push (`walk_balance::WalkBalance`).
+    /// Added to the animated toe before the lock and the ground see it, so
+    /// a displaced foot locks, grounds and releases where it really is.
+    pub displaced: [Vec3; 2],
 }
 
 /// A foot being set down onto a spot. See [`AnimFootIk::landing`].
@@ -508,6 +514,11 @@ type IkRig = (
     Option<&'static HumanoidSkeleton>,
     Option<&'static AnimArmIk>,
     Option<&'static GlobalTransform>,
+    // The character's own placement, read as this frame's when it has no
+    // parent: its `GlobalTransform` is last frame's, and a root motion step
+    // or a rise up a slope since would offset every ground sample.
+    Option<&'static Transform>,
+    Has<ChildOf>,
 );
 
 /// The geometry of the rig `skeleton` drives, in metres, as the renderer
@@ -561,12 +572,40 @@ fn solve_foot_ik(
     transforms: Query<&Transform>,
     world_transforms: Query<&GlobalTransform>,
     toe_children: Query<&Children>,
+    parents: Query<(), With<ChildOf>>,
 ) {
     let dt = time.delta_secs();
     let fallback = AnimGround::default();
 
-    for (pose, mut foot_ik, ground, skeleton, arm_ik, root) in &mut rigs {
+    for (pose, mut foot_ik, ground, skeleton, arm_ik, root, placed, parented) in &mut rigs {
         let ground = ground.unwrap_or(&fallback);
+        // Where the pose's frame is in the world, for sampling the ground:
+        // its origin at the character's, turned as the character is (what
+        // the hips hang from, against how it was bound; not the hips
+        // themselves, which carry the walk's pelvic twist). Sampled at pose
+        // points instead, a slope ran along the character's own forward
+        // whichever way it faced: turned 90° across a 0.2 grade, its feet
+        // stood level where one was 4 cm uphill of the other.
+        let origin = match (placed, parented) {
+            (Some(transform), false) => transform.translation,
+            _ => root.map_or(Vec3::ZERO, |global| global.translation()),
+        };
+        // Hips hung from nothing have no turn to read (a bare rig).
+        let turn = skeleton
+            .filter(|skeleton| parents.contains(skeleton.entity(Bone::Hips)))
+            .and_then(|skeleton| {
+                let hips = skeleton.entity(Bone::Hips);
+                let world = world_transforms.get(hips).ok()?.rotation();
+                let local = transforms.get(hips).ok()?.rotation.normalize();
+                Some(((world * local.inverse()) * skeleton.hips_root_rotation().inverse()).normalize())
+            })
+            .unwrap_or(Quat::IDENTITY);
+        let sample_ground = |point: Vec3| {
+            ground.0.sample(origin + turn * point).map(|hit| crate::character::anim::ground::GroundHit {
+                height: hit.height - origin.y,
+                normal: turn.inverse() * hit.normal,
+            })
+        };
 
 
         // Copied out before the per-foot loop takes a mutable borrow of the
@@ -702,9 +741,10 @@ fn solve_foot_ik(
         .into_iter()
         .enumerate()
         {
-            let animated = animated_toes[chain.toe];
+            let displaced = foot_ik.displaced[slot];
+            let animated = animated_toes[chain.toe] + Vec3::new(displaced.x, 0.0, displaced.z);
 
-            let Some(hit) = ground.0.sample(animated) else {
+            let Some(hit) = sample_ground(animated) else {
                 // No ground under this foot — over a ledge, say. Leave it
                 // following the animation rather than planting it on
                 // nothing.
@@ -1478,6 +1518,50 @@ mod tests {
         let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
         let hips = forward_kinematics_on(&pose, &geometry)[Bone::Hips].y;
         [Bone::LeftFoot, Bone::RightFoot].map(|ankle| Sole::of(&geometry, ankle).points(&pose, &geometry).map(|p| hips + p.y))
+    }
+
+    #[test]
+    fn a_turned_character_stands_on_the_slope_where_its_feet_are() {
+        // Turned 90° across a slope, away from the origin: one foot stands
+        // uphill of the other. Sampled at pose points, the slope ran along
+        // the character's own forward and both feet stood level, 2 cm in
+        // and out of the ground.
+        use crate::character::anim::foot::Sole;
+        use crate::character::anim::gltf_rig::parsed_rig;
+        let grade = 0.2;
+        let ground = SlopedGround { height: 0.0, grade };
+        let (mut app, rig, _) = app_with_real_rig(SlopedGround { height: 0.0, grade });
+        app.add_plugins(TransformPlugin);
+        let position = Vec3::new(1.5, grade * 3.0, -3.0);
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let hips = app.world().get::<HumanoidSkeleton>(rig).unwrap().entity(Bone::Hips);
+        let armature =
+            app.world_mut().spawn((Transform::from_rotation(parsed_rig().hips_parent_rest_world_rotation), ChildOf(rig))).id();
+        app.world_mut().entity_mut(rig).insert(Transform::from_translation(position).with_rotation(turn));
+        app.world_mut().entity_mut(hips).insert(ChildOf(armature));
+        step(&mut app, 120);
+
+        let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+        let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
+        let hips = forward_kinematics_on(&pose, &geometry)[Bone::Hips];
+        let mut heights = vec![];
+        for ankle in [Bone::LeftFoot, Bone::RightFoot] {
+            // Each foot's lowest contact, against the ground under it.
+            let lowest = Sole::of(&geometry, ankle)
+                .points(&pose, &geometry)
+                .map(|p| hips + p)
+                .into_iter()
+                .min_by(|a, b| a.y.total_cmp(&b.y))
+                .unwrap();
+            let under = ground.sample(position + turn * lowest).unwrap().height - position.y;
+            assert!(
+                (lowest.y - under).abs() < 0.005,
+                "{ankle:?}'s sole is at {:.4}, the ground under it at {under:.4}",
+                lowest.y
+            );
+            heights.push(under);
+        }
+        assert!((heights[0] - heights[1]).abs() > 0.02, "the feet should stand at different heights: {heights:?}");
     }
 
     #[test]

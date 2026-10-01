@@ -47,7 +47,7 @@
 
 use bevy::prelude::*;
 
-use super::math::pd::{pd_torque_at, PdParams};
+use super::math::pd::{pd_torque_at, pd_torque_tracking, PdParams};
 use super::rig::{BoneSet, LocalPose};
 use crate::character::skeleton::Bone;
 
@@ -828,6 +828,23 @@ pub fn joint_torque_at(
     let limited = PdParams { max_torque: strength.scale(params.max_torque), ..params };
 
     pd_torque_at(current, target, angular_velocity, &limited, dt)
+}
+
+/// [`joint_torque_at`] toward a target turning at `target_velocity` (world,
+/// rad/s): see [`pd_torque_tracking`] for the lag this removes.
+pub fn joint_torque_tracking(
+    bone: Bone,
+    current: Quat,
+    target: Quat,
+    angular_velocity: Vec3,
+    target_velocity: Vec3,
+    ragdoll: &Ragdoll,
+    dt: f32,
+) -> Vec3 {
+    let params = ragdoll.params[bone];
+    let strength = ragdoll.effective_strength(bone);
+    let limited = PdParams { max_torque: strength.scale(params.max_torque), ..params };
+    pd_torque_tracking(current, target, angular_velocity, target_velocity, &limited, dt)
 }
 
 #[cfg(test)]

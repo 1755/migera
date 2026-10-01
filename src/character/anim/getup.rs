@@ -9,6 +9,13 @@
 //!   arms, the trunk flexing forward, through sitting to a squat, then up.
 //! - **Face down:** lying → hands and knees → half-kneeling → standing: the
 //!   quadruped route of floor-to-stand studies (half-kneel then push up).
+//! - **On the side:** lying → side-sitting → hands and knees →
+//!   half-kneeling → standing: pushed up on the hand underneath onto the
+//!   hip, legs folded to the other side, then over onto the knees. Side-sit
+//!   to quadruped is a route floor-to-stand studies record (e.g. in older
+//!   adults rising independently); it is chosen here because a body on its
+//!   side would otherwise be read as face up or down and rolled 90° about
+//!   its own length in one blend.
 //!
 //! Each key is authored as sagittal joint angles about the rig's own
 //! measured `left` axis ([`RigGeometry::left`]), never an assumed one, then
@@ -21,7 +28,7 @@
 //! forward (flexing the trunk) and a downward one's backward (bending the
 //! knee); hip flexion is negative.
 
-use bevy::math::Quat;
+use bevy::math::{Quat, Vec3};
 
 use super::foot::Sole;
 use super::rig::{forward_kinematics_on, LocalPose, RigGeometry};
@@ -34,6 +41,25 @@ pub enum Lying {
     FaceUp,
     /// Chest down (prone): it pushes up onto hands and knees.
     FaceDown,
+    /// On its side, the chest facing sideways: it pushes up on the hand
+    /// underneath into a side-sit. `left_down`: lying on its left side.
+    Side { left_down: bool },
+}
+
+impl Lying {
+    /// How a body lies whose chest faces `chest_forward` and whose left
+    /// points `chest_left` (world, unit): face up or down while the chest
+    /// faces more than 45° from level, else on its side.
+    pub fn of(chest_forward: Vec3, chest_left: Vec3) -> Self {
+        let level = std::f32::consts::FRAC_1_SQRT_2;
+        if chest_forward.y > level {
+            Lying::FaceUp
+        } else if chest_forward.y < -level {
+            Lying::FaceDown
+        } else {
+            Lying::Side { left_down: chest_left.y < 0.0 }
+        }
+    }
 }
 
 /// One pose on the way up, and how long the move into it takes, seconds.
@@ -62,11 +88,19 @@ pub fn keys(lying: Lying, rig: &RigGeometry) -> Vec<GetUpKey> {
     let standing = forward_kinematics_on(&LocalPose::REST, rig);
     let (first, second, first_on, second_on) = match lying {
         Lying::FaceUp => (sit(rig), squat(rig), Bone::LeftFoot, Bone::LeftFoot),
-        Lying::FaceDown => (quadruped(rig), half_kneel(rig), Bone::RightLeg, Bone::LeftFoot),
+        Lying::FaceDown | Lying::Side { .. } => (quadruped(rig), half_kneel(rig), Bone::RightLeg, Bone::LeftFoot),
     };
     let second = placed(second, rig, second_on, standing[Bone::LeftFoot]);
     let first = placed(first, rig, first_on, forward_kinematics_on(&second, rig)[first_on]);
-    vec![GetUpKey { pose: first, seconds: 0.9 }, GetUpKey { pose: second, seconds: 0.8 }]
+    let mut keys = vec![GetUpKey { pose: first, seconds: 0.9 }, GetUpKey { pose: second, seconds: 0.8 }];
+    // On the side, the side-sit comes first, its propping hand where the
+    // hands-and-knees hand on that side will be.
+    if let Lying::Side { left_down } = lying {
+        let hand = if left_down { Bone::LeftHand } else { Bone::RightHand };
+        let sat = placed(side_sit(rig, left_down), rig, hand, forward_kinematics_on(&first, rig)[hand]);
+        keys.insert(0, GetUpKey { pose: sat, seconds: 1.0 });
+    }
+    keys
 }
 
 /// `pose` moved along the rig's forward until `bone` is level with `at`.
@@ -106,6 +140,15 @@ fn contact_list(key: Key) -> Vec<Contact> {
             Joint(Bone::RightHand, HAND_CLEARANCE),
         ],
         Key::HalfKneel => vec![Joint(Bone::RightLeg, KNEE_CLEARANCE), Foot(Bone::LeftFoot)],
+        Key::SideSit { left_down } => {
+            let hand = if left_down { Bone::LeftHand } else { Bone::RightHand };
+            vec![
+                Joint(Bone::Hips, SEAT_CLEARANCE),
+                Joint(hand, HAND_CLEARANCE),
+                Joint(Bone::LeftLeg, KNEE_CLEARANCE),
+                Joint(Bone::RightLeg, KNEE_CLEARANCE),
+            ]
+        }
     }
 }
 
@@ -116,11 +159,19 @@ pub enum Key {
     Squat,
     Quadruped,
     HalfKneel,
+    SideSit { left_down: bool },
 }
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 4] = [Key::Sit, Key::Squat, Key::Quadruped, Key::HalfKneel];
+    pub const ALL: [Key; 6] = [
+        Key::Sit,
+        Key::Squat,
+        Key::Quadruped,
+        Key::HalfKneel,
+        Key::SideSit { left_down: true },
+        Key::SideSit { left_down: false },
+    ];
 
     /// The key's pose on `rig`.
     pub fn pose(self, rig: &RigGeometry) -> LocalPose {
@@ -129,12 +180,13 @@ impl Key {
             Key::Squat => squat(rig),
             Key::Quadruped => quadruped(rig),
             Key::HalfKneel => half_kneel(rig),
+            Key::SideSit { left_down } => side_sit(rig, left_down),
         }
     }
 
     /// Whether the key is left/right symmetric.
     pub fn symmetric(self) -> bool {
-        self != Key::HalfKneel
+        matches!(self, Key::Sit | Key::Squat | Key::Quadruped)
     }
 }
 
@@ -190,6 +242,23 @@ fn hang_arms(pose: &mut LocalPose, rig: &RigGeometry, forward_degrees: f32) {
         let above = carried(pose, arm.parent().unwrap_or(Bone::Hips));
         pose.set_rotation(arm, (above.inverse() * world).normalize());
     }
+}
+
+/// Turns `bone` so its segment, to `child`, points along `direction` in the
+/// world, whatever its parents have done (`carried`). `rest` is the rig's
+/// joints in its rest pose. For segments no sagittal angle describes: a
+/// leg folded to the side.
+fn aim(pose: &mut LocalPose, rest: &super::rig::BoneSet<Vec3>, bone: Bone, child: Bone, direction: Vec3) {
+    let from = (rest[child] - rest[bone]).normalize();
+    let world = Quat::from_rotation_arc(from, direction.normalize());
+    let above = bone.parent().map_or(Quat::IDENTITY, |parent| carried(pose, parent));
+    pose.set_rotation(bone, (above.inverse() * world).normalize());
+}
+
+/// `a` turned toward `b` by `degrees` (both unit and at right angles).
+fn toward(a: Vec3, b: Vec3, degrees: f32) -> Vec3 {
+    let r = degrees.to_radians();
+    a * r.cos() + b * r.sin()
 }
 
 /// A sagittal leg: hip, knee and ankle angles about `left`, degrees.
@@ -335,11 +404,80 @@ pub fn half_kneel(rig: &RigGeometry) -> LocalPose {
     pose
 }
 
+/// Side-sitting, pushed up from lying on a side: the seat on the floor, the
+/// trunk leaning over the straight arm underneath, its hand on the floor
+/// beside the hip, both legs folded to the other side, knees down. The
+/// other arm rests forward.
+///
+/// Authored as segment directions in the world (`aim`), not sagittal
+/// angles: the legs fold sideways. `left_down`: lying on the left side.
+pub fn side_sit(rig: &RigGeometry, left_down: bool) -> LocalPose {
+    let rest = forward_kinematics_on(&LocalPose::REST, rig);
+    let (forward, up) = (rig.forward(), Vec3::Y);
+    let under = if left_down { rig.left() } else { -rig.left() };
+    let away = -under;
+    let sides = |left: [Bone; 3], right: [Bone; 3]| if left_down { (left, right) } else { (right, left) };
+    let (arm_under, arm_over) = sides(
+        [Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand],
+        [Bone::RightArm, Bone::RightForeArm, Bone::RightHand],
+    );
+    let (leg_under, leg_over) = sides(
+        [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot],
+        [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot],
+    );
+    let toe = |ankle: Bone| if ankle == Bone::LeftFoot { Bone::LeftToeBase } else { Bone::RightToeBase };
+    // `lean`: the trunk over the arm underneath, degrees. The thighs: out
+    // forward and to the far side, pitched down until the knee is down.
+    let build = |lean: f32, under_pitch: f32, over_pitch: f32| {
+        let mut pose = LocalPose::REST;
+        pose.set_rotation(Bone::Hips, Quat::from_rotation_arc(up, toward(up, under, lean)));
+        // The head kept nearer level than the trunk.
+        pose.set_rotation(Bone::Neck, Quat::from_rotation_arc(up, toward(up, under, -0.6 * lean)));
+        // The arm underneath straight down to the floor, a little out.
+        let prop = toward(-up, under, 15.0);
+        aim(&mut pose, &rest, arm_under[0], arm_under[1], prop);
+        aim(&mut pose, &rest, arm_under[1], arm_under[2], prop);
+        // The other rests down and forward, on the knees.
+        let rest_on = toward(-up, forward, 35.0);
+        aim(&mut pose, &rest, arm_over[0], arm_over[1], rest_on);
+        aim(&mut pose, &rest, arm_over[1], arm_over[2], rest_on);
+        // Underneath: thigh forward and a little toward the far side, the
+        // shin across in front toward it, the foot on along the floor.
+        let thigh = toward(toward(forward, away, 30.0), -up, under_pitch);
+        let shin = toward(away, -forward, 20.0);
+        aim(&mut pose, &rest, leg_under[0], leg_under[1], thigh);
+        aim(&mut pose, &rest, leg_under[1], leg_under[2], shin);
+        aim(&mut pose, &rest, leg_under[2], toe(leg_under[2]), shin);
+        // On top: thigh out to the far side, the shin folded back beside
+        // the seat.
+        let thigh = toward(toward(away, forward, 25.0), -up, over_pitch);
+        let shin = toward(-forward, away, 15.0);
+        aim(&mut pose, &rest, leg_over[0], leg_over[1], thigh);
+        aim(&mut pose, &rest, leg_over[1], leg_over[2], shin);
+        aim(&mut pose, &rest, leg_over[2], toe(leg_over[2]), shin);
+        pose
+    };
+    // Each knee pitched down level with the seat, then the trunk leaned
+    // until the hand is.
+    let gap = |pose: &LocalPose, contact: Contact| {
+        contact_height(pose, rig, contact) - contact_height(pose, rig, Contact::Joint(Bone::Hips, SEAT_CLEARANCE))
+    };
+    // Each leaning moves the hips the knees hang from, so a few rounds.
+    let (mut lean, mut under_pitch, mut over_pitch) = (15.0, 20.0, 20.0);
+    for _ in 0..4 {
+        under_pitch = solve((0.0, 60.0), |p| gap(&build(lean, p, over_pitch), Contact::Joint(leg_under[1], KNEE_CLEARANCE)));
+        over_pitch = solve((0.0, 60.0), |p| gap(&build(lean, under_pitch, p), Contact::Joint(leg_over[1], KNEE_CLEARANCE)));
+        lean = solve((0.0, 50.0), |l| gap(&build(l, under_pitch, over_pitch), Contact::Joint(arm_under[2], HAND_CLEARANCE)));
+    }
+    let mut pose = build(lean, under_pitch, over_pitch);
+    set_down(&mut pose, rig, &contact_list(Key::SideSit { left_down }));
+    pose
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::character::anim::gltf_rig::{puppet_base, puppet_base_as_rendered};
-    use bevy::math::Vec3;
 
     fn rigs() -> [(&'static str, RigGeometry); 2] {
         [("puppet_base", puppet_base()), ("as rendered", puppet_base_as_rendered())]
@@ -419,6 +557,41 @@ mod tests {
             assert!(ahead(&kneel, Bone::LeftFoot, Bone::RightLeg) > 0.2, "{name}: half-kneeling, the front foot should be ahead of the down knee");
             let at = forward_kinematics_on(&kneel, &rig);
             assert!(at[Bone::Head].y - at[Bone::Hips].y > 0.4, "{name}: half-kneeling, the trunk should be upright");
+            for left_down in [true, false] {
+                let at = forward_kinematics_on(&Key::SideSit { left_down }.pose(&rig), &rig);
+                let under = if left_down { rig.left() } else { -rig.left() };
+                let hand = if left_down { Bone::LeftHand } else { Bone::RightHand };
+                let side = if left_down { "left" } else { "right" };
+                assert!(
+                    (at[hand] - at[Bone::Hips]).dot(under) > 0.15,
+                    "{name}: side-sitting on the {side}, the hand underneath should prop it out on that side"
+                );
+                for knee in [Bone::LeftLeg, Bone::RightLeg] {
+                    assert!((at[knee] - at[Bone::Hips]).dot(forward) > 0.1, "{name} {side}: the {} should be ahead of the seat", knee.name());
+                }
+                let feet = (at[Bone::LeftFoot] + at[Bone::RightFoot]) * 0.5;
+                assert!((feet - at[Bone::Hips]).dot(under) < -0.1, "{name} {side}: the legs should fold to the other side");
+                assert!(at[Bone::Head].y - at[Bone::Hips].y > 0.4, "{name} {side}: the trunk should be up");
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_side_sits_mirror_each_other_exactly() {
+        use crate::character::anim::convert::{mirror_bone, mirrored};
+        use crate::character::anim::math::quat_ext::neighborhood;
+        let rig = puppet_base();
+        assert!(rig.left().x.abs() > 0.999, "puppet_base's left is {}", rig.left());
+        let flipped = mirrored(&Key::SideSit { left_down: true }.pose(&rig));
+        let right = Key::SideSit { left_down: false }.pose(&rig);
+        for &bone in Bone::ALL.iter() {
+            let mirror = neighborhood(right.rotation(bone), flipped.rotation(bone));
+            assert!(
+                right.rotation(bone).abs_diff_eq(mirror, 1.0e-3),
+                "{} on the right does not mirror {} on the left",
+                bone.name(),
+                mirror_bone(bone).name()
+            );
         }
     }
 
@@ -441,7 +614,35 @@ mod tests {
                 let slid = (first[first_on] - second[first_on]).dot(forward).abs();
                 assert!(slid < 1.0e-3, "{name} {lying:?}: {} slides {:.0} mm between the keys", first_on.name(), slid * 1e3);
             }
+            // On the side: the propping hand stays as the body goes over
+            // onto hands and knees; the rest is the face-down route.
+            for (left_down, hand) in [(true, Bone::LeftHand), (false, Bone::RightHand)] {
+                let chain = keys(Lying::Side { left_down }, &rig);
+                assert_eq!(chain.len(), 3);
+                assert_eq!(chain[1..], keys(Lying::FaceDown, &rig)[..], "{name}: the side route should go on as face down");
+                let (sat, quadruped) = (forward_kinematics_on(&chain[0].pose, &rig), forward_kinematics_on(&chain[1].pose, &rig));
+                let slid = (sat[hand] - quadruped[hand]).dot(forward).abs();
+                assert!(slid < 1.0e-3, "{name}: the {} slides {:.0} mm off the side-sit", hand.name(), slid * 1e3);
+            }
         }
+    }
+
+    #[test]
+    fn a_body_is_read_as_lying_on_its_side_only_when_its_chest_faces_sideways() {
+        let (up, side) = (Vec3::Y, Vec3::X);
+        let tilted = |degrees: f32| Quat::from_rotation_z(degrees.to_radians());
+        // Chest forward rolled from straight up (face up) round to straight
+        // down; its left goes with it.
+        let read = |degrees: f32| Lying::of(tilted(degrees) * up, tilted(degrees) * side);
+        assert_eq!(read(0.0), Lying::FaceUp);
+        assert_eq!(read(40.0), Lying::FaceUp);
+        assert_eq!(read(-40.0), Lying::FaceUp);
+        // Rolled 90° about +Z: the chest faces -X, its left points up, so
+        // it lies on its right side; the other way, on its left.
+        assert_eq!(read(90.0), Lying::Side { left_down: false });
+        assert_eq!(read(-90.0), Lying::Side { left_down: true });
+        assert_eq!(read(180.0), Lying::FaceDown);
+        assert_eq!(read(140.0), Lying::FaceDown);
     }
 
     #[test]

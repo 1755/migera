@@ -153,13 +153,18 @@ and physics takes over only for a fall.
   removed (instant follow), 6.0 mm on 0.6 m steps: most of the gain is
   the lead and slack. A backward step clamped at `MAX_STEP` (1.3 m/s,
   0.88 m asked) lands ball-first, overreaching, and still jolts 9.8 mm.
-- **Ticks of at most 1/60 s** (`MAX_TICK`, the forecast's step). A swing
-  lands, and the next step is planned, only between ticks. Taken a whole
-  frame at a time, a 50 ms frame landed a foot up to 50 ms late while the
-  body kept falling off the old support. Below the catch limit the lift
-  gates now make frame times irrelevant on their own. At the limit,
-  catches fell in 1 of 4 uneven frame patterns with ticking, 3 of 4
-  without (`a_catch_at_the_limit_mostly_survives_uneven_frames`).
+- **Whole ticks of 1/60 s** (`MAX_TICK`, the forecast's step), the rest
+  of a frame carried to the next. A swing lands, and the next step is
+  planned, only between ticks, so every frame pattern runs the same ticks.
+  Taken a whole frame at a time, a 50 ms frame landed a foot up to 50 ms
+  late while the body kept falling off the old support (9 of 12 catches
+  at the limit fell). Divided evenly into ticks of at most 1/60 s, uneven
+  frames still shifted the landings (4 of 12). Whole ticks: 0 of 12
+  (`a_catch_at_the_limit_survives_uneven_frames`). `apply` draws the
+  carried-over time on from the last tick, the COM at its velocity and a
+  swinging foot along its arc; drawn between the last two ticks instead,
+  a landing mixed one tick's feet with the next's swing and a planted foot
+  jumped 21 mm. At 60 Hz nothing carries over and nothing changed.
 - **The foot IK is told which feet are down** (`AnimFootIk::planted`); see
   [a speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md).
   The landing hint (`Balance::landing_spot`) eases in over the first
@@ -217,8 +222,23 @@ side step was posed over a body the clamp had stopped.
 
 - Pushes while walking: the balance only runs on the standing side of the
   blend.
-- Young-adult sideways stepping: a loaded side step would need the
-  side-step lunge made shallow (a narrower join, or two shorter steps).
+- Young-adult sideways stepping. Tried 2026-10-01, both ways the earlier
+  analysis suggested, and both were worse. A side step with the loaded leg
+  whenever it needs at most 0.5-0.7 m sank the pelvis 138 mm at 0.6 m/s
+  (crossover 40) and 290 at 0.8 (82). Side steps capped at 0.4 m with the
+  far leg joining between them lost catches from 0.8 m/s (crossovers catch
+  1.4) and jolted 24-34 mm. People first unload the near leg (a quick
+  weight shift onto the far foot) before stepping with it; without that
+  phase, the side step stands on the far foot, whose pressure drives the
+  body on. Revisit only with an unloading phase.
+- The backward step clamped at `MAX_STEP` (1.3 m/s) still jolts 7.6 mm
+  (9.8 before the stance fixes). Located 2026-10-01: it lands with the
+  stepping leg at full stretch, and the moment its 11 mm swing lift
+  reaches zero the leg's reach ceiling pulls the pelvis down 7 mm in a
+  frame. Closing the swing slack earlier and rate-limiting the hips' roll
+  both changed nothing for it (the roll limit worsened sideways steps to
+  8 mm). A fix changes the step itself (a later landing, a shorter
+  backward reach) and so the catch limits.
 
 ## Related
 

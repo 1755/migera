@@ -84,6 +84,7 @@ Slopes and flat ground were both verified as of Phase 5.
 ## Related
 
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — prerequisite: the stance that gives foot IK room to work.
+- [Sample the ground in the world, not in the pose's frame](./sample-the-ground-in-the-world-not-the-pose.md) — deeper: the animated toe is still the point to sample, but mapped into the world first; "slopes verified" covered only a character facing −Z.
 - [Synthetic-rig tests are blind to retargeting](../rig-and-retargeting/synthetic-rig-tests-are-blind-to-retargeting.md) — same-trap: tests on the synthetic proxy could not see the proxy was wrong.
 - [Rig authored at critical extension](./rig-authored-at-critical-extension.md) — deeper: the reach shortfall pelvis adaptation must allow for.
 - [Prefer BRP over prints for live ECS state](../../engineering-practice/debugging/prefer-brp-over-prints-for-live-ecs-state.md) — applies: how the proxy-rig bug was found.

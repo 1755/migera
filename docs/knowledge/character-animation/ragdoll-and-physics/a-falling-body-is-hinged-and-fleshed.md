@@ -187,11 +187,32 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
   read that slide as a jump. Hung under the character, it rises 43 mm
   from where it lay.
 
+## Open, with what was tried (2026-10-01)
+
+- **Elbows past 150° on impact (1.4-2.2°), kept.** AAOS's 0-150 is active
+  range; passive flexion, stopped by soft tissue, goes further. A fall
+  driving the arm onto its stop for a moment is within what a real elbow
+  does, so the authored limit was not moved to hide it.
+- **The shoulder's reach behind the back.** Its one cone lets the arm
+  point almost straight back at shoulder height and lean 64° behind
+  vertical overhead. A second limit cone excluding "back and 30° up" kept
+  every shipped pose. But any second joint on the arm, even with no limit
+  and a compliant anchor, held a still, driven arm 6° off its target
+  (`a_turned_character_reads_back_the_pose_its_bodies_hold`). The hips'
+  two extra joints don't do this. Not understood; reverted.
+- **Hand bodies.** A wrist-to-knuckle body on the forearm's bind line
+  (Winter: hand 0.006 M, forearm 0.016 M), wrist cone 45/25, gains
+  7 Hz × 60. puppet_base walked with its hands 5.8° off target. On
+  `character.glb` the worst body reached 100° (p90 31°), which looks like
+  the rig's hand axes. A fallen hand on a slope rested 3-5 cm under it with
+  or without a body, so that dip isn't the missing hand. Reverted.
+
 ## Revisit when
 
-- Another lopsided joint (the shoulder's reach behind the back, an ankle):
-  a second cone on the same pivot is the tool.
-- A wrist or hand body is added: it needs its own hinge-like limits.
+- Another lopsided joint (an ankle): a second cone on the same pivot is
+  the tool, but see the shoulder above.
+- Hand bodies again: per-rig hand axes first, and find what puts a fallen
+  wrist under a slope.
 
 ## Related
 

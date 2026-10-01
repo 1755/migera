@@ -361,6 +361,8 @@ pub struct Balance {
     sink: Sink,
     /// The last step's time, seconds: what `apply` advances the sink by.
     last_dt: f32,
+    /// Time left over from the frames, short of a whole tick, seconds.
+    carry: f32,
     /// The last swing to land, and the seconds since, for
     /// [`transition::LAND_HOLD`](super::transition::LAND_HOLD): see
     /// [`Balance::landing_spot`].
@@ -382,6 +384,14 @@ impl Balance {
     /// The part of the pushes given that has not been delivered yet, m/s.
     pub fn pending_push(&self) -> Vec2 {
         self.shove
+    }
+
+    /// Takes back the push not yet delivered, m/s: for a caller handing a
+    /// push given here (a hit, `ragdoll_plugin`) to a walking body's
+    /// balance instead (`walk_balance::WalkBalance::push`).
+    pub fn take_push(&mut self) -> Vec2 {
+        self.shove_rate = Vec2::ZERO;
+        std::mem::take(&mut self.shove)
     }
 
     /// Whether the body is at rest over its feet as they stood, within
@@ -466,9 +476,15 @@ impl Balance {
             return;
         }
         self.last_dt = dt;
-        let ticks = (dt / MAX_TICK).ceil().max(1.0);
-        for _ in 0..ticks as usize {
-            self.tick(support, k, dt / ticks);
+        // Whole ticks only, the rest carried to the next frame: the same
+        // ticks whatever the frames, so a catch at the limit is decided
+        // the same at any frame rate. Ticks of a frame's own length divided
+        // evenly instead (each at most `MAX_TICK`), catches at the limit
+        // fell in 4 of 12 uneven frame patterns.
+        self.carry += dt;
+        while self.carry >= MAX_TICK * (1.0 - 1.0e-4) {
+            self.carry = (self.carry - MAX_TICK).max(0.0);
+            self.tick(support, k, MAX_TICK);
         }
     }
 
@@ -672,6 +688,13 @@ impl Balance {
         // that sank the pelvis 27 cm. (Both are human strategies; young
         // adults mostly take the loaded side step, older adults cross over
         // more. This is the model's choice, not the young adult's.)
+        //
+        // Tried again 2026-10-01: the side step whenever the near leg needs
+        // at most 0.5-0.7 m sank 138 mm at 0.6 m/s (crossover 40) and
+        // 290 mm at 0.8 (82); side steps capped at 0.4 m with the far leg
+        // joining between them fell from 0.8 m/s (crossovers catch 1.4)
+        // and jolted 24-34 mm. People unload the near leg first (a quick
+        // weight shift onto the far foot); this model has no such phase.
         let leg = match (self.stepped_last, sideways) {
             (Some(last), _) if last == side => 1 - side,
             (None, true) => {
@@ -746,6 +769,26 @@ impl Balance {
     /// [`super::stance::shift_weight`], scaled continuously. The pelvis
     /// moves [`COM_PER_PELVIS`] further than the COM is to move.
     pub fn apply(&mut self, pose: &mut LocalPose, rig: &RigGeometry) {
+        // Carried on from the last tick by the time the frames have got into
+        // the next (`step` ticks whole ticks only): the COM at its velocity,
+        // a swinging foot along its arc. Drawn between the last two ticks
+        // instead, a landing mixed one tick's feet with the next's swing,
+        // and a planted foot jumped 21 mm.
+        let mut drawn = *self;
+        if self.carry > 0.0 {
+            drawn.offset += self.velocity * self.carry;
+            if let Some(swing) = self.swing {
+                let ahead = Swing { elapsed: (swing.elapsed + self.carry).min(swing.duration), ..swing };
+                drawn.swing = Some(ahead);
+                drawn.feet[swing.leg] = ahead.at();
+            }
+        }
+        drawn.apply_now(pose, rig);
+        self.sink = drawn.sink;
+    }
+
+    /// [`Balance::apply`] of this state as it stands.
+    fn apply_now(&mut self, pose: &mut LocalPose, rig: &RigGeometry) {
         use super::stance::{move_pelvis_and_feet, MAX_HEEL_RISE, WEIGHT_SHIFT, WEIGHT_SHIFT_ROLL};
         let moved = [0, 1].map(|leg| {
             let lift = self.swing.filter(|swing| swing.leg == leg).map_or(0.0, |swing| swing.lift());
@@ -1124,13 +1167,12 @@ mod tests {
     }
 
     #[test]
-    fn a_catch_at_the_limit_mostly_survives_uneven_frames() {
-        // At the edge of what the steps catch, frame timing decides some
-        // catches whatever the ticks: over four uneven frame patterns,
-        // sideways 1.4 and back 1.4 fell in 4 of 12 with `MAX_TICK`, 9 of
-        // 12 stepped a whole frame at a time (on the stance balanced over
-        // its feet; 3 and 9 before it). Below the edge, frame times decide
-        // nothing (`a_catch_does_not_depend_on_frame_times`).
+    fn a_catch_at_the_limit_survives_uneven_frames() {
+        // At the edge of what the steps catch, uneven frames decided some
+        // catches: over four frame patterns, sideways 1.4 and back 1.4 fell
+        // in 4 of 12 with frames divided into ticks of at most `MAX_TICK`,
+        // 9 of 12 stepped a whole frame at a time. Whole ticks with the rest
+        // carried make every pattern the same ticks, so none falls.
         let (stood, rig) = real_stood();
         let support = Support::of(&stood, &rig);
         let k = pendulum_k(&stood, &rig);
@@ -1157,7 +1199,7 @@ mod tests {
                 fell += b.falls as usize;
             }
         }
-        assert!(fell <= 4, "{fell} of 12 catches at the limit fell at uneven frame times");
+        assert_eq!(fell, 0, "{fell} of 12 catches at the limit fell at uneven frame times");
     }
 
     // Per stepping push: the worst pelvis jolt (mm, second difference) and
@@ -1170,6 +1212,7 @@ mod tests {
         let mut line = String::new();
         for push in [
             Vec2::new(1.0, 0.0), Vec2::new(1.2, 0.0), Vec2::new(1.5, 0.0),
+            Vec2::new(0.0, 0.4), Vec2::new(0.0, 0.6),
             Vec2::new(0.0, 0.8), Vec2::new(0.0, 1.0), Vec2::new(0.0, 1.2), Vec2::new(0.0, -1.2),
             Vec2::new(-1.0, 0.0), Vec2::new(-1.3, 0.0),
         ] {

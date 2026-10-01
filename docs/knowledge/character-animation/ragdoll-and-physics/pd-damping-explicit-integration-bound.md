@@ -73,6 +73,7 @@ enforces both halves of the bound.
 ## Related
 
 - [Use apply_angular_acceleration, not apply_torque](./avian-apply-angular-acceleration-not-torque.md) — prerequisite: gains must be acceleration-shaped first.
+- [A pinned ragdoll tracks its targets' velocity, not rest](./a-pinned-ragdoll-tracks-its-targets-velocity.md) — applies: with the gains bounded, a moving target is followed by feeding its velocity forward instead.
 - [The rational exp approximation in spring code diverges](../animation-core/spring-exp-approximation-diverges.md) — same-trap: another integration broken by a large rate × `dt`.
 - [Anim studio is complete](../animation-core/anim-studio-is-complete.md) — applies: the corrected chatter measurements after `stable_damping`.
 - [Restoring-force constraints need perturbed input](../../engineering-practice/testing/restoring-force-constraints-need-perturbed-input.md) — same-trap: a free, unperturbed test cannot exercise the failure.

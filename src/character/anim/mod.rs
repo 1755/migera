@@ -81,6 +81,7 @@ pub mod rig;
 pub mod stance;
 pub mod transition;
 pub mod walk;
+pub mod walk_balance;
 #[cfg(feature = "anim_studio")]
 pub mod studio;
 

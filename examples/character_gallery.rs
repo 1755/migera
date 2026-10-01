@@ -34,6 +34,7 @@ use migera::character::{Bone, BoneMarker, HumanoidSkeleton};
 use migera::character::anim::poses as anim_poses;
 use migera::character::anim::asset::AnimAssetPlugin;
 use migera::character::anim::balance;
+use migera::character::anim::walk_balance::{self, WalkBalance};
 use migera::character::anim::facing;
 use migera::character::anim::gait::{cycle_of, walk_pose_on, GaitParams};
 use migera::character::anim::locomotion;
@@ -366,16 +367,19 @@ fn camera_controller(
     mut cams: Query<&mut Transform, With<Camera3d>>,
     skeletons: Query<&HumanoidSkeleton>,
     globals: Query<&GlobalTransform>,
+    idle: Res<AnimIdleConfig>,
 ) {
     match cfg.mode {
         CameraMode::Preset => {
             let mut transform = cfg.preset_transform();
             // `--camera-follow`: the view moves with the character's hips
-            // across the floor, so a fall stays in frame.
+            // across the floor, and up or down `--anim-slope` with the
+            // ground under them, so a fall or a climb stays in frame.
             if cfg.follow
                 && let Some(hips) = skeletons.iter().next().and_then(|s| globals.get(s.entity(Bone::Hips)).ok())
             {
-                transform.translation += Vec3::new(hips.translation().x, 0.0, hips.translation().z);
+                let (x, z) = (hips.translation().x, hips.translation().z);
+                transform.translation += Vec3::new(x, idle.slope * -z, z);
             }
             for mut cam_transform in &mut cams {
                 *cam_transform = transform;
@@ -731,12 +735,25 @@ fn spawn_light(mut commands: Commands) {
     commands.spawn(AmbientLight { color: Color::WHITE, brightness: 250.0, ..default() });
 }
 
-fn spawn_ground(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+fn spawn_ground(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    idle: Res<AnimIdleConfig>,
+) {
+    // Tilted to `--anim-slope`, so what is drawn is what the feet (and a
+    // fallen body, `spawn_physics_floor`) stand on.
+    let size = if idle.slope == 0.0 { 10.0 } else { 40.0 };
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(10.0, 10.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(size, size))),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.3, 0.32, 0.35), perceptual_roughness: 0.9, ..default() })),
-        Transform::IDENTITY,
+        Transform::from_rotation(slope_rotation(idle.slope)),
     ));
+}
+
+/// The turn from flat to `SlopedGround { grade }`'s plane, `y = grade·(−z)`.
+fn slope_rotation(grade: f32) -> Quat {
+    Quat::from_rotation_arc(Vec3::Y, Vec3::new(0.0, 1.0, grade).normalize())
 }
 
 /// Tags the root entity of the real skinned glTF character so
@@ -1353,7 +1370,7 @@ fn attach_anim_backend(
             GalleryStride::default(),
             GalleryFacing::default(),
             GalleryTransition::default(),
-            balance::Balance::default(),
+            (balance::Balance::default(), WalkBalance::default()),
             GalleryLook(match idle.look_at {
                 Some(target) => lookat::LookAt::at(target),
                 None => lookat::LookAt::forward(),
@@ -1441,6 +1458,8 @@ type WalkingRig = (
     &'static mut AnimPhaseLayer,
     // Winter's standing pendulum: a push sways the body over its feet.
     &'static mut balance::Balance,
+    // The same pendulum walking: a push moves the next footfalls.
+    &'static mut WalkBalance,
 );
 
 impl Default for GalleryLocomotion {
@@ -1503,6 +1522,7 @@ fn ride_rendered_feet(
 
         // Travel moves the ENTITY, not the pose's root translation — see
         // `drive_walk_cycle`.
+        let height_before = root.translation.y;
         root.translation = locomotion.0.position;
 
         // Height comes from the ground, not from the published velocity.
@@ -1518,6 +1538,9 @@ fn ride_rendered_feet(
         {
             root.translation.y = height;
         }
+        // The rise is travel too: a lock that knew only the horizontal part
+        // carried a planted foot 9 cm up a 0.2 grade every stance.
+        foot_ik.turn.travel.y = root.translation.y - height_before;
     }
 }
 
@@ -1573,6 +1596,7 @@ fn drive_walk_cycle(
         mut gait,
         mut layer,
         mut balance,
+        mut walk_balance,
     ) in &mut rigs
     {
         // `cycle_of` rather than `phase.gait`: the clock is in RADIANS and
@@ -1606,8 +1630,29 @@ fn drive_walk_cycle(
                 .map_or(transition::TransitionConfig::default().mid_swing, |p| p.duty_factor * 0.5),
             ..Default::default()
         };
-        let event =
-            transition_state.0.advance(idle.speed, cycle_of(&phase), &config, time.delta_secs());
+        // A push lands on whichever balance is carrying the body: the
+        // walking one once the walk is fully in (or still catching an
+        // earlier push), else the standing one. A hit arrives on the
+        // standing balance (`ragdoll_plugin`) and is handed over.
+        let walking = (transition_state.0.weight >= 1.0 && balance.is_settled(1.0e-5))
+            || !walk_balance.is_settled(1.0e-3);
+        for &push in &due_pushes {
+            if walking {
+                walk_balance.push(push);
+            } else {
+                balance.push(push);
+            }
+        }
+        if walking && balance.pending_push() != bevy::math::Vec2::ZERO {
+            walk_balance.push(balance.take_push());
+        }
+        // A push from behind speeds the walk up (`WalkBalance::surge`).
+        let event = transition_state.0.advance(
+            idle.speed + walk_balance.surge,
+            cycle_of(&phase),
+            &config,
+            time.delta_secs(),
+        );
         let speed = transition_state.0.stride_speed;
 
         // A walk's stride grows with its speed, scaled to this rig's leg;
@@ -1633,8 +1678,8 @@ fn drive_walk_cycle(
             Some(rig) => stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig),
             None => stance_on(&base, DEFAULT_KNEE_FLEX),
         };
-        // `--anim-pose getup:sit|squat|quadruped|half_kneel`: hold one get-up
-        // key, to verify it on its own.
+        // `--anim-pose getup:sit|squat|quadruped|half_kneel|side_sit_left|
+        // side_sit_right`: hold one get-up key, to verify it on its own.
         let stood = match (choice.0.strip_prefix("getup:"), &foot_ik.rig) {
             (Some(name), Some(rig)) => {
                 use migera::character::anim::getup::Key;
@@ -1642,6 +1687,8 @@ fn drive_walk_cycle(
                     "sit" => Key::Sit,
                     "squat" => Key::Squat,
                     "quadruped" => Key::Quadruped,
+                    "side_sit_left" => Key::SideSit { left_down: true },
+                    "side_sit_right" => Key::SideSit { left_down: false },
                     _ => Key::HalfKneel,
                 };
                 key.pose(rig)
@@ -1747,9 +1794,6 @@ fn drive_walk_cycle(
         // (Winter's inverted pendulum, `balance`), stepping if it must.
         // Posed on the standing side of the blend, so a walk starting
         // mid-sway fades it out.
-        for &push in &due_pushes {
-            balance.push(push);
-        }
         if !balance.is_settled(1.0e-5) {
             let support = balance::Support::of(&stood, &gait_rig);
             balance.step(&support, balance::pendulum_k(&stood, &gait_rig), time.delta_secs());
@@ -1772,6 +1816,43 @@ fn drive_walk_cycle(
         // lag a stumbling body (`AnimFootIk::planted`); a walk's feet are
         // the locks' own call.
         foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) { balance.planted() } else { [false; 2] };
+
+        // A push while walking: the walk goes on, its footfalls moved to
+        // catch the body (`walk_balance`). The body moves by the push's
+        // offset like root motion; each foot is set where its offset puts
+        // it, relative to the moved body.
+        if !walk_balance.is_settled(0.0) {
+            let on = |v: bevy::math::Vec2| gait_rig.forward() * v.x + gait_rig.left() * v.y;
+            if weight > 0.0 {
+                let toe = |bone| migera::character::anim::rig::offset_from(&stood, &gait_rig, migera::character::Bone::Hips, bone);
+                let width = (toe(migera::character::Bone::LeftToeBase) - toe(migera::character::Bone::RightToeBase))
+                    .dot(gait_rig.left())
+                    .abs();
+                let walk = walk_balance::Stride {
+                    seconds: 1.0 / phase.gait_frequency_hz().max(1.0e-3),
+                    duty_factor: params.duty_factor,
+                    step_length: distance * 0.5,
+                    step_width: width,
+                    max_step: migera::character::anim::gait::leg_length_of(&gait_rig),
+                };
+                let k = balance::pendulum_k(&stood, &gait_rig);
+                walk_balance.step(&walk, gait.cycle, cycle, k, time.delta_secs());
+            } else {
+                // Stopped before the push was spent: the standing balance
+                // takes the body as it is, its feet where they stand.
+                let shown = walk_balance.moved();
+                gait.stepped += on(shown);
+                balance.velocity += walk_balance.velocity + walk_balance.pending_push();
+                balance.feet = [0, 1].map(|leg| walk_balance.foot_displacement(leg));
+                *walk_balance = WalkBalance::default();
+            }
+            gait.stepped += on(walk_balance.moved());
+            foot_ik.displaced = [0, 1].map(|leg| on(walk_balance.foot_displacement(leg)));
+            walk_balance.settle(1.0e-3);
+            if walk_balance.is_settled(0.0) {
+                foot_ik.displaced = [Vec3::ZERO; 2];
+            }
+        }
         let rendered = |cycle: f32| {
             if weight <= 0.0 {
                 prepared
@@ -2016,26 +2097,39 @@ fn fall_when_uncaught(
     config: Res<RagdollConfig>,
     frame: Res<FrameCount>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut rigs: Query<(&mut balance::Balance, &mut Ragdoll, &mut AnimFootIk, &GalleryFacing)>,
+    mut rigs: Query<(&mut balance::Balance, &mut WalkBalance, &mut Ragdoll, &mut AnimFootIk, &GalleryFacing)>,
 ) {
     let asked = config.fall_at_frame == Some(frame.0) || keys.just_pressed(KeyCode::KeyF);
-    for (mut balance, mut ragdoll, mut foot_ik, facing) in &mut rigs {
-        if ragdoll.is_falling() || !(asked || balance.falls) {
+    for (mut balance, mut walk_balance, mut ragdoll, mut foot_ik, facing) in &mut rigs {
+        if ragdoll.is_falling() || !(asked || balance.falls || walk_balance.falls) {
             continue;
         }
         info!(
             "character_gallery: falling at frame {} ({})",
             frame.0,
-            if balance.falls { format!("a push asked for a {:.2} m step", balance.wanted_step) } else { "asked".into() }
+            if balance.falls {
+                format!("a push asked for a {:.2} m step", balance.wanted_step)
+            } else if walk_balance.falls {
+                format!("a push while walking asked for a {:.2} m step", walk_balance.wanted_step)
+            } else {
+                "asked".into()
+            }
         );
         // The push goes with it, the part not yet delivered too: judged at
-        // the push's start, the body has barely moved.
-        let pushed = balance.velocity + balance.pending_push();
+        // the push's start, the body has barely moved. The walk's own
+        // velocity is already the bodies': the pinned root is moved by
+        // velocity, and the limbs follow it.
+        let pushed = balance.velocity
+            + balance.pending_push()
+            + walk_balance.velocity
+            + walk_balance.pending_push();
         let launch = foot_ik.rig.as_ref().map_or(Vec3::ZERO, |rig| {
             facing.0.rotation() * (rig.forward() * pushed.x + rig.left() * pushed.y)
         });
         ragdoll.fall_moving(FALL_TONE, config.fall_damping, launch);
         *balance = balance::Balance::default();
+        *walk_balance = WalkBalance::default();
+        foot_ik.displaced = [Vec3::ZERO; 2];
         foot_ik.planted = [false; 2];
         foot_ik.landing = None;
     }
@@ -2055,6 +2149,7 @@ fn get_up_when_rested(mut ragdolls: Query<(&mut Ragdoll, &mut GalleryFacing)>, f
         if let Some(rise) = ragdoll.fall.as_mut().and_then(|fall| fall.rise.as_mut())
             && rise.turn_pending
         {
+            info!("character_gallery: rising from {:?} at frame {}", rise.lying, frame.0);
             facing.0.yaw += rise.turn;
             facing.0.target_yaw = facing.0.yaw;
             rise.turn_pending = false;
@@ -2079,9 +2174,14 @@ fn follow_the_fallen_body(mut rigs: Query<(&Ragdoll, &Transform, &mut GalleryLoc
 
 /// The floor a falling ragdoll lands on: the rendered ground is only a
 /// mesh.
-fn spawn_physics_floor(mut commands: Commands) {
+fn spawn_physics_floor(mut commands: Commands, idle: Res<AnimIdleConfig>) {
     use avian3d::prelude::{Collider, Friction, RigidBody};
-    commands.spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+    commands.spawn((
+        RigidBody::Static,
+        Collider::half_space(Vec3::Y),
+        Friction::new(1.0),
+        Transform::from_rotation(slope_rotation(idle.slope)),
+    ));
 }
 
 /// Draws every simulated ragdoll body as a cyan line along its own axis.
@@ -2425,8 +2525,67 @@ fn log_debug_stats(
     );
 }
 
+/// The body-proportion spike (`--proportion-spike move|proxy [FACTOR]`):
+/// lengthens the LEFT thigh only, so the right leg stays beside it as the
+/// unchanged reference.
+///
+/// - `move` moves the knee joint down the thigh by `FACTOR`. The thigh's
+///   vertices stay where they are and the knee's blend region stretches
+///   across the gap.
+/// - `proxy` does that AND skins the thigh with a scale along its own +Y
+///   (a Mixamo bone's axis) by a helper joint under it, so the thigh's
+///   vertices stretch with the bone. The hierarchy itself carries no scale:
+///   a scaled parent shears a rotated child (Bevy has no segment scale
+///   compensate), so only the skinning matrix sees it.
+#[derive(Resource, Clone, Copy)]
+struct ProportionSpike {
+    proxy: bool,
+    factor: f32,
+}
+
+impl ProportionSpike {
+    fn from_args() -> Option<Self> {
+        let mut args = std::env::args().skip_while(|arg| arg != "--proportion-spike").skip(1);
+        let proxy = match args.next().as_deref() {
+            Some("move") => false,
+            Some("proxy") => true,
+            _ => return None,
+        };
+        let factor = args.next().and_then(|v| v.parse().ok()).unwrap_or(1.1);
+        Some(Self { proxy, factor })
+    }
+}
+
+fn apply_proportion_spike(
+    mut commands: Commands,
+    spike: Res<ProportionSpike>,
+    mut done: Local<bool>,
+    skeletons: Query<&HumanoidSkeleton>,
+    mut transforms: Query<&mut Transform>,
+    mut skins: Query<&mut bevy::mesh::skinning::SkinnedMesh>,
+) {
+    if *done {
+        return;
+    }
+    let Ok(skeleton) = skeletons.single() else { return };
+    let (thigh, knee) = (skeleton.entity(Bone::LeftUpLeg), skeleton.entity(Bone::LeftLeg));
+    let Ok(mut knee_transform) = transforms.get_mut(knee) else { return };
+    knee_transform.translation *= spike.factor;
+    if spike.proxy {
+        let helper = commands
+            .spawn((Transform::from_scale(Vec3::new(1.0, spike.factor, 1.0)), ChildOf(thigh)))
+            .id();
+        for mut skin in &mut skins {
+            for joint in skin.joints.iter_mut().filter(|joint| **joint == thigh) {
+                *joint = helper;
+            }
+        }
+    }
+    *done = true;
+}
+
 fn main() {
-    let assets = std::env::current_dir().expect("cwd").join("assets").to_string_lossy().into_owned();
+    let assets =std::env::current_dir().expect("cwd").join("assets").to_string_lossy().into_owned();
 
     let mut app = App::new();
 
@@ -2460,6 +2619,12 @@ fn main() {
         .add_systems(Startup, (spawn_camera, spawn_light, spawn_ground, spawn_real_mesh, spawn_camera_hud, spawn_skeleton_hud))
         .add_systems(Update, (camera_controller, draw_world_axis_gizmos, draw_joint_axis_gizmos, update_camera_hud, apply_real_mesh_visibility, build_real_mesh_skeleton))
         .add_systems(Update, attach_anim_backend.after(build_real_mesh_skeleton))
+        .add_systems(
+            Update,
+            apply_proportion_spike
+                .after(build_real_mesh_skeleton)
+                .run_if(resource_exists::<ProportionSpike>),
+        )
         .add_systems(EguiPrimaryContextPass, controls_panel)
         // Scheduled in `PostUpdate`, after egui's own `EguiPrimaryContextPass`
         // sub-schedule, so the screenshot fires no earlier than this frame's
@@ -2473,6 +2638,9 @@ fn main() {
         // this example's own systems (which were confirmed, via direct
         // tracing, to run and complete successfully every frame regardless).
         .add_systems(PostUpdate, auto_shot);
+    if let Some(spike) = ProportionSpike::from_args() {
+        app.insert_resource(spike);
+    }
 
     // The rotation-space stack is now the only animation backend. The
     // superseded position-space `muscle` module — and with it the
