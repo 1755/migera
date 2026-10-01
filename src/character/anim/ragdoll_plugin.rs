@@ -372,7 +372,7 @@ fn rise_fallen_ragdolls(
             if bone == Bone::Hips {
                 commands.entity(body).insert((
                     RigidBody::Kinematic,
-                    KinematicRoot { offset: ragdoll.body_offsets[bone], position, rotation, velocity: Vec3::ZERO },
+                    KinematicRoot { offset: ragdoll.body_offsets[bone], position, rotation, velocity: Vec3::ZERO, settle: None },
                 ));
             }
             commands.queue(WakeBody(body));
@@ -708,8 +708,18 @@ fn publish_joint_targets(
         if let Some(mut root) = ragdoll.bodies[Bone::Hips].and_then(|body| roots.get_mut(body).ok())
             && let Ok(hips) = live.compute_global_transform(skeleton.entity(Bone::Hips))
         {
-            root.rotation = hips.rotation();
-            let position = hips.translation() + root.rotation * root.offset;
+            let mut rotation = hips.rotation();
+            let mut position = hips.translation() + rotation * root.offset;
+            // Pinned again where the body stood: eased over to the
+            // animation (`KinematicRoot::settle`).
+            if let Some((from, turned, done)) = root.settle {
+                let done = (done + dt / super::ragdoll::SWITCH_SECONDS).min(1.0);
+                let eased = done * done * (3.0 - 2.0 * done);
+                position = from.lerp(position, eased);
+                rotation = turned.slerp(rotation, eased).normalize();
+                root.settle = (done < 1.0).then_some((from, turned, done));
+            }
+            root.rotation = rotation;
             if dt > 0.0 {
                 root.velocity = (position - root.position) / dt;
             }
@@ -1048,6 +1058,28 @@ fn write_simulated_pose(
     for (character, skeleton, ragdoll, ground_probe) in &rigs {
         let Some(displayed) = &ragdoll.displayed else { continue };
         super::retarget::write_pose_to_skeleton(skeleton, displayed, &mut transforms.p0());
+
+        // Standing on its own feet, the hips are drawn on the hips body, as
+        // falling: blended in from the animation's over `SWITCH_SECONDS` as
+        // the body starts carrying itself, and back out as it stops.
+        if ragdoll.fall.is_none()
+            && ragdoll.stand_blend > 0.0
+            && let Some(Ok((position, rotation))) = ragdoll.bodies[Bone::Hips].map(|body| bodies.get(body))
+        {
+            let hips = skeleton.entity(Bone::Hips);
+            let Ok(parent) = parents.get(hips).map(ChildOf::parent) else { continue };
+            let Ok(parent_world) = transforms.p1().compute_global_transform(parent) else { continue };
+            let Ok(written) = transforms.p0().get(hips).map(|transform| parent_world.affine().transform_point3(transform.translation)) else {
+                continue;
+            };
+            let body = position.0 - rotation.0 * ragdoll.body_offsets[Bone::Hips];
+            let t = ragdoll.stand_blend.clamp(0.0, 1.0);
+            let eased = t * t * (3.0 - 2.0 * t);
+            let local = parent_world.affine().inverse().transform_point3(written.lerp(body, eased));
+            if let Ok(mut transform) = transforms.p0().get_mut(hips) {
+                transform.translation = local;
+            }
+        }
 
         let Some(fall) = ragdoll.fall else { continue };
         let Some(offset) = fall.root_offset else { continue };
@@ -1432,6 +1464,12 @@ pub struct KinematicRoot {
     /// step to close that step's gap, it is twice the pace on one step and
     /// zero on the next whenever a frame runs two.
     pub velocity: Vec3,
+    /// Pinned again where the body stood (it had carried itself,
+    /// `Ragdoll::stop_standing_on_own_feet`): that pose, and how far the
+    /// root has eased from it to the animation's, `0..=1`, over
+    /// [`super::ragdoll::SWITCH_SECONDS`]. Snapped instead, the root would
+    /// drag the whole body by the gap in one step.
+    pub settle: Option<(Vec3, Quat, f32)>,
 }
 
 /// The collision layers ragdolls are given by default: the top 16 bits,
@@ -1787,6 +1825,7 @@ pub fn spawn_ragdoll(
                     position: body_position,
                     rotation: joint.rotation(),
                     velocity: Vec3::ZERO,
+                    settle: None,
                 },
             ));
         }
@@ -3616,6 +3655,140 @@ mod tests {
         }
     }
 
+    /// Every joint drive on `ragdoll`'s bodies, by bone.
+    fn drives_of(app: &App, ragdoll: &Ragdoll) -> Vec<(Bone, super::super::joint_drive::JointDrive)> {
+        ragdoll
+            .bodies
+            .iter()
+            .filter_map(|(bone, body)| Some((bone, *app.world().get::<super::super::joint_drive::JointDrive>((*body)?)?)))
+            .collect()
+    }
+
+    #[test]
+    fn no_joint_of_a_ragdoll_on_its_own_feet_exceeds_its_budget() {
+        // Plan 4.2: every drive's torque, what it is fed included, stays
+        // within its muscles' strength (Harbo et al. 2012, per kg of the
+        // body), lengthening up to Thelen's 1.4, through a push and a blow.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, (1.0 / TIMESTEP) as usize);
+        let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
+        for (bone, drive) in drives_of(&app, &ragdoll) {
+            let expected = super::super::joint_drive::joint_budget(bone).0 * mass;
+            assert!((drive.budget - expected).abs() < 0.01 * expected, "{}: budget {:.1}, expected {expected:.1}", bone.name(), drive.budget);
+        }
+        shove(&mut app, &ragdoll, Vec3::Z * 0.4);
+        app.world_mut().write_message(RagdollHit::new(character, Bone::LeftForeArm, Vec3::Y * 4.0));
+        let mut worst: (f32, Bone) = (0.0, Bone::Hips);
+        for _ in 0..(2.0 / TIMESTEP) as usize {
+            app.update();
+            for (bone, drive) in drives_of(&app, &ragdoll) {
+                let used = drive.applied.length() / drive.budget;
+                if used > worst.0 {
+                    worst = (used, bone);
+                }
+            }
+        }
+        assert!(worst.0 <= 1.4 + 1.0e-3, "{} used {:.2} of its budget", worst.1.name(), worst.0);
+    }
+
+    #[test]
+    fn a_ragdoll_too_weak_for_its_weight_folds() {
+        // The budgets bind: with a tenth of its strength it cannot carry
+        // itself (the knees alone need ~0.5 N·m/kg standing).
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, 2);
+        for (_, body) in ragdoll.bodies.iter() {
+            if let Some(body) = *body
+                && let Some(mut drive) = app.world_mut().get_mut::<super::super::joint_drive::JointDrive>(body)
+            {
+                drive.budget *= 0.1;
+            }
+        }
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let start = app.world().get::<Position>(hips).unwrap().0.y;
+        step(&mut app, (2.0 / TIMESTEP) as usize);
+        let now = app.world().get::<Position>(hips).unwrap().0.y;
+        assert!(start - now > 0.15, "a tenth as strong, the hips sank only {:.0} mm", (start - now) * 1e3);
+    }
+
+    #[test]
+    fn a_struck_arm_goes_slack_and_comes_back_on_its_own_feet() {
+        // Plan 4.5's stun recovery while standing on its own feet: the blow
+        // knocks the forearm's strength out (its drive and its command with
+        // it), it swings, and its muscles take it back as the stun wears
+        // off. The body stays up.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, (1.0 / TIMESTEP) as usize);
+        let forearm = ragdoll.bodies[Bone::LeftForeArm].unwrap();
+        let upper = ragdoll.bodies[Bone::LeftArm].unwrap();
+        let error = |app: &App| {
+            let (c, p) = (rotation_of(app, forearm), rotation_of(app, upper));
+            let (ct, pt) = (app.world().get::<JointTarget>(forearm).unwrap().target, app.world().get::<JointTarget>(upper).unwrap().target);
+            super::super::joint_drive::drive_error(c, p, ct, pt).length().to_degrees()
+        };
+        app.world_mut().write_message(RagdollHit::new(character, Bone::LeftForeArm, Vec3::Y * 4.0));
+        let mut furthest = 0.0f32;
+        let mut slackest = 1.0f32;
+        for _ in 0..(0.5 / TIMESTEP) as usize {
+            app.update();
+            furthest = furthest.max(error(&app));
+            slackest = slackest.min(app.world().get::<super::super::joint_drive::JointDrive>(forearm).unwrap().strength);
+        }
+        assert!(slackest < 0.8, "the blow should knock strength out, it kept {slackest:.2}");
+        assert!(furthest > 10.0, "the forearm should swing, it went {furthest:.1}°");
+        step(&mut app, (2.5 / TIMESTEP) as usize);
+        assert!(error(&app) < 5.0, "it should be back, {:.1}° off", error(&app));
+        assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_none(), "an arm's blow should not fell it");
+    }
+
+    #[test]
+    fn switching_onto_and_off_its_own_feet_does_not_pop() {
+        // Plan 4.5: pinned → on its own feet → pinned again. The screen
+        // blends between the animation and the bodies, and the root is
+        // pinned again where the body stands and eased back to the
+        // animation (`SWITCH_SECONDS`). Measured on the drawn skeleton:
+        // no frame moves the hips or turns a bone more than a smooth
+        // motion would.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().entity_mut(character).insert(Transform::default());
+        let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+        let drawn = |app: &App| Bone::ALL.map(|b| app.world().get::<GlobalTransform>(skeleton.entity(b)).unwrap().compute_transform());
+        let run = |app: &mut App, seconds: f32| {
+            let (mut moved, mut turned) = (0.0f32, 0.0f32);
+            let mut last = drawn(app);
+            for _ in 0..(seconds / TIMESTEP) as usize {
+                app.update();
+                let now = drawn(app);
+                moved = moved.max(now[0].translation.distance(last[0].translation));
+                for (a, b) in now.iter().zip(&last) {
+                    turned = turned.max(a.rotation.angle_between(b.rotation).to_degrees());
+                }
+                last = now;
+            }
+            (moved, turned)
+        };
+        let (still_moved, still_turned) = run(&mut app, 0.5);
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        let (on_moved, on_turned) = run(&mut app, 1.5);
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stop_standing_on_own_feet();
+        let (off_moved, off_turned) = run(&mut app, 1.5);
+        // Measured: on 1.4 mm and 0.5° at worst, off 2.0 and 0.6. Switched
+        // in a frame instead, on 3.7 mm and 1.05°, off 20.4 mm and 2.2°.
+        for (what, moved, turned) in [("onto its feet", on_moved, on_turned), ("off them", off_moved, off_turned)] {
+            assert!(moved < 0.0025, "{what}: the hips jumped {:.1} mm in a frame (pinned: {:.1})", moved * 1e3, still_moved * 1e3);
+            assert!(turned < 0.9, "{what}: a bone turned {turned:.2}° in a frame (pinned: {still_turned:.2})");
+        }
+        // Pinned again, settled, and back on the animation.
+        let hips = ragdoll.bodies[Bone::Hips].unwrap();
+        let root = app.world().get::<KinematicRoot>(hips).expect("the root should be pinned again");
+        assert!(root.settle.is_none(), "the root should have settled");
+        assert!(app.world().get::<super::super::joint_drive::JointDrive>(hips).is_none());
+        assert_eq!(app.world().get::<Ragdoll>(character).unwrap().stand_blend, 0.0);
+    }
+
     #[test]
     fn a_ragdoll_on_its_own_feet_still_falls() {
         // A fall takes over from the joints: the drives go, the fall's own
@@ -3631,6 +3804,25 @@ mod tests {
         }
         let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
         assert!(hips.y < 0.4, "it should lie on the floor, hips at {:.2} m", hips.y);
+    }
+
+    // Plan 4.5's bench: wall-clock per frame of one ragdoll, pinned and on
+    // its own feet, headless (`anim_bench` has no physics).
+    // `cargo test --release -- --ignored --nocapture probe_standing_cost`.
+    #[test]
+    #[ignore]
+    fn probe_standing_cost() {
+        let (mut app, character, _, _) = drawn_standing_ragdoll_with(|_| {});
+        let time = |app: &mut App| {
+            let start = std::time::Instant::now();
+            step(app, 600);
+            start.elapsed().as_secs_f64() * 1e3 / 600.0
+        };
+        let pinned = time(&mut app);
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, 60);
+        let standing = time(&mut app);
+        println!("COST per frame: pinned {pinned:.3} ms, on its own feet {standing:.3} ms");
     }
 
     // Plan step 4b: the drawn stance, stood pinned for 1 s, then on its own

@@ -2155,15 +2155,21 @@ fn deliver_ragdoll_hits(
     }
 }
 
-/// Plan step 4b: at `--stand-on-own-feet N`, every ragdoll stands on its
-/// own feet.
-fn stand_when_asked(config: Res<RagdollConfig>, frame: Res<FrameCount>, mut rigs: Query<&mut Ragdoll>) {
-    if config.stand_at_frame != Some(frame.0) {
+/// Plan steps 4b and 4.5: at `--stand-on-own-feet N` every ragdoll stands
+/// on its own feet; `B` toggles it live, back to a pinned root and on.
+fn stand_when_asked(config: Res<RagdollConfig>, frame: Res<FrameCount>, keys: Res<ButtonInput<KeyCode>>, mut rigs: Query<&mut Ragdoll>) {
+    let toggled = keys.just_pressed(KeyCode::KeyB);
+    if config.stand_at_frame != Some(frame.0) && !toggled {
         return;
     }
     for mut ragdoll in &mut rigs {
-        info!("character_gallery: standing on its own feet at frame {}", frame.0);
-        ragdoll.stand_on_own_feet();
+        if toggled && ragdoll.self_supporting {
+            info!("character_gallery: pinned again at frame {}", frame.0);
+            ragdoll.stop_standing_on_own_feet();
+        } else {
+            info!("character_gallery: standing on its own feet at frame {}", frame.0);
+            ragdoll.stand_on_own_feet();
+        }
     }
 }
 

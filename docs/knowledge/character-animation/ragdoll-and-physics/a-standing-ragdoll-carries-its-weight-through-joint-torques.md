@@ -111,6 +111,23 @@ integrated once per 64 Hz step against a light foot.
      `UNCATCHABLE` (2 cm), it falls: with no step to take on its own feet
      yet, nothing can catch it.
 
+5. **Switching is blended (step 4.5).** On its own feet, the screen
+   shows the bodies, the hips placed on the hips body.
+   - `Ragdoll::stand_blend` eases between the animation and the bodies
+     over `SWITCH_SECONDS` (0.3 s) each way.
+   - `stop_standing_on_own_feet` pins the root where the body stands and
+     eases the pin to the animation over the same time
+     (`KinematicRoot::settle`).
+   - Measured per frame on the drawn skeleton: on, 1.4 mm and 0.5° at
+     worst; off, 2.0 mm and 0.6°. Switched in a frame instead: on, 3.7 mm
+     and 1.05°; off, 20.4 mm and 2.2°
+     (`switching_onto_and_off_its_own_feet_does_not_pop`).
+   - The drives' strengths, twitch and stun are in
+     [a ragdoll's joint muscles](./a-ragdolls-joint-muscles-have-a-strength-a-twitch-and-a-speed.md).
+   - Headless, one ragdoll costs 0.64-0.88 ms a frame pinned and
+     0.71-1.01 on its own feet (`probe_standing_cost`, three runs): no
+     difference beyond the noise.
+
 The old per-body controller is off for a body that carries itself
 (`apply_joint_torques` skips it), and a fall removes the drives and the
 dominance (`manage_joint_drives`).
@@ -181,11 +198,11 @@ after 1 s pinned:
     breathing moves the targets).
 - The plan's co-contraction ratio is not logged: one feed-forward split
   by share and relative drives cannot co-contract by construction.
-- The screen still draws the animation while the body carries itself: the
-  read-back hangs the skeleton on the bodies only while falling. Read the
-  bodies over BRP.
-- No way back to a pinned root yet (step 4.5). After a get-up the body
-  stands on its own feet again.
+- After a get-up the body stands on its own feet again, the screen
+  blending in afresh from the rise's end.
+- The push limits above are without the muscles' lag. With it, forward
+  0.4 m/s is caught and 0.5 falls, sideways 0.6 falls (see the muscles
+  note).
 
 ## Revisit when
 

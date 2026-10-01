@@ -42,6 +42,39 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Steps 4.2, 4.4, 4.5: muscle strength, twitch, speed, and mode switching
+
+- **4.2 budgets.** Each joint drive's whole torque is capped at maximal
+  voluntary isometric torque per kg times body mass (Harbo et al. 2012,
+  young man): ankle 1.8, knee 3.5, hip 2.5, trunk 3.0, neck 0.7, shoulder
+  1.0, elbow 0.67, wrist 0.33 N·m/kg. Winter's walking peaks (knee 0.5)
+  are what a walk uses; a standing knee already needs 0.49. The cap
+  binds: at a tenth of its strength the body folds over 15 cm (4 mm
+  without the cap). A 0.4 m/s push and a forearm blow stay within every
+  budget.
+- **4.4 muscle behaviour.**
+  - Force-velocity on the cap: Hill's hyperbola shortening (k 0.25),
+    Thelen's 1.4 plateau lengthening.
+  - The commanded torque lags by Winter's twitch time (legs 75 ms, arms
+    50, trunk 60 by choice), a critically damped response solved
+    exactly. The drive's stiffness stays immediate.
+  - The lag costs pushes: forward caught to 0.4 m/s (0.5 without it),
+    sideways under 0.6 (0.6 without). At twice the twitch, even 0.4
+    falls.
+- **4.5 mode switching.**
+  - On its own feet the screen shows the bodies. `stop_standing_on_own_feet`
+    pins the root where the body stands and eases it to the animation;
+    both switches blend over 0.3 s.
+  - Per frame at worst: on 1.4 mm and 0.5°, off 2.0 mm and 0.6°.
+    Snapped: 3.7 mm and 1.05° on, 20.4 mm and 2.2° off.
+  - A hit's stun now weakens the drives: a struck forearm swings over
+    10° and is back within 5°, standing. Gallery: `B` toggles.
+  - Bench: one ragdoll 0.64-0.88 ms a frame pinned, 0.71-1.01 on its own
+    feet, within the noise.
+  - Front and Left, both rigs: the body drawn from its bodies stands as
+    the pinned one does.
+- `cargo test --release --lib`: 1083 passed.
+
 ### Step 4c: the body on its own feet balances
 
 - **Winter's law on the measured COM** (`carry_weight`):

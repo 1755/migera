@@ -343,7 +343,19 @@ pinned ragdoll following the animation, sole feet (4a).
   (hips within 2 mm, sway ≤ 41 mm). Ankles carry 0.54 N·m/kg. Left for
   4c: the body sways ±2 cm over its ankles, undamped. See the
   [note](./docs/knowledge/character-animation/ragdoll-and-physics/a-standing-ragdoll-carries-its-weight-through-joint-torques.md).
-- [ ] **4.2 Torque budgets.** Per joint: Winter per-kg peak × body mass
+- [x] **4.2, 4.4, 4.5 done 2026-10-02.** Budgets: maximal voluntary
+  torque per kg (Harbo 2012; Winter's walking peaks are use, not
+  capacity), times body mass, on each joint's whole torque; at a tenth
+  the body folds. Muscle behaviour: Hill force-velocity on the cap, and
+  the command lagged by Winter's twitch time (legs 75 ms, arms 50); the
+  lag cuts the push caught on the feet to ~0.4 m/s. Mode switching:
+  `stop_standing_on_own_feet` re-pins where the body stands and eases to
+  the animation, the screen blends 0.3 s each way (≤ 2 mm and 0.6° a
+  frame against 20 mm and 2.2° snapped); a hit's stun slackens the
+  drives and they recover. Bench: no cost beyond noise (0.6-1.0 ms a
+  frame, one ragdoll). See the
+  [muscles note](./docs/knowledge/character-animation/ragdoll-and-physics/a-ragdolls-joint-muscles-have-a-strength-a-twitch-and-a-speed.md).
+- [x] **4.2 Torque budgets** (done above, as capacity per kg). Per joint: Winter per-kg peak × body mass
   (ankle ≈ 1.6 N·m/kg), converted to an acceleration ceiling through
   `limb_mass_properties`. Only in a new `Balancing` mode. Test: ceilings
   equal the budgets within 1 %.
@@ -355,17 +367,17 @@ pinned ragdoll following the animation, sole feet (4a).
   0.4 m/s each way caught with ankles < 1.6 N·m/kg; falls from 0.6
   forward and back, 0.8 sideways. Live both rigs: still within 5-6 mm.
   Not built: the co-contraction log (none possible by construction).
-- [ ] **4.3 Balance controller.** Part 2's controller on the measured COM:
+- [x] **4.3 Balance controller** (built as 4c above). Part 2's controller on the measured COM:
   A/P ankle torque = W·(COP target − ankle); M/L hip abductor load/unload.
   Log the co-contraction ratio Σ|τ|/|Στ| (§11.2.2: alternating, not
   co-contraction).
   - Tests: `an_unpinned_ragdoll_stands_60s` (no drift, no NaN);
     `a_push_is_recovered_within_budget`; `a_push_beyond_the_base_falls`;
     torque never exceeds budget.
-- [ ] **4.4 Muscle behaviour**, each only if stable: activation lag as a
+- [x] **4.4 Muscle behaviour** (done above), each only if stable: activation lag as a
   critical filter, ~40–60 ms (§9.0.5); Hill force–velocity ceiling (§9.2).
   Each keeps its own stability test green.
-- [ ] **4.5 Mode switching.** Pinned → balancing → fall → stun recovery, no
+- [x] **4.5 Mode switching** (done above). Pinned → balancing → fall → stun recovery, no
   pops. Live check, bench, KB notes (decision + Winter 8.1 / 11.2).
   Checkpoint: commit.
 

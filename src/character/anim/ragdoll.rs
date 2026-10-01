@@ -151,7 +151,17 @@ pub struct Ragdoll {
     /// its horizontal offset from the planted feet's middle, world, taken
     /// when both were first planted (`joint_drive::carry_weight`).
     pub stand_rest: Option<Vec3>,
+    /// How far the screen has gone over to the bodies standing on their
+    /// own feet, `0..=1`: eased in and out over [`SWITCH_SECONDS`] as the
+    /// body starts or stops carrying itself, so neither switch pops.
+    pub stand_blend: f32,
 }
+
+/// How long switching between a pinned root and standing on its own feet
+/// takes, seconds: the screen's blend between the animation and the
+/// bodies, and the pinned root's way back to the animation. A choice:
+/// a little under a weight shift (Winter's MVC builds in ~200 ms, §9.0.6).
+pub const SWITCH_SECONDS: f32 = 0.3;
 
 /// A knee or elbow as the hinge it is: one bending axis fixed in the parent
 /// segment (the femur's, the humerus's), within an anatomical range.
@@ -279,6 +289,7 @@ impl Default for Ragdoll {
             last_seen: BoneSet::splat(None),
             self_supporting: false,
             stand_rest: None,
+            stand_blend: 0.0,
         }
     }
 }
@@ -295,6 +306,13 @@ impl Ragdoll {
     /// step yet.
     pub fn stand_on_own_feet(&mut self) {
         self.self_supporting = true;
+    }
+
+    /// Back to a root pinned to the animation (step 4.5): the drives go,
+    /// the root is pinned where the body stands and eased to the
+    /// animation over [`SWITCH_SECONDS`], and the screen blends back to it.
+    pub fn stop_standing_on_own_feet(&mut self) {
+        self.self_supporting = false;
     }
 
     /// Whether the joints carry the body now: standing on its own feet and
@@ -337,7 +355,11 @@ impl Ragdoll {
     pub fn shown(&self, bone: Bone) -> f32 {
         match self.fall {
             Some(_) => 1.0,
-            None => 1.0 - self.effective_strength(bone).0,
+            None => {
+                let driven = 1.0 - self.effective_strength(bone).0;
+                let t = self.stand_blend.clamp(0.0, 1.0);
+                driven + (1.0 - driven) * t * t * (3.0 - 2.0 * t)
+            }
         }
     }
 
