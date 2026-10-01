@@ -42,6 +42,31 @@ purely because fixed overhead is not amortized.
 ## Log
 
 
+### Hip abduction capped by a second cone on the same pivot
+
+Closes the open item below. avian's one cone could not fit the hip:
+tilted to give 120° of flexion and 30° of extension, it allowed about 68°
+out to the side (AAOS 45). Each hip now also has a limit-only
+`SphericalJoint` with the same anchors: a 135° cone about the direction
+straight across the body. It excludes only the 45° around pointing
+straight out, so the allowed region is the two cones' intersection
+(`anatomical_side_cone`, `LimitOnly`).
+
+- Falls, four ways: abduction 52° → 45.1°; flexion (to 116°) and
+  extension (30.0°) unchanged. The fall test fails at 51.9° with the
+  side cone off; the pose-limits test checks every shipped pose against
+  it.
+- Live A/B against 676dad4, walking at 1.2 m/s on puppet_base, two runs
+  each: the worst body-to-target error per sample has median 11.5/12.0°
+  before and 11.6/11.9° after. The two joints on one pivot do not fight.
+  (That ~12° walking lag predates this work.)
+- Seen from above, both rigs: sideways falls leave the legs in a
+  moderate V, no splits.
+- Distilled into
+  [a falling body has hinged knees and elbows and solid flesh](./docs/knowledge/character-animation/ragdoll-and-physics/a-falling-body-is-hinged-and-fleshed.md).
+
+1045 tests pass.
+
 ### A falling body: hinged knees and elbows, solid anthropometric flesh
 
 Asked for: falls that move like a body, not a skeleton of thin sticks.

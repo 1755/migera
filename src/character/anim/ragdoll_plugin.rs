@@ -275,7 +275,7 @@ fn rest_fallen_ragdolls(
 fn rise_fallen_ragdolls(
     mut commands: Commands,
     mut characters: Query<(&mut Ragdoll, &HumanoidSkeleton, Option<&mut AnimFootIk>)>,
-    joints: Query<(Entity, &SphericalJoint)>,
+    joints: Query<(Entity, &SphericalJoint), Without<LimitOnly>>,
     bodies: Query<(&Position, &Rotation, &JointTarget)>,
     collision_layers: Query<&CollisionLayers>,
     transforms: Query<&Transform>,
@@ -394,7 +394,7 @@ fn release_falling_roots(
     roots: Query<&KinematicRoot>,
     bodies: Query<(&Position, &Rotation)>,
     mut velocities: Query<&mut LinearVelocity>,
-    joints: Query<(Entity, &SphericalJoint)>,
+    joints: Query<(Entity, &SphericalJoint), Without<LimitOnly>>,
     collision_layers: Query<&CollisionLayers>,
     live: TransformHelper,
 ) {
@@ -1656,6 +1656,20 @@ pub fn spawn_ragdoll(
             segment,
             bind_rotation_between(parent_bone, bone, |b| skeleton.rest_rotation(b)),
         );
+        // A hip's side cone (`anatomical_side_cone`), sharing the anchors,
+        // its parent frame turned from the bind's as the tilt turns it.
+        if let Some((centre, half_angle)) = anatomical_side_cone(bone, bind.forward()) {
+            let to = bind_world[parent_bone].inverse() * centre;
+            let on_parent = Quat::from_rotation_arc(basis_on_parent * Vec3::Y, to) * basis_on_parent;
+            let mut side = SphericalJoint::new(parent_body, body)
+                .with_local_anchor1(parent_anchor)
+                .with_local_anchor2(child_anchor)
+                .with_local_basis1(on_parent)
+                .with_local_basis2(basis_on_child)
+                .with_swing_limits(-half_angle, half_angle);
+            side.twist_axis = Vec3::X;
+            commands.spawn((side, JointCollisionDisabled, LimitOnly));
+        }
         // A hip's or shoulder's cone leans to the middle of its range.
         let basis_on_parent = tilted_parent_basis(bone, basis_on_parent, bind_world[parent_bone], bind.forward());
 
@@ -2190,6 +2204,31 @@ pub fn anatomical_cone_centre(bone: Bone, forward: Vec3) -> Option<Vec3> {
         _ => None,
     }
 }
+
+/// A second cone a joint's child must also stay inside, for a range one
+/// cone cannot shape: its centre (a direction in the character's bind
+/// frame, as [`anatomical_cone_centre`]) and half-angle, radians.
+///
+/// **Hip abduction.** The hip's own cone, tilted forward to fit 120 of
+/// flexion and 30 of extension, reaches about 68 degrees out to the side
+/// at neutral flexion, against AAOS's 45; falls measured 52. A cone of 135
+/// degrees centred straight across the body (toward the other leg)
+/// excludes just the 45 degrees around pointing straight out: abduction
+/// stops at 45 standing and flexed alike, and flexion and extension are
+/// untouched. The two joints share their anchors ([`LimitOnly`]).
+pub fn anatomical_side_cone(bone: Bone, forward: Vec3) -> Option<(Vec3, f32)> {
+    let left = Vec3::Y.cross(forward).normalize_or_zero();
+    match bone {
+        Bone::LeftUpLeg => Some((-left, 135f32.to_radians())),
+        Bone::RightUpLeg => Some((left, 135f32.to_radians())),
+        _ => None,
+    }
+}
+
+/// A joint that only limits ([`anatomical_side_cone`]): its bodies are
+/// already joined, and the fall's damping is the main joint's alone.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct LimitOnly;
 
 /// [`joint_bases`]'s parent frame turned so its cone is centred on
 /// [`anatomical_cone_centre`]: `parent_bind` is the parent bone's world
@@ -3712,6 +3751,9 @@ mod tests {
         for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
             let s = measure_fall(launch * 1.5, 4.0);
             assert!(s.hip_sagittal.0 > -31.0, "{name}: the hips bent {:.1} degrees back", -s.hip_sagittal.0);
+            // Out to the side, AAOS's 45 (`anatomical_side_cone`): 52 with
+            // the hip's one cone.
+            assert!(s.hip_abduction < 46.0, "{name}: a hip opened {:.1} degrees out to the side", s.hip_abduction);
             deepest_flexion = deepest_flexion.max(s.hip_sagittal.1);
             let (knee, elbow) = (super::super::ragdoll::KNEE_RANGE, super::super::ragdoll::ELBOW_RANGE);
             assert!(
@@ -4650,6 +4692,9 @@ mod tests {
         Some(current)
     }
 
+    /// Swing, twist, and a side cone's (swing, half-angle), degrees.
+    type SwingTwistSide = (f32, f32, Option<(f32, f32)>);
+
     /// A joint's swing and twist under `pose`, in degrees, measured in the
     /// frames [`joint_bases`] gives the physical joint — between `bone`'s
     /// body and its nearest body ancestor, through any bones between.
@@ -4658,13 +4703,14 @@ mod tests {
     /// joint that spans a skipped bone (the arm hangs from the upper torso
     /// through the collarbone) counts the skipped bone's motion too. Splits
     /// about `+Y` into swing and twist exactly as avian's constraint reads
-    /// it.
+    /// it. With a side cone (`anatomical_side_cone`), its swing and
+    /// half-angle too.
     fn swing_and_twist(
         pose: &LocalPose,
         rig: &RigGeometry,
         layout: &BoneSet<Option<BodyEnd>>,
         bone: Bone,
-    ) -> Option<(f32, f32)> {
+    ) -> Option<SwingTwistSide> {
         use crate::character::anim::rig::{accumulate_world_rotations, forward_kinematics_on};
 
         let parent = body_ancestor(bone, layout)?;
@@ -4687,13 +4733,21 @@ mod tests {
             bind_rotation_between(parent, bone, |b| rig.bind_rotations[b]),
         );
         let bind = accumulate_world_rotations(&LocalPose::REST, rig);
+        let untilted = on_parent;
         let on_parent = tilted_parent_basis(bone, on_parent, bind[parent], rig.forward());
 
         let world = accumulate_world_rotations(pose, rig);
         let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);
 
         let (swing, twist) = avian_limit_angles(relative);
-        Some((swing.to_degrees(), twist.to_degrees()))
+        // And the side cone's swing, in the frame `spawn_ragdoll` gives it.
+        let side = anatomical_side_cone(bone, rig.forward()).map(|(centre, half)| {
+            let to = bind[parent].inverse() * centre;
+            let on_parent = Quat::from_rotation_arc(untilted * Vec3::Y, to) * untilted;
+            let relative = (world[parent] * on_parent).inverse() * (world[bone] * on_child);
+            (avian_limit_angles(relative).0.to_degrees(), half.to_degrees())
+        });
+        Some((swing.to_degrees(), twist.to_degrees(), side))
     }
 
     #[test]
@@ -4737,11 +4791,16 @@ mod tests {
         let mut violations = Vec::new();
         for (name, pose) in &poses {
             for &bone in Bone::ALL.iter() {
-                let (Some(limit), Some((swing, twist))) =
+                let (Some(limit), Some((swing, twist, side))) =
                     (limits[bone], swing_and_twist(pose, &rig, &layout, bone))
                 else {
                     continue;
                 };
+                if let Some((side, cone)) = side
+                    && side > cone
+                {
+                    violations.push(format!("{name}: {} side cone {side:.1} (cone {cone:.0})", bone.name()));
+                }
                 // Against what avian will actually enforce.
                 let cone = limit.swing_half_angle.to_degrees();
                 let (low, high) =

@@ -28,6 +28,9 @@ aliases:
   - knee bends backward
   - anatomical_cone_centre
   - tilted_parent_basis
+  - anatomical_side_cone
+  - LimitOnly
+  - hip abduction
   - hip extension limit
 ---
 
@@ -91,6 +94,16 @@ things for its duration, and the end of the rise changes them back.
   - **The centre comes from the rig's bind frame,** the same in
     `spawn_ragdoll` and the pose-limits test, so the test measures the
     frames the joints have.
+- **Hip abduction is a second cone on the same pivot**
+  (`anatomical_side_cone`, `LimitOnly`). The tilted hip cone alone
+  reaches about 68° out to the side at neutral flexion (AAOS 45; falls
+  measured 52). A second `SphericalJoint` with the same anchors carries
+  only a swing limit: 135° about the direction straight across the body,
+  toward the other leg. That excludes just the 45° around pointing
+  straight out. The allowed region is the two cones' intersection, an
+  oval one cone cannot make. Abduction stops at 45° standing and flexed
+  alike; flexion and extension are untouched. It is spawned with the
+  joints and kept through falls, and fall damping skips it.
 
 ## Alternatives considered
 
@@ -103,6 +116,10 @@ things for its duration, and the end of the rise changes them back.
   so it cannot say "forward only".
 - **Self-collision while standing.** A torso contact fought the controller
   and left the neck 8.8° off (`spawn_bone_body`), so it stays off there.
+- **Shaping the hip with one cone only.** Wider toward flexion, a cone
+  is wider to the side too: one fitted to 120 forward and 30 back allowed
+  68 of abduction. Narrowed to fit abduction, it loses flexion. Two
+  intersecting cones (above) fit all three.
 - **Collision hooks to filter pairs.** These are one global type per app
   that the consumer must register, too intrusive for a plugin. Layers plus
   `JointCollisionDisabled` were enough.
@@ -120,7 +137,8 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
 | elbow out of plane | 85° | ≤ 5.3° (as stood) |
 | unjointed overlap | 101–180 mm | ≤ 18 mm |
 | hip extension, forward fall | 43° | 30.0° |
-| hip flexion, deepest | 75° (cone) | 115° |
+| hip flexion, deepest | 75° (cone) | 116° |
+| hip abduction | 52° | 45.1° |
 
 - **Lying side:** side falls lie on the flank (hips 0.18 m, the pelvis's
   half-breadth). Forward lands face down and back face up on both rigs.
@@ -166,9 +184,11 @@ Headless, `puppet_base` drawn, relaxed stance, pushed 1.5 m/s four ways
 
 ## Revisit when
 
-- Hip abduction: the tilted cone allows about 68° out to the side at
-  neutral flexion against AAOS's 45 (falls measured up to 52). An
-  elliptical limit would need a joint avian doesn't have.
+- Hip adduction: nothing but the other leg's flesh stops a thigh
+  crossing under the body while falling (the side cone's centre points
+  there). AAOS allows 30.
+- Another lopsided joint (the shoulder's reach behind the back, an ankle):
+  a second cone on the same pivot is the tool.
 - A wrist or hand body is added: it needs its own hinge-like limits.
 
 ## Related
