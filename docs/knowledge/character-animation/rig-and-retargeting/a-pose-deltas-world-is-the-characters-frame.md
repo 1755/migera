@@ -93,6 +93,7 @@ bodies, fails with the hips 90° off. Both pass with it.
 
 ## Related
 
+- [Bind a rig at its own facing, not its spawn heading](./bind-a-rig-at-its-own-facing-not-its-spawn-heading.md) — same-trap: the binding itself capturing the heading.
 - [A pose delta names a world axis](./a-pose-delta-names-a-world-axis.md) — prerequisite: the conjugation this frame sits under.
 - [Full-strength read-back hides the physics](../ragdoll-and-physics/full-strength-readback-hides-the-physics.md) — same-trap: why the T-pose arms were invisible on screen.
 - [Getting up goes through key poses](../ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md) — example: the rise's turn is what exposed it.

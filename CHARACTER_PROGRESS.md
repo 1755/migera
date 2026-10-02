@@ -41,6 +41,46 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walking character in the library; physics character playground
+
+- **Extracted from `character_gallery` into the library**, so any example
+  or game drives a character the same way:
+  - `character::anim::humanoid` (`HumanoidPlugin`, `spawn_gltf_humanoid`)
+    loads a glTF humanoid and binds it, any number of characters;
+    proportions are a `HumanoidProportions` component.
+  - `character::anim::walker` (`WalkerPlugin`, `Walker`, `WalkerState`)
+    holds the walk driver, root motion, and the fall/get-up glue. A
+    walker is steered by `speed`, `Steer::{Straight, Circle, Toward}`,
+    `push`, `fall_now`.
+  - `despawn_ragdoll` removes a ragdoll's bodies and joints (unit-tested).
+- **The gallery is now a consumer.** A/B against the pre-refactor build,
+  same flags: the circle walk measures radius 2.35 m and 1.16 m/s on both.
+  Standing, walking and ragdoll-walking screenshots match.
+- **A latent binding bug, fixed:** binding captured the spawn heading as
+  part of the rig's bind, so a character spawned turned stood with its
+  hands overhead. The gallery never showed it, because it always binds
+  at yaw 0. See
+  [the note](./docs/knowledge/character-animation/rig-and-retargeting/bind-a-rig-at-its-own-facing-not-its-spawn-heading.md).
+- **`examples/physics_character_playground.rs`:**
+  - a 50 × 50 m room, floor and 3 m walls as static colliders;
+  - 30 dynamic cubes, spheres and capsules dropped from 5 m around the
+    centre;
+  - walkers that turn off walls along the mirrored heading ± jitter;
+  - a free-flight camera (Bevy's `FreeCamera`, the `free_camera`
+    feature);
+  - physics by camera distance: a pinned ragdoll within 10 m, a kinematic
+    capsule beyond, with 1 m hysteresis.
+- **Measured (BRP):**
+  - Kinematic: 70 s at 1.22 m/s, 2 wall turns, never nearer a wall than
+    0.9 m.
+  - Ragdoll: 1.21 m/s, the pelvis never below 0.87 m.
+  - Four characters in distance mode switched ragdoll ↔ capsule at 9 / 11
+    m both ways, with no falls in 60 s.
+  - Props are kicked aside.
+- **Not measured:** physics cost per character in each mode (the window
+  is vsync-capped).
+- `cargo test --release --lib`: 1089 passed. Clippy: 0 warnings.
+
 ### Closing a stance after a step, and the sideways pelvis drop: tried, not fixed
 
 - **The push matrix is noisy.** Delaying a push 7-25 frames (the idle's

@@ -12,7 +12,7 @@ verified: 2026-10-01
 code:
   - src/character/anim/footlock.rs
   - src/character/anim/plugin.rs
-  - examples/character_gallery.rs
+  - src/character/anim/walker.rs
 sources:
   - "test footlock::tests::a_planted_foot_stays_put_in_the_world_while_the_body_travels_over_it"
 aliases:
@@ -42,7 +42,7 @@ Whatever moves the entity reports how far it moved: `Turn::travel`, in
 world axes on `AnimFootIk::turn`. The IK stage rotates it into the pose's
 axes (`root_rotation.inverse()`, as for arm targets). The lock subtracts it
 from its anchor and adds it back into the speed estimate, so both are
-judged in the world. `ride_rendered_feet` in the gallery and
+judged in the world. `walker::ride_rendered_feet` and
 `advance_turning_with` in `Authoritative` mode fill it in. A new mover that
 forgets it gets the old behaviour back.
 

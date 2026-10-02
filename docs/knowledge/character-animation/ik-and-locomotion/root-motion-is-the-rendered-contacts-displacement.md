@@ -12,7 +12,7 @@ updated: 2026-09-29
 verified: 2026-09-29
 code:
   - src/character/anim/locomotion.rs
-  - examples/character_gallery.rs
+  - src/character/anim/walker.rs
 sources:
   - "test locomotion::tests::the_default_springs_keep_a_walking_foot_planted"
 aliases:
@@ -61,7 +61,8 @@ rhythm, springs, blends.
   the contact displacement between `pose_at(phase − cadence·dt)` and
   `pose_at(phase)`. It falls back to the velocity only through a flight
   phase, where no foot is down.
-- `examples/character_gallery.rs` runs `ride_rendered_feet` after
+- `walker::ride_rendered_feet` (`WalkerPlugin`; in the gallery until
+  2026-10-02) runs after
   `AnimSet::Spring` and before `AnimSet::Ik`. It moves the entity by the
   displacement between the last two rendered poses (`AnimPose::pose()`), so
   the body is exact through the springs. A game's character controller

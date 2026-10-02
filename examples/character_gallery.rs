@@ -15,40 +15,29 @@
 //!
 //! Run: `cargo run --release --example character_gallery`
 
-use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 use bevy::camera::{Exposure, Hdr};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::diagnostic::{FrameCount, FrameTimeDiagnosticsPlugin};
-use bevy::gltf::GltfAssetLabel;
 use bevy::math::EulerRot;
 use bevy::prelude::*;
 use bevy::remote::http::RemoteHttpPlugin;
 use bevy::remote::RemotePlugin;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy::world_serialization::WorldAssetRoot;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 use migera::character::{Bone, BoneMarker, HumanoidSkeleton};
-use migera::character::anim::poses as anim_poses;
 use migera::character::anim::asset::AnimAssetPlugin;
-use migera::character::anim::balance;
-use migera::character::anim::walk_balance::{self, WalkBalance};
-use migera::character::anim::facing;
-use migera::character::anim::gait::{cycle_of, walk_pose_on, GaitParams};
-use migera::character::anim::locomotion;
-use migera::character::anim::lookat;
-use migera::character::anim::transition;
-use migera::character::anim::rig::{LocalPose, RigGeometry};
-use migera::character::anim::stance::{stance_on, stance_on_rig, DEFAULT_KNEE_FLEX};
+use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
-use migera::character::anim::phase::{GaitPhase, PhaseLayer};
-use migera::character::anim::plugin::{AnimArmIk, AnimFootIk, AnimGround, AnimPose, AnimSet};
+use migera::character::anim::plugin::{AnimFootIk, AnimGround};
+use migera::character::anim::walker;
 use avian3d::prelude::PhysicsPlugins;
 use migera::character::anim::{
-    spawn_ragdoll, AnimPhaseLayer, AnimPlugin, AnimRagdollPlugin, AnimSprings, AnimTarget,
-    AnimTargetAsset, Ragdoll, RagdollHit, RagdollSet, RagdollSpawnConfig, FALL_DAMPING, FALL_TONE,
+    spawn_gltf_humanoid, spawn_ragdoll, AnimPlugin, AnimRagdollPlugin, AnimSprings, AnimTarget, HumanoidPlugin,
+    HumanoidProportions, HumanoidSet, Ragdoll, RagdollHit, RagdollSet, RagdollSpawnConfig, Steer, Walker, WalkerPlugin,
+    WalkerSet, FALL_DAMPING,
 };
 
 /// `--shot PATH --at-frame N`: headless screenshot-based verification, same
@@ -767,59 +756,18 @@ fn slope_rotation(grade: f32) -> Quat {
 #[derive(Component)]
 struct RealMeshRoot;
 
-/// The asset's own facing correction, kept so the heading can be COMPOSED
-/// onto it rather than overwriting it.
-///
-/// # Why this has to be a component and not just the spawn rotation
-///
-/// `spawn_real_mesh` puts the correction (default 180°) straight into this
-/// root's `Transform::rotation`, which was sufficient while the rendered
-/// mesh and the animated skeleton were two separate entities: root motion
-/// wrote the heading onto the debug skeleton and left the mesh alone.
-///
-/// When the debug-capsule skeleton was removed and `HumanoidSkeleton` moved
-/// onto this same mesh root, `drive_walk_cycle`'s
-/// `root.rotation = facing.rotation()` silently became a CLOBBER — at yaw 0
-/// `facing.rotation()` is the identity, so the correction survived exactly
-/// until the first frame root motion ran. The comment defending that
-/// assignment ("the model's own yaw correction lives on the mesh entity
-/// this rig sits beside") went stale at the same moment and kept reading as
-/// correct.
-///
-/// A/B measured against the unmodified parent commit, same flags
-/// (`--anim-speed 1.2`), reading this root's own `Transform`:
-///
-/// ```text
-///   before   rotation = (0, 0.0, 0, 1.0)   <- the correction, wiped
-///   after    rotation = (0, 1.0, 0, ~0)    <- the 180-degree turn, kept
-/// ```
-///
-/// In both cases the character travels toward `-Z`. With the correction
-/// gone the mesh geometry faces `+Z` while travelling `-Z` — it walks
-/// backward, which is what makes this visible.
-///
-/// # What this is NOT
-///
-/// It is not a knee fix. The same A/B shows the knee bending correctly
-/// either way: sampled across a full stride on both builds, the knee sits
-/// 0.140-0.154 m AHEAD of the hip-to-ankle line, zero backward samples.
-/// A "backward-bending knee" reading that appears here is almost certainly
-/// a stale `character_gallery` process still holding port 15702 — kill
-/// every instance before trusting a BRP number.
-#[derive(Component, Debug, Clone, Copy)]
-struct FacingCorrection(Quat);
-
 /// Loads `assets/models/puppet_base.gltf` (a real, CC0-licensed skinned
 /// humanoid — Quaternius "Superhero Male") as a plain Bevy world-asset
 /// root. Bevy's own glTF importer handles the skin/joint-matrix machinery
-/// internally once this asset is spawned; [`build_real_mesh_skeleton`]
-/// then binds its joint nodes to this crate's own `Bone` enum so
-/// `character::anim` drives the skin live.
+/// internally once this asset is spawned; `humanoid::bind_gltf_humanoids`
+/// (`HumanoidPlugin`) then binds its joint nodes to this crate's own `Bone`
+/// enum so `character::anim` drives the skin live, and `WalkerPlugin`
+/// gives the bound character its animation stack.
 ///
 /// The binding is not trivial: the glTF's own bone names — `pelvis`,
 /// `thigh_l`, `upperarm_l`, an Unreal-Mannequin-style convention — do not
 /// match this crate's Mixamo-style names at all, hence
-/// [`UE_MANNEQUIN_BONE_NAMES`] and [`resolve_bone_node_name`], and hence
+/// `humanoid::UE_MANNEQUIN_BONE_NAMES`, and hence
 /// `HumanoidSkeleton::for_other_rig` capturing this specific rig's own
 /// rest rotations rather than assuming the synthetic T-pose numbers.
 ///
@@ -842,11 +790,33 @@ struct FacingCorrection(Quat);
 /// (0.19) replaced scene spawning with a `WorldAsset`/`WorldAssetRoot`
 /// pair) is what actually instantiates a loaded glTF scene's entities
 /// into the world.
-fn spawn_real_mesh(mut commands: Commands, asset_server: Res<AssetServer>, model_cfg: Res<CharacterModelConfig>) {
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(model_cfg.path.clone()))),
-        // A yaw correction (default 180°, `--character-yaw-correction` to
-        // override for a differently-facing asset) -- this DEFAULT asset's
+fn spawn_real_mesh(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    model_cfg: Res<CharacterModelConfig>,
+    choice: Res<AnimPoseChoice>,
+    idle: Res<AnimIdleConfig>,
+    proportions: Option<Res<ProportionsConfig>>,
+) {
+    let root = spawn_gltf_humanoid(&mut commands, &asset_server, &model_cfg.path, model_cfg.yaw_correction_radians, Transform::IDENTITY);
+    let mut character = commands.entity(root);
+    character.insert((
+        RealMeshRoot,
+        // The walk the gallery's flags and panel ask for; kept in step with
+        // them each frame by `steer_the_walker`.
+        Walker { pose: choice.0.clone(), speed: idle.speed, ..Default::default() },
+        AnimGround(if idle.slope == 0.0 {
+            Box::new(FlatGround::default())
+        } else {
+            Box::new(SlopedGround { height: 0.0, grade: idle.slope })
+        }),
+    ));
+    if let Some(config) = proportions {
+        character.insert(HumanoidProportions { stature: config.stature });
+    }
+    // The yaw correction (`spawn_gltf_humanoid`'s `yaw_correction`, default
+        // 180°, `--character-yaw-correction` to override for a
+        // differently-facing asset) -- this DEFAULT asset's
         // own skinned mesh geometry visibly faces +Z (live-confirmed via
         // screenshot: the face renders toward the `Front` camera preset,
         // which sits on the +Z side looking down -Z), but every OTHER
@@ -885,14 +855,10 @@ fn spawn_real_mesh(mut commands: Commands, asset_server: Res<AssetServer>, model
         // translation_for`'s own `hips_parent_rest_world_rotation`
         // likewise already reads this root's rotation live via `Global
         // Transform`, so it stays correct automatically too.
-        Transform::from_rotation(Quat::from_rotation_y(model_cfg.yaw_correction_radians)),
-        // Recorded as well as applied, because root motion writes this same
-        // `Transform::rotation` every frame and needs something to compose
-        // ONTO. See [`FacingCorrection`] for the two symptoms that appeared
-        // when it had nothing.
-        FacingCorrection(Quat::from_rotation_y(model_cfg.yaw_correction_radians)),
-        RealMeshRoot,
-    ));
+        //
+        // Recorded as well as applied (`FacingCorrection`), because root
+        // motion writes this same `Transform::rotation` every frame and needs
+        // something to compose ONTO.
 }
 
 /// Applies `DebugGizmos::show_real_mesh` to the real mesh's own root
@@ -914,285 +880,6 @@ fn apply_real_mesh_visibility(cfg: Res<DebugGizmos>, mut roots: Query<&mut Visib
     for mut root_visibility in &mut roots {
         *root_visibility = visibility;
     }
-}
-
-/// This crate's own `Bone` enum name -> the standard Unreal Engine
-/// Mannequin skeleton's own joint name for that same joint (`pelvis`,
-/// `clavicle_l`, `upperarm_l`, `lowerarm_l`, `hand_l`, `thigh_l`,
-/// `calf_l`, `foot_l`, `ball_l`, `spine_01/02/03`, `neck_01`, `Head`, ...)
-/// — a REAL, documented Epic-published naming standard (used by UE4/UE5's
-/// own default Mannequin and widely reused by third-party/marketplace
-/// humanoid rigs that target Unreal), not specific to any one asset.
-/// Originally verified DIRECTLY against `puppet_base.gltf` using the
-/// `gltf` crate's own parser (a throwaway diagnostic binary dumped every
-/// node's parent-child structure and each skin's own `joints` list), not
-/// by eyeballing/manually counting the raw JSON (an earlier attempt at
-/// that manual approach produced a WRONG guess — "`calf_l` is `pelvis`'s
-/// direct child" — that the verified dump disproved: `pelvis`'s real
-/// children are `spine_01`, `thigh_l`, `thigh_r`, and `calf_l` is
-/// `thigh_l`'s own child, exactly as a normal humanoid rig's topology
-/// would suggest); that asset happens to follow this standard exactly, so
-/// this table generalizes directly to any other UE-Mannequin-rigged
-/// asset, not just that one file.
-///
-/// Tried by [`resolve_bone_node_name`] as a proper naming CONVENTION
-/// (same standing as the Mixamo convention there), not merely a per-asset
-/// override — everything downstream (`character::anim`'s whole stack)
-/// keeps working against this crate's own `Bone` enum unchanged
-/// regardless of which convention actually matched.
-const UE_MANNEQUIN_BONE_NAMES: [(Bone, &str); 22] = [
-    (Bone::Hips, "pelvis"),
-    (Bone::Spine, "spine_01"),
-    (Bone::Spine1, "spine_02"),
-    (Bone::Spine2, "spine_03"),
-    (Bone::Neck, "neck_01"),
-    (Bone::Head, "Head"),
-    (Bone::LeftShoulder, "clavicle_l"),
-    (Bone::LeftArm, "upperarm_l"),
-    (Bone::LeftForeArm, "lowerarm_l"),
-    (Bone::LeftHand, "hand_l"),
-    (Bone::RightShoulder, "clavicle_r"),
-    (Bone::RightArm, "upperarm_r"),
-    (Bone::RightForeArm, "lowerarm_r"),
-    (Bone::RightHand, "hand_r"),
-    (Bone::LeftUpLeg, "thigh_l"),
-    (Bone::LeftLeg, "calf_l"),
-    (Bone::LeftFoot, "foot_l"),
-    (Bone::LeftToeBase, "ball_l"),
-    (Bone::RightUpLeg, "thigh_r"),
-    (Bone::RightLeg, "calf_r"),
-    (Bone::RightFoot, "foot_r"),
-    (Bone::RightToeBase, "ball_r"),
-];
-
-/// Finds `bone`'s own real glTF node name among `descendants_by_name`'s
-/// keys, trying several known real-rig naming CONVENTIONS in order — lets
-/// a differently-named real mesh (a Mixamo-exported character, or a
-/// UE-Mannequin-rigged asset from a different source than `puppet_base.
-/// gltf`) get picked up automatically via `--character-model`, without
-/// anyone first reading its raw glTF JSON and hand-writing a 22-entry
-/// mapping table the way [`UE_MANNEQUIN_BONE_NAMES`] itself was
-/// originally built (see that table's own doc comment on how much manual,
-/// verified work that took).
-///
-/// Tries, in order:
-/// 1. **Mixamo convention** (`mixamorig:LeftArm`, `mixamorig:Hips`, ...) —
-///    this crate's own `Bone::name()` already returns exactly Mixamo's own
-///    per-bone name (minus the `mixamorig:` prefix; see `skeleton.rs`'s
-///    own module doc comment on why this crate's bone set was built to
-///    match the Mixamo standard in the first place), so this is a direct
-///    `format!("mixamorig:{}", bone.name())` lookup — the cheapest
-///    possible match for the most common source of free/marketplace
-///    rigged humanoids.
-/// 2. **Bare Mixamo name** (`LeftArm`, `Hips`, ...) — some exporters strip
-///    the `mixamorig:` prefix (or the file was re-exported through a tool
-///    that does), so try `bone.name()` directly too before moving on.
-/// 3. **UE Mannequin convention** ([`UE_MANNEQUIN_BONE_NAMES`],
-///    `pelvis`/`upperarm_l`/`thigh_l`/...) — Epic's own standard naming,
-///    reused by many third-party/marketplace humanoid rigs that target
-///    Unreal, not specific to `puppet_base.gltf`.
-fn resolve_bone_node_name<'a>(bone: Bone, descendants_by_name: &HashMap<&'a str, (Entity, Quat, Vec3)>) -> Option<&'a str> {
-    let mixamo_prefixed = format!("mixamorig:{}", bone.name());
-    if let Some((&found_name, _)) = descendants_by_name.get_key_value(mixamo_prefixed.as_str()) {
-        return Some(found_name);
-    }
-    if let Some((&found_name, _)) = descendants_by_name.get_key_value(bone.name()) {
-        return Some(found_name);
-    }
-    // Each convention table's own name is only a CANDIDATE -- still needs
-    // confirming it's actually among `descendants_by_name`'s real keys
-    // (both because the scene may not have finished spawning yet this
-    // frame, the same "try again next frame" case every other branch
-    // already handles, and because `get_key_value` is what hands back a
-    // `&'a str` actually borrowed from `descendants_by_name` itself, never
-    // a convention table's own `&'static str` -- returning a table's
-    // literal directly here previously caused a real, live panic: an
-    // index into `descendants_by_name` using a name this function claimed
-    // to have "resolved" but never actually confirmed present).
-    let ue_mannequin_name = UE_MANNEQUIN_BONE_NAMES.iter().find(|&&(b, _)| b == bone).map(|&(_, name)| name)?;
-    descendants_by_name.get_key_value(ue_mannequin_name).map(|(&found_name, _)| found_name)
-}
-
-/// `true` once [`build_real_mesh_skeleton`] has already built the real
-/// mesh's own [`HumanoidSkeleton`] — a plain bool `Local`, not a
-/// `Without<HumanoidSkeleton>` query filter, since re-running the lookup
-/// every frame before the scene finishes loading is cheap but pointless
-/// churn, and the CLEANEST one-shot guard here is just "did this already
-/// succeed."
-///
-/// Polls every frame (rather than a single `Startup` attempt) because
-/// `WorldAssetRoot`'s own scene load is ASYNCHRONOUS — its child entities
-/// (named `pelvis`, `thigh_l`, etc.) don't exist yet the frame
-/// `spawn_real_mesh` runs, only once the glTF asset finishes loading and
-/// `bevy_world_serialization` actually instantiates it, which can take
-/// several frames.
-#[allow(clippy::too_many_arguments)]
-fn build_real_mesh_skeleton(
-    mut commands: Commands,
-    mut already_built: Local<bool>,
-    roots: Query<Entity, With<RealMeshRoot>>,
-    named: Query<(Entity, &Name, &Transform)>,
-    children_of: Query<&Children>,
-    child_of: Query<&ChildOf>,
-    global_transforms: Query<&GlobalTransform>,
-    proportions: Option<Res<ProportionsConfig>>,
-    mut skins: Query<&mut bevy::mesh::skinning::SkinnedMesh>,
-) {
-    if *already_built {
-        return;
-    }
-    let Ok(root) = roots.single() else { return };
-
-    // Collect every named descendant of `root` (the glTF importer names
-    // spawned nodes after their own glTF node name — see `bevy_gltf`'s
-    // own loader), so bones can be found by name regardless of how deep
-    // Bevy nests them under `root` (there's an intermediate `Armature`
-    // node above `pelvis` in this specific file, per the verified dump).
-    // Captures each node's own REST LOCAL ROTATION *and* TRANSLATION
-    // DIRECTION -- `HumanoidSkeleton` needs both: the rotation to seed
-    // `Bone::Hips`'s own accumulated rotation correctly (this glTF's own
-    // joints, unlike this crate's own T-pose-built debug skeleton, have
-    // real, non-identity bind-pose rotations of their own — e.g.
-    // `pelvis`'s own rest rotation is a genuine ~106.6° turn, a normal
-    // Blender-glTF-export artifact, verified directly against the raw
-    // glTF JSON, not assumed) and the translation direction so `apply_
-    // solved_sim_to_skeleton`'s swing computation can stay entirely
-    // self-consistent in THIS rig's own frame (see that function's own
-    // doc comment for why reusing this crate's own T-pose direction
-    // constant for a different rig's swing computation is the wrong,
-    // fragile approach an earlier attempt used — live-verified to render
-    // arms pointing up over the head instead of down).
-    let mut descendants_by_name: HashMap<&str, (Entity, Quat, Vec3)> = HashMap::new();
-    let mut stack = vec![root];
-    while let Some(entity) = stack.pop() {
-        if let Ok(children) = children_of.get(entity) {
-            stack.extend(children.iter());
-        }
-        if let Ok((found_entity, name, transform)) = named.get(entity) {
-            descendants_by_name.insert(name.as_str(), (found_entity, transform.rotation, transform.translation));
-        }
-    }
-
-    let mut bones = HashMap::new();
-    let mut rest_rotations = HashMap::new();
-    let mut rest_directions = HashMap::new();
-    let mut rest_translations = HashMap::new();
-    for &bone in &Bone::ALL {
-        let Some(node_name) = resolve_bone_node_name(bone, &descendants_by_name) else {
-            return; // Not all joints have spawned yet this frame -- try again next frame.
-        };
-        let &(entity, rest_rotation, rest_translation) = &descendants_by_name[node_name];
-        bones.insert(bone, entity);
-        rest_rotations.insert(bone, rest_rotation);
-        rest_directions.insert(bone, rest_translation.normalize_or_zero());
-        rest_translations.insert(bone, rest_translation);
-    }
-
-    // `Bone::Hips`'s own mapped joint (`pelvis`) needs its OWN rest
-    // local translation, its PARENT's rest world rotation, and its own
-    // rest world position -- all captured HERE, before any animation
-    // write ever runs, so `HumanoidSkeleton::hips_local_translation_for`
-    // can correctly convert a solved world-space `Bone::Hips` position
-    // into whatever local frame THIS specific rig's own hip joint
-    // actually translates in (see that method's own doc comment for why
-    // this crate's debug-skeleton-only "assign the world position
-    // directly" assumption breaks for a real character whose root sits
-    // under a non-identity parent chain).
-    let hips_entity = bones[&Bone::Hips];
-    let Ok(hips_local_transform) = named.get(hips_entity).map(|(_, _, t)| *t) else { return };
-    let Ok(hips_parent) = child_of.get(hips_entity) else { return };
-    let Ok(hips_parent_global) = global_transforms.get(hips_parent.parent()) else { return };
-
-    // `Bone::Hips.t_pose_world_position()` -- NOT this glTF's own scene-
-    // space world position -- is the ANIMATION's own rest reference: a
-    // solved root translation is always expressed in this crate's own
-    // synthetic T-pose coordinate convention, regardless of which
-    // skeleton is being driven. The delta
-    // `HumanoidSkeleton::hips_local_translation_for` needs is "how far
-    // has the solved hip moved since ITS OWN rest", which is only
-    // meaningful relative to that synthetic rest position -- not this
-    // glTF's own, numerically-similar-but-semantically-different rest
-    // position in its own scene's coordinate frame.
-    let build = |hips_translation: Vec3| {
-        HumanoidSkeleton::for_other_rig(
-            bones.clone(),
-            rest_rotations.clone(),
-            rest_directions.clone(),
-            hips_translation,
-            hips_parent_global.rotation(),
-            hips_parent_global.scale(),
-            Bone::Hips.t_pose_world_position(),
-        )
-    };
-    let mut skeleton = build(hips_local_transform.translation);
-
-    // `--proportions winter [H]`: every segment rescaled to Winter's
-    // fractions of stature (`proportions::winter_factors`) before anything
-    // measures the rig. Each scaled joint moves; each single-child segment
-    // is skinned through a helper scaled along it; the hips rise so the
-    // feet stay down. Everything downstream reads the live translations.
-    if let Some(config) = proportions {
-        use migera::character::anim::proportions::{along, winter_factors};
-        let rig = migera::character::anim::plugin::live_rig_geometry(&skeleton, |bone| rest_translations.get(&bone).copied());
-        let rescale = winter_factors(&rig, config.stature);
-        info!(
-            "character_gallery: proportioned to Winter's fractions of {:.2} m (hips {:+.3} m)",
-            rescale.stature, rescale.hips_rise
-        );
-        for &bone in Bone::ALL.iter() {
-            let factor = rescale.factors[bone];
-            if bone == Bone::Hips || (factor - 1.0).abs() < 1.0e-4 {
-                continue;
-            }
-            let (Some(&entity), Some(&translation)) = (bones.get(&bone), rest_translations.get(&bone)) else { continue };
-            let Ok((_, _, transform)) = named.get(entity) else { continue };
-            commands.entity(entity).insert(Transform { translation: translation * factor, ..*transform });
-            // The segment above it, skinned stretched along it, where that
-            // segment has only this child: a scale through its own frame,
-            // turned onto the segment and back.
-            let Some(parent) = bone.parent() else { continue };
-            let single = Bone::ALL.iter().filter(|b| b.parent() == Some(parent)).count() == 1;
-            let Some(&parent_entity) = bones.get(&parent) else { continue };
-            if single {
-                let turn = along(translation);
-                let onto = commands.spawn((Transform::from_rotation(turn), ChildOf(parent_entity))).id();
-                let stretch =
-                    commands.spawn((Transform::from_scale(Vec3::new(1.0, factor, 1.0)), ChildOf(onto))).id();
-                let back = commands.spawn((Transform::from_rotation(turn.inverse()), ChildOf(stretch))).id();
-                for mut skin in &mut skins {
-                    for joint in skin.joints.iter_mut().filter(|joint| **joint == parent_entity) {
-                        *joint = back;
-                    }
-                }
-            }
-        }
-        let rise = hips_parent_global.rotation().inverse() * (Vec3::Y * rescale.hips_rise) / hips_parent_global.scale();
-        let hips_translation = hips_local_transform.translation + rise;
-        commands.entity(hips_entity).insert(Transform { translation: hips_translation, ..hips_local_transform });
-        skeleton = build(hips_translation);
-    }
-    if std::env::var("MIGERA_DUMP_REST").is_ok() {
-        for &b in Bone::ALL.iter() {
-            eprintln!(
-                "DUMP {:?} rest_rotation={:?} rest_direction={:?}",
-                b,
-                skeleton.rest_rotation(b),
-                skeleton.rest_direction(b)
-            );
-        }
-    }
-
-    // `BoneMarker` on each real joint entity -- lets `draw_joint_axis_gizmos`/
-    // `skeleton_debug_lines` (both `Query<..., With<BoneMarker>>`) find
-    // these same real mesh joints directly, exactly like they already did
-    // for the (now-removed) separate debug-capsule skeleton, with no query
-    // rewrite needed beyond this one insert per bone.
-    for (bone, entity) in skeleton.iter() {
-        commands.entity(entity).insert(BoneMarker(bone));
-    }
-
-    commands.entity(root).insert(skeleton);
-    *already_built = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,670 +1061,20 @@ fn follow_speed_schedule(time: Res<Time>, schedule: Res<SpeedSchedule>, mut idle
     }
 }
 
-/// Attaches the `anim` stack's components once the skeleton exists.
-///
-/// Mirrors `build_real_mesh_skeleton`'s own deferred structure: the rig is
-/// spawned asynchronously from a glTF, so this waits for the skeleton to
-/// appear rather than assuming it is there at startup.
-fn attach_anim_backend(
-    mut commands: Commands,
-    choice: Res<AnimPoseChoice>,
-    idle: Res<AnimIdleConfig>,
-    asset_server: Res<AssetServer>,
-    rigs: Query<Entity, (With<HumanoidSkeleton>, Without<AnimTarget>)>,
-) {
-    for entity in &rigs {
-        // Seed with the compiled-in pose so the character is never a
-        // T-posed mannequin for the frame or two the asset takes to load.
-        let seed = anim_poses::by_name(&choice.0).unwrap_or_else(|| {
-            warn!("unknown --anim-pose '{}', falling back to relaxed_stand", choice.0);
-            anim_poses::relaxed_stand()
-        });
-
-        // ...then hand over to the asset, which is what makes editing
-        // `assets/anim/<name>.pose.ron` update the running character.
-        let handle = asset_server.load(format!("anim/{}.pose.ron", choice.0));
-
-        commands.entity(entity).insert((
-            AnimTarget::new(seed),
-            AnimTargetAsset(handle),
-            AnimSprings::default(),
-            // Stage 2: continuous procedural motion on top of the authored
-            // pose, so the character keeps breathing and shifting its
-            // weight once the springs have settled.
-            GaitPhase { speed: idle.speed, ..Default::default() },
-            AnimPhaseLayer(if idle.speed > 0.0 {
-                PhaseLayer::locomotion()
-            } else {
-                PhaseLayer::standing_idle()
-            }),
-            // Stage 3: plant the feet on whatever is underneath them.
-            //
-            // Enabled for walking as well as standing. It was briefly
-            // disabled while the gait walked in place: the lock pins a
-            // planted foot where the ANIMATION put it, and with no root
-            // motion a walk cycle drags its own feet backward — measured at
-            // ~0.25 m of accumulated offset, which read as the character
-            // leaning forward over trailing feet.
-            //
-            // Root motion removes that drag by construction (the published
-            // velocity cancels the stance foot's relative travel), so the
-            // lock now has only the real residual to absorb, which is its
-            // job.
-            AnimFootIk::default(),
-            GalleryLocomotion::default(),
-            GalleryStride::default(),
-            GalleryFacing::default(),
-            GalleryTransition::default(),
-            (balance::Balance::default(), WalkBalance::default()),
-            GalleryLook(match idle.look_at {
-                Some(target) => lookat::LookAt::at(target),
-                None => lookat::LookAt::forward(),
-            }),
-            GalleryReach(idle.reach),
-            AnimArmIk::default(),
-            AnimGround(if idle.slope == 0.0 {
-                Box::new(FlatGround::default())
-            } else {
-                Box::new(SlopedGround { height: 0.0, grade: idle.slope })
-            }),
-        ));
-    }
-}
-
-/// One character's root motion.
-///
-/// `Drive`: the gait publishes its velocity and turn, and the gallery moves
-/// the body itself in [`ride_rendered_feet`], from the pose the springs
-/// actually render. A game would hand the same displacement to its
-/// character controller.
-#[derive(Component)]
-struct GalleryLocomotion(locomotion::Locomotion);
-
-/// What [`ride_rendered_feet`] needs from this frame's gait, and the pose it
-/// rendered last frame.
-#[derive(Component, Default)]
-struct GalleryStride {
-    params: Option<GaitParams>,
-    /// The gait cycle this frame, and last frame.
-    cycle: f32,
-    previous_cycle: f32,
-    previous: Option<LocalPose>,
-    /// How much of the gait is playing: 0 standing, 1 walking.
-    weight: f32,
-    /// How far a balance recovery step has just carried the character, in
-    /// the pose's frame (`balance::Balance::travelled`): moved like root
-    /// motion, then zeroed.
-    stepped: Vec3,
-}
-
-/// One character's heading.
-#[derive(Component, Default)]
-struct GalleryFacing(facing::Facing);
-
-/// One character's progress between standing and walking.
-#[derive(Component, Default)]
-struct GalleryTransition(transition::Transition);
-
-/// What one character is looking at.
-#[derive(Component, Default)]
-struct GalleryLook(lookat::LookAt);
-
-/// Where one character's left hand is reaching, in world space.
-///
-/// `None` leaves the arms to the animation. A world-space point rather than a
-/// character-relative one so the target stays put while the character walks
-/// past it, which is the case that makes a reach look like a reach.
-#[derive(Component, Default)]
-struct GalleryReach(Option<Vec3>);
-
-/// Everything `drive_walk_cycle` reads and writes per character.
-///
-/// A named alias rather than an inline tuple: the walk needs the target
-/// pose, the phase clock, the locomotion state, the heading, the
-/// standing/walking blend, the foot IK (to hand it the frame's turn), the
-/// transform (travel and facing), and the ground (height following).
-type WalkingRig = (
-    &'static mut AnimTarget,
-    // Mutable so the speed reaches the leg clock — see `drive_walk_cycle`.
-    &'static mut GaitPhase,
-    &'static mut GalleryLocomotion,
-    &'static mut GalleryFacing,
-    &'static mut GalleryTransition,
-    &'static mut GalleryLook,
-    &'static GalleryReach,
-    &'static mut AnimArmIk,
-    &'static mut AnimFootIk,
-    &'static mut Transform,
-    // The asset's own facing correction, so the heading composes onto it
-    // instead of overwriting it. `Option`, because a rig assembled without
-    // `spawn_real_mesh` (the synthetic preview) has no correction to apply.
-    Option<&'static FacingCorrection>,
-    &'static mut GalleryStride,
-    &'static mut AnimPhaseLayer,
-    // Winter's standing pendulum: a push sways the body over its feet.
-    &'static mut balance::Balance,
-    // The same pendulum walking: a push moves the next footfalls.
-    &'static mut WalkBalance,
-);
-
-impl Default for GalleryLocomotion {
-    fn default() -> Self {
-        Self(locomotion::Locomotion { mode: locomotion::RootMotion::Drive, ..Default::default() })
-    }
-}
-
-/// Moves each walking character by exactly how far its planted feet moved
-/// under it in the pose just RENDERED — after the springs, before the IK.
-///
-/// Root motion used to integrate the gait's published velocity, measured on
-/// the gait's TARGET pose, with the frame's `dt`. Two things broke that on
-/// the measured walk, whose speed rises and falls through every stride: an
-/// explicit step errs by `½·a·dt²`, up to 2 mm a frame; and the leg springs
-/// lag the target by an amount that changes with the foot's speed — through
-/// them a planted foot slid 39 mm a stance, headless. The rendered contact's
-/// own displacement is exact through both (`locomotion::root_displacement_between`).
-fn ride_rendered_feet(
-    time: Res<Time>,
-    mut rigs: Query<(
-        &AnimPose,
-        &mut GalleryLocomotion,
-        &GalleryFacing,
-        &mut GalleryStride,
-        &mut AnimFootIk,
-        &mut Transform,
-        &AnimGround,
-    )>,
-) {
-    for (pose, mut locomotion, facing, mut stride, mut foot_ik, mut root, ground) in &mut rigs {
-        let now = pose.pose();
-        let rig = foot_ik.rig.clone().unwrap_or_default();
-        let moved = match (&stride.params, &stride.previous) {
-            // Standing, the body sways its pelvis over feet that stay put
-            // (`PhaseLayer::standing_idle`); read as root motion, that sway
-            // walked the whole character — measured live, its planted feet
-            // wandered 12 mm and the pelvis twice its sway.
-            _ if stride.weight <= 0.0 => Vec3::ZERO,
-            (Some(params), Some(previous)) => {
-                // The cycle half-way through the frame decides which feet
-                // are planted; the gait clock only ever runs forward.
-                let middle = stride.previous_cycle
-                    + 0.5 * (stride.cycle - stride.previous_cycle).rem_euclid(1.0);
-                locomotion::root_displacement_between(previous, &now, middle, params, &rig)
-                    .map(|moved| facing.0.rotation() * moved)
-                    // No foot down — a run's flight: the body coasts.
-                    .unwrap_or(locomotion.0.root_velocity * time.delta_secs())
-            }
-            _ => Vec3::ZERO,
-        };
-        // A balance recovery step carries the character too.
-        let moved = moved + facing.0.rotation() * std::mem::take(&mut stride.stepped);
-        locomotion.0.position += moved;
-        // The foot locks keep a planted foot where it is in the WORLD only
-        // if they know the body moved over it.
-        foot_ik.turn.travel = moved;
-        stride.previous = Some(now);
-        stride.previous_cycle = stride.cycle;
-
-        // Travel moves the ENTITY, not the pose's root translation — see
-        // `drive_walk_cycle`.
-        let height_before = root.translation.y;
-        root.translation = locomotion.0.position;
-
-        // Height comes from the ground, not from the published velocity.
-        //
-        // Root motion publishes travel ALONG the surface, which is all a
-        // flat plane needs. On a slope, horizontal travel alone keeps the
-        // character at its starting height: measured at 7.7 m underneath the
-        // hillside after 26 m of a 0.3 grade. The entity's origin already
-        // sits at ground level (the rig's own hips are above it), so the
-        // surface height IS the origin height — `stand_height` is zero here.
-        if let Some(height) =
-            locomotion::ground_following_height(root.translation, 0.0, ground.0.as_ref())
-        {
-            root.translation.y = height;
+/// Keeps the gallery's character walking as its flags, panel and schedules
+/// ask: the speed and turn (`--anim-speed`, the slider, the speed
+/// schedule, `--anim-turn`), the look and reach, and the pushes due. The
+/// walk itself is `character::anim::walker`'s.
+fn steer_the_walker(time: Res<Time>, idle: Res<AnimIdleConfig>, mut pushes: ResMut<PushSchedule>, mut walkers: Query<&mut Walker>) {
+    let due = pushes.due(time.elapsed_secs());
+    for mut walker in &mut walkers {
+        walker.speed = idle.speed;
+        walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
+        walker.look_at = idle.look_at;
+        walker.reach = idle.reach;
+        for &push in &due {
+            walker.push(push);
         }
-        // The rise is travel too: a lock that knew only the horizontal part
-        // carried a planted foot 9 cm up a 0.2 grade every stance.
-        foot_ik.turn.travel.y = root.translation.y - height_before;
-    }
-}
-
-/// Drives the walk cycle from the gait clock.
-///
-/// A gallery-local system rather than part of `AnimPlugin`: the plugin-side
-/// wiring belongs with root motion, which is its own phase. This exists so
-/// the cycle can be judged on a real rig now, which the synthetic preview
-/// cannot do — `LeftLeg -> LeftFoot` is a 0.07 m stub there against a
-/// 0.459 m shin on a real glTF, so knee flexion moves the sole six times
-/// less and a correct walk renders with a visibly straight leg.
-///
-/// Runs in `AnimSet::Target`, so the phase layer composes its secondary
-/// motion on top and the springs smooth the result — the same ordering the
-/// plugin will use.
-fn drive_walk_cycle(
-    time: Res<Time>,
-    idle: Res<AnimIdleConfig>,
-    choice: Res<AnimPoseChoice>,
-    mut pushes: ResMut<PushSchedule>,
-    mut rigs: Query<WalkingRig>,
-    // The stride the current speed's gait really takes, keyed by the speed
-    // and whether the real rig has bound: measuring it costs a cycle of
-    // root-motion samples, so it is redone only when either changes.
-    mut stride: Local<Option<(u32, bool, f32)>>,
-) {
-    // A run above the threshold, a walk below. Real locomotion switches on
-    // the same basis — a fast walk becomes a run at a speed where the
-    // flight phase costs less than the cadence would.
-    const RUN_ABOVE: f32 = 2.2;
-
-    // Composed onto the AUTHORED pose, re-read every frame.
-    //
-    // Writing `target.pose = walk_pose(phase, &params, &target.pose)` is the
-    // obvious form and it accumulates: each frame layers another cycle's
-    // rotations onto the last frame's already-walked result, so the legs
-    // wind up without bound. The base has to be a fixed reference.
-    let base = anim_poses::by_name(&choice.0).unwrap_or_else(anim_poses::relaxed_stand);
-    let due_pushes = pushes.due(time.elapsed_secs());
-
-    for (
-        mut target,
-        mut phase,
-        mut locomotion,
-        mut facing,
-        mut transition_state,
-        mut look,
-        reach,
-        mut arm_ik,
-        mut foot_ik,
-        mut root,
-        correction,
-        mut gait,
-        mut layer,
-        mut balance,
-        mut walk_balance,
-    ) in &mut rigs
-    {
-        // `cycle_of` rather than `phase.gait`: the clock is in RADIANS and
-        // `walk_pose` takes a cycle FRACTION. Passing the raw value runs the
-        // legs through six cycles per stride, which shows up as both hips
-        // sitting at nearly the same angle every frame — measured 11 and 12
-        // degrees where they should be half a cycle apart.
-        // The rig the gait is posed on: the real one once the glTF has
-        // bound, the synthetic proxy for the first frames before it has.
-        // Posing on anything else measures an animation the legs are not
-        // playing — the gait's vertical motion is in fractions of THIS
-        // rig's leg.
-        let gait_rig = foot_ik.rig.clone().unwrap_or_default();
-
-        // The transition first: it decides the speed the legs step at,
-        // which through a stop's last step is the walk's, not the zero
-        // asked for (Winter §11.3.3; see `transition`). While the character
-        // stands it is told how the idle carries its weight, so a start
-        // stands on the loaded leg.
-        let idle_shift = PhaseLayer::standing_idle()
-            .sway
-            .map_or(0.0, |sway| sway.weight_shift(phase.elapsed));
-        if transition_state.0.is_at_rest() {
-            transition_state.0.idle_shift = idle_shift;
-        }
-        let config = transition::TransitionConfig {
-            // Half the duty factor: the other leg's mid-swing, see
-            // `TransitionConfig::mid_swing`.
-            mid_swing: gait
-                .params
-                .map_or(transition::TransitionConfig::default().mid_swing, |p| p.duty_factor * 0.5),
-            ..Default::default()
-        };
-        // A push lands on whichever balance is carrying the body: the
-        // walking one once the walk is fully in (or still catching an
-        // earlier push), else the standing one. A hit arrives on the
-        // standing balance (`ragdoll_plugin`) and is handed over.
-        let walking = (transition_state.0.weight >= 1.0 && balance.is_settled(1.0e-5))
-            || !walk_balance.is_settled(1.0e-3);
-        for &push in &due_pushes {
-            if walking {
-                walk_balance.push(push);
-            } else {
-                balance.push(push);
-            }
-        }
-        if walking && balance.pending_push() != bevy::math::Vec2::ZERO {
-            walk_balance.push(balance.take_push());
-        }
-        // A push from behind speeds the walk up (`WalkBalance::surge`).
-        let event = transition_state.0.advance(
-            idle.speed + walk_balance.surge,
-            cycle_of(&phase),
-            &config,
-            time.delta_secs(),
-        );
-        let speed = transition_state.0.stride_speed;
-
-        // A walk's stride grows with its speed, scaled to this rig's leg;
-        // see `GaitParams::walking_on`.
-        let params = if speed >= RUN_ABOVE {
-            GaitParams::running()
-        } else {
-            GaitParams::walking_on(speed, &gait_rig)
-        };
-
-        // The standing knee bend, applied HERE rather than baked into the
-        // authored pose.
-        //
-        // It used to live in `relaxed_stand.pose.ron`, authored in the
-        // synthetic rig's facing convention. A stored rotation cannot know
-        // which rig it will drive, and `puppet_base.gltf` faces the
-        // opposite way — so the baked bend rendered as a backward-bending
-        // knee, and nothing downstream could correct it because the value
-        // was already in the file. `stance_on_rig` derives the bend
-        // direction from the rig's own measured geometry, so the knee is
-        // right on any rig by construction.
-        let stood = match &foot_ik.rig {
-            Some(rig) => stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig),
-            None => stance_on(&base, DEFAULT_KNEE_FLEX),
-        };
-        // `--anim-pose getup:sit|squat|quadruped|half_kneel|side_sit_left|
-        // side_sit_right`: hold one get-up key, to verify it on its own.
-        let stood = match (choice.0.strip_prefix("getup:"), &foot_ik.rig) {
-            (Some(name), Some(rig)) => {
-                use migera::character::anim::getup::Key;
-                let key = match name {
-                    "sit" => Key::Sit,
-                    "squat" => Key::Squat,
-                    "quadruped" => Key::Quadruped,
-                    "side_sit_left" => Key::SideSit { left_down: true },
-                    "side_sit_right" => Key::SideSit { left_down: false },
-                    _ => Key::HalfKneel,
-                };
-                key.pose(rig)
-            }
-            _ => stood,
-        };
-
-        // The speed has to reach the LEG clock, as the cadence that makes
-        // this gait's stride travel at exactly this speed.
-        //
-        // It used to be set once, at spawn, so after the speed slider moved
-        // the legs kept stepping at the launch speed's rhythm while the body
-        // travelled at the new one — the planted feet slid by the
-        // difference. And its `1/7 + 0.9·v` rate ignored the stride
-        // entirely, which only worked while every speed shared one stride.
-        let key = (speed.to_bits(), foot_ik.rig.is_some());
-        let distance = match *stride {
-            Some((speed, bound, distance)) if (speed, bound) == key => distance,
-            _ => {
-                let distance = locomotion::distance_per_cycle(&params, &stood, &gait_rig);
-                *stride = Some((key.0, key.1, distance));
-                distance
-            }
-        };
-        if speed > 0.0 && distance > 1.0e-4 {
-            phase.base_frequency_hz = 0.0;
-            phase.speed_coefficient = 1.0 / distance;
-        } else {
-            // Standing: back to the clock's own idle sway.
-            let defaults = GaitPhase::default();
-            phase.base_frequency_hz = defaults.base_frequency_hz;
-            phase.speed_coefficient = defaults.speed_coefficient;
-        }
-        if phase.speed != speed {
-            phase.speed = speed;
-        }
-        match event {
-            // The first step joins the walk at the swinging leg's
-            // mid-swing. The gait has no weight yet, so moving its clock
-            // moves nothing on screen.
-            Some(transition::TransitionEvent::FirstStep { cycle }) => {
-                phase.gait = cycle * TAU;
-            }
-            // Back at rest: the idle's weight-shift schedule starts over, so
-            // the character stands square a while before shifting, rather
-            // than dropping into whatever shift the clock had reached.
-            Some(transition::TransitionEvent::AtRest) => phase.elapsed = 0.0,
-            None => {}
-        }
-        let cycle = cycle_of(&phase);
-
-        // How much of the gait applies. At zero weight the character holds
-        // its standing pose — no gait, no residual stepping.
-        let weight = transition_state.0.weight;
-
-        // The standing idle sways the pelvis over planted feet; a walk's
-        // body motion comes from its legs. Between the two, each layer's
-        // oscillators fade with the gait's weight, and the idle's sway runs
-        // only at rest: while a first step is prepared the release carries
-        // the weight instead.
-        let mut wanted = PhaseLayer::between(&PhaseLayer::standing_idle(), &PhaseLayer::locomotion(), weight);
-        if !transition_state.0.is_at_rest() {
-            wanted.sway = None;
-        } else if let Some(sway) = wanted.sway.as_mut() {
-            // Eased back in after coming to rest (the idle clock restarts
-            // there): switched on at once it ticked the pelvis 6 mm
-            // sideways in one frame, measured live at the end of a stop.
-            const SETTLE_SECONDS: f32 = 1.5;
-            let t = (phase.elapsed / SETTLE_SECONDS).clamp(0.0, 1.0);
-            let settled = t * t * (3.0 - 2.0 * t);
-            sway.lateral *= settled;
-            sway.fore_aft *= settled;
-        }
-        if layer.0 != wanted {
-            layer.0 = wanted;
-        }
-
-        // The pose the character is rendered in, as a function of phase —
-        // ONE definition, used both to pose it below and to derive its root
-        // motion, so the two cannot disagree. They did, three ways; see
-        // `locomotion::root_velocity_of`.
-        //
-        // Posed on the rig the IK stage actually solves against, not the
-        // synthetic proxy: the gait's vertical amplitudes are fractions of
-        // leg length, and this rig's leg is nearly twice the proxy's. Falls
-        // back to the proxy for the first frames, before the glTF has
-        // finished binding.
-        //
-        // Blended from `stood`, not from the authored base: at zero weight
-        // the character stands in `stood`, and blending from anything else
-        // popped the standing knee bend in and out as a walk began or ended.
-        //
-        // The release before a first step is posed on the standing side of
-        // the blend, so the walk fades it out as it fades in. The walk
-        // itself is still built on `stood`: its cycle is memoized per base
-        // pose, and the release changes every frame.
-        let mut prepared = stood;
-        transition_state.0.apply_release(&mut prepared, &gait_rig);
-        // A stop's last swing is set down onto where it will stand, judged
-        // by the foot IK on the rendered foot (`AnimFootIk::landing`).
-        foot_ik.landing = transition_state.0.landing(&prepared, &gait_rig);
-        // A push sways the standing body over its feet and it recovers
-        // (Winter's inverted pendulum, `balance`), stepping if it must.
-        // Posed on the standing side of the blend, so a walk starting
-        // mid-sway fades it out.
-        if !balance.is_settled(1.0e-5) {
-            let support = balance::Support::of(&stood, &gait_rig);
-            balance.step(&support, balance::pendulum_k(&stood, &gait_rig), time.delta_secs());
-            // A recovery step done: the character moves by it (with root
-            // motion, in `ride_rendered_feet`), and the feet stand where
-            // they are now.
-            if let Some(by) = balance.travelled {
-                gait.stepped += gait_rig.forward() * by.x + gait_rig.left() * by.y;
-                balance.rebase();
-            }
-            // The stepping foot is set down onto its spot by the foot IK.
-            if foot_ik.landing.is_none()
-                && let Some((left, spot, strength)) = balance.landing_spot(&prepared, &gait_rig)
-            {
-                foot_ik.landing = Some(migera::character::anim::plugin::Landing { left, spot, strength });
-            }
-            balance.apply(&mut prepared, &gait_rig);
-        }
-        // The feet the balance has down stay locked however its sprung legs
-        // lag a stumbling body (`AnimFootIk::planted`); a walk's feet are
-        // the locks' own call.
-        foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) { balance.planted() } else { [false; 2] };
-
-        // A push while walking: the walk goes on, its footfalls moved to
-        // catch the body (`walk_balance`). The body moves by the push's
-        // offset like root motion; each foot is set where its offset puts
-        // it, relative to the moved body.
-        if !walk_balance.is_settled(0.0) {
-            let on = |v: bevy::math::Vec2| gait_rig.forward() * v.x + gait_rig.left() * v.y;
-            if weight > 0.0 {
-                let toe = |bone| migera::character::anim::rig::offset_from(&stood, &gait_rig, migera::character::Bone::Hips, bone);
-                let width = (toe(migera::character::Bone::LeftToeBase) - toe(migera::character::Bone::RightToeBase))
-                    .dot(gait_rig.left())
-                    .abs();
-                let walk = walk_balance::Stride {
-                    seconds: 1.0 / phase.gait_frequency_hz().max(1.0e-3),
-                    duty_factor: params.duty_factor,
-                    step_length: distance * 0.5,
-                    step_width: width,
-                    max_step: migera::character::anim::gait::leg_length_of(&gait_rig),
-                };
-                let k = balance::pendulum_k(&stood, &gait_rig);
-                walk_balance.step(&walk, gait.cycle, cycle, k, time.delta_secs());
-            } else {
-                // Stopped before the push was spent: the standing balance
-                // takes the body as it is, its feet where they stand.
-                let shown = walk_balance.moved();
-                gait.stepped += on(shown);
-                balance.velocity += walk_balance.velocity + walk_balance.pending_push();
-                balance.feet = [0, 1].map(|leg| walk_balance.foot_displacement(leg));
-                *walk_balance = WalkBalance::default();
-            }
-            gait.stepped += on(walk_balance.moved());
-            foot_ik.displaced = [0, 1].map(|leg| on(walk_balance.foot_displacement(leg)));
-            walk_balance.settle(1.0e-3);
-            if walk_balance.is_settled(0.0) {
-                foot_ik.displaced = [Vec3::ZERO; 2];
-            }
-        }
-        let rendered = |cycle: f32| {
-            if weight <= 0.0 {
-                prepared
-            } else {
-                let walking = walk_pose_on(cycle, &params, &stood, &gait_rig);
-                transition_state.0.blend(&prepared, &walking, &gait_rig)
-            }
-        };
-        // Clippy misses the second use: root motion reads `&rendered` below.
-        #[allow(clippy::redundant_closure_call)]
-        {
-            target.pose = rendered(cycle);
-        }
-
-        // The look is composed AFTER the gait, so a walking character can
-        // also be looking somewhere — the two are independent.
-        if let Some(direction) = look.0.advance(
-            lookat::head_position(&target.pose, &RigGeometry::default())
-                + root.translation,
-            facing.0.rotation(),
-            &lookat::LookAtConfig::default(),
-            time.delta_secs(),
-        ) {
-            lookat::apply(
-                &mut target.pose,
-                direction,
-                &lookat::LookAtConfig::default(),
-                &RigGeometry::default(),
-            );
-        }
-
-        // The reach is NOT applied here.
-        //
-        // An arm target is a point in the world, and solving for one needs the
-        // character's real rig geometry — which this system does not have. It
-        // would be solving against `RigGeometry::default()`, the synthetic
-        // T-pose proxy, whose left shoulder sits at x = -0.300 where the real
-        // rig's is at x = +0.212. The two are MIRRORED, so a world target
-        // solved here and retargeted sends the hand to the wrong side of the
-        // body: measured, a target at (0.45, 1.15, -0.30) put the left hand at
-        // (-0.197, 1.208, +0.147).
-        //
-        // So the reach goes into `AnimArmIk` and the plugin solves it in
-        // `AnimSet::Ik`, where the live bone transforms are available. Same
-        // reason foot IK lives there rather than in a caller.
-        arm_ik.left = reach.0;
-
-        // The root velocity the gait is asking for, and — in
-        // `Authoritative` mode — the travel it produces. The gallery has no
-        // character controller, so it integrates the request itself.
-        // `--anim-turn RADIANS_PER_SECOND` walks a steady circle, which is
-        // what makes turning visible: a character that turns and then walks
-        // straight looks the same as one that never turned.
-        if idle.turn != 0.0 {
-            facing.0.target_yaw = facing::shortest_angle(
-                facing.0.yaw + idle.turn.signum() * std::f32::consts::FRAC_PI_2,
-            );
-            facing.0.turn_rate = idle.turn.abs();
-        }
-
-        let turn = locomotion::advance_turning_with(
-            &mut locomotion.0,
-            &mut facing.0,
-            cycle,
-            // The rate `cycle` ACTUALLY advances at — the leg clock's own.
-            //
-            // This used to be the transition's smoothed cadence, `0.9·v`,
-            // chosen because the raw clock "steps 8.6x when a character
-            // stops and never reaches zero, so root motion would lurch and
-            // creep forever". Both came from pairing a rate with a pose it
-            // did not describe. Measured on the RENDERED pose, a fading
-            // blend shrinks the foot's travel with it, and at zero weight
-            // the pose is the constant `stood`, whose velocity is exactly
-            // zero — nothing creeps. Pairing the smoothed rate with legs
-            // cycling at `1/7 + 0.9·v` slid the planted foot 14% at 1 m/s.
-            phase.gait_frequency_hz(),
-            &params,
-            &rendered,
-            // The same rig the gait was posed on, for the same reason.
-            // Root motion is derived from how far the stance foot travels
-            // under the body, so measuring a different rig's pose publishes
-            // a velocity for an animation the legs are not playing.
-            &gait_rig,
-            time.delta_secs(),
-        );
-
-        // The foot locks need the same frame's turn, so a planted foot
-        // pivots with the body rather than being dragged sideways by it.
-        foot_ik.turn = turn;
-
-        // The body itself is moved after the springs, from the pose they
-        // render: see `ride_rendered_feet`.
-        //
-        // Travel moves the ENTITY, not the pose's root translation.
-        // `LocalPose::root_translation` is routed through
-        // `hips_root_rotation` and divided by the rig's parent scale, both
-        // of which are right for a hip displacement expressed in the rig's
-        // own bind frame — and wrong for world travel. On this Z-up rig that
-        // rotation maps the pose's forward (`-Z`) onto world `-Y`, so the
-        // character walked STRAIGHT DOWN: measured sinking at 0.69 m/s
-        // against a published speed of 0.72.
-        gait.params = Some(params);
-        gait.cycle = cycle;
-        gait.weight = weight;
-
-        // The entity turns to match the heading. Without this the character
-        // TRAVELS along its heading while still pointing forward — walking
-        // sideways, which is a stranger failure than not turning at all.
-        //
-        // COMPOSED onto the asset's own facing correction, never assigned
-        // over it. This line used to be a bare assignment, justified by a
-        // comment saying the correction lived on a separate mesh entity —
-        // true once, and stale from the moment the debug-capsule skeleton
-        // was removed and `HumanoidSkeleton` moved onto the mesh root
-        // itself. After that the assignment wiped a 180° correction every
-        // frame, which rendered as walking backward on grasshopper knees.
-        // See [`FacingCorrection`] for the measurements.
-        //
-        // Heading first, then the correction: the correction turns the
-        // asset's own geometry onto this crate's `-Z`-forward convention
-        // (a fact about the model), and the heading then turns the
-        // already-corrected character in the world. Reversing the order
-        // yaws about the uncorrected axis and sends a turning character
-        // along a heading 180° off its facing.
-        root.rotation = facing.0.rotation()
-            * correction.map_or(Quat::IDENTITY, |correction| correction.0);
     }
 }
 
@@ -2173,85 +1210,16 @@ fn stand_when_asked(config: Res<RagdollConfig>, frame: Res<FrameCount>, keys: Re
     }
 }
 
-/// H2: lets a ragdolled character fall when its balance finds no step
-/// that catches it (`Balance::falls`), on `F`, or at `--fall-at-frame`.
-/// The balance is reset: the body is the physics' now, and a stumble still
-/// being posed underneath would move the character entity too.
-fn fall_when_uncaught(
-    config: Res<RagdollConfig>,
-    frame: Res<FrameCount>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut rigs: Query<(&mut balance::Balance, &mut WalkBalance, &mut Ragdoll, &mut AnimFootIk, &GalleryFacing)>,
-) {
+/// H2: on `F` or at `--fall-at-frame`, asks the ragdolled walker to fall
+/// (`Walker::fall_now`), with `--fall-damping`. A push no step catches makes
+/// it fall by itself; the walker gets it up again (`walker::get_up_when_rested`).
+fn ask_to_fall(config: Res<RagdollConfig>, frame: Res<FrameCount>, keys: Res<ButtonInput<KeyCode>>, mut walkers: Query<&mut Walker>) {
     let asked = config.fall_at_frame == Some(frame.0) || keys.just_pressed(KeyCode::KeyF);
-    for (mut balance, mut walk_balance, mut ragdoll, mut foot_ik, facing) in &mut rigs {
-        if ragdoll.is_falling() || !(asked || balance.falls || walk_balance.falls) {
-            continue;
-        }
-        info!(
-            "character_gallery: falling at frame {} ({})",
-            frame.0,
-            if balance.falls {
-                format!("a push asked for a {:.2} m step", balance.wanted_step)
-            } else if walk_balance.falls {
-                format!("a push while walking asked for a {:.2} m step", walk_balance.wanted_step)
-            } else {
-                "asked".into()
-            }
-        );
-        // The push goes with it, the part not yet delivered too: judged at
-        // the push's start, the body has barely moved. The walk's own
-        // velocity is already the bodies': the pinned root is moved by
-        // velocity, and the limbs follow it.
-        let pushed = balance.velocity
-            + balance.pending_push()
-            + walk_balance.velocity
-            + walk_balance.pending_push();
-        let launch = foot_ik.rig.as_ref().map_or(Vec3::ZERO, |rig| {
-            facing.0.rotation() * (rig.forward() * pushed.x + rig.left() * pushed.y)
-        });
-        ragdoll.fall_moving(FALL_TONE, config.fall_damping, launch);
-        *balance = balance::Balance::default();
-        *walk_balance = WalkBalance::default();
-        foot_ik.displaced = [Vec3::ZERO; 2];
-        foot_ik.planted = [false; 2];
-        foot_ik.landing = None;
-    }
-}
-
-/// H3: a fallen character that has come to rest lies for `GETUP_DELAY` (a
-/// choice), then rises through the get-up keys for how it lies
-/// (`Ragdoll::get_up`). The turn the rise asks for, to face the way it
-/// gets up, is applied to the gallery's own heading: the character's
-/// rotation is `GalleryFacing`'s to write.
-fn get_up_when_rested(mut ragdolls: Query<(&mut Ragdoll, &mut GalleryFacing)>, frame: Res<FrameCount>) {
-    const GETUP_DELAY: f32 = 1.0;
-    for (mut ragdoll, mut facing) in &mut ragdolls {
-        if ragdoll.fall.is_some_and(|fall| fall.at_rest && fall.rise.is_none()) && ragdoll.get_up(GETUP_DELAY) {
-            info!("character_gallery: at rest at frame {}, getting up", frame.0);
-        }
-        if let Some(rise) = ragdoll.fall.as_mut().and_then(|fall| fall.rise.as_mut())
-            && rise.turn_pending
-        {
-            info!("character_gallery: rising from {:?} at frame {}", rise.lying, frame.0);
-            facing.0.yaw += rise.turn;
-            facing.0.target_yaw = facing.0.yaw;
-            rise.turn_pending = false;
-            info!("character_gallery: lying {:?}, turning {:.0}° to get up", rise.lying, rise.turn.to_degrees());
-        }
-    }
-}
-
-/// While the ragdoll falls it moves the character entity after its body
-/// (`AnimRagdollPlugin`); the gallery's own position has to take that up,
-/// or `ride_rendered_feet` writes the old one back the moment the body stops
-/// being followed. It did: every rise slid the character 0.45 m back to
-/// where it had fallen from.
-fn follow_the_fallen_body(mut rigs: Query<(&Ragdoll, &Transform, &mut GalleryLocomotion)>) {
-    for (ragdoll, transform, mut locomotion) in &mut rigs {
-        if ragdoll.is_falling() {
-            locomotion.0.position.x = transform.translation.x;
-            locomotion.0.position.z = transform.translation.z;
+    for mut walker in &mut walkers {
+        walker.fall_damping = config.fall_damping;
+        if asked {
+            info!("character_gallery: asked to fall at frame {}", frame.0);
+            walker.fall_now = true;
         }
     }
 }
@@ -2719,12 +1687,11 @@ fn main() {
         .insert_resource(PushSchedule::from_args())
         .insert_resource(DebugLogTimer::default())
         .add_systems(Startup, (spawn_camera, spawn_light, spawn_ground, spawn_real_mesh, spawn_camera_hud, spawn_skeleton_hud))
-        .add_systems(Update, (camera_controller, draw_world_axis_gizmos, draw_joint_axis_gizmos, update_camera_hud, apply_real_mesh_visibility, build_real_mesh_skeleton))
-        .add_systems(Update, attach_anim_backend.after(build_real_mesh_skeleton))
+        .add_systems(Update, (camera_controller, draw_world_axis_gizmos, draw_joint_axis_gizmos, update_camera_hud, apply_real_mesh_visibility))
         .add_systems(
             Update,
             apply_proportion_spike
-                .after(build_real_mesh_skeleton)
+                .after(HumanoidSet::Bind)
                 .run_if(resource_exists::<ProportionSpike>),
         )
         .add_systems(EguiPrimaryContextPass, controls_panel)
@@ -2751,21 +1718,15 @@ fn main() {
     // superseded position-space `muscle` module — and with it the
     // `--anim-backend` A/B switch that carried the cutover — was deleted
     // once this path had been the default for a full phase.
-    app.add_plugins((AnimPlugin, AnimAssetPlugin))
+    // Binding the glTF rig and walking it are the library's
+    // (`HumanoidPlugin`, `WalkerPlugin`); the gallery only steers the walker
+    // from its flags, panel and schedules.
+    app.add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin))
         .add_systems(
             Update,
             (draw_skeleton_debug_gizmos, update_skeleton_hud, log_debug_stats),
         )
-        // In `Target`, so the phase layer composes onto the walking pose and
-        // the springs smooth it — the ordering the plugin will use once
-        // locomotion lands.
-        .add_systems(
-            Update,
-            (follow_speed_schedule, drive_walk_cycle).chain().in_set(AnimSet::Target),
-        )
-        // After the springs have rendered this frame's pose, before the IK
-        // plants the feet against the ground at the body's new position.
-        .add_systems(Update, ride_rendered_feet.after(AnimSet::Spring).before(AnimSet::Ik));
+        .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:
@@ -2791,13 +1752,11 @@ fn main() {
             .add_systems(
                 Update,
                 (
-                    attach_ragdoll.after(attach_anim_backend),
+                    attach_ragdoll.after(walker::attach_walkers),
                     draw_ragdoll_gizmos,
                     deliver_ragdoll_hits.before(RagdollSet::Hit),
-                    fall_when_uncaught.after(drive_walk_cycle).before(RagdollSet::Hit),
-                    get_up_when_rested.before(RagdollSet::Hit),
+                    ask_to_fall.before(WalkerSet::Drive),
                     stand_when_asked.before(RagdollSet::Hit),
-                    follow_the_fallen_body.before(ride_rendered_feet),
                 ),
             );
     }

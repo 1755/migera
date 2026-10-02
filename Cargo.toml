@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19.1", features = ["bevy_dev_tools", "file_watcher", "bevy_remote"] }
+bevy = { version = "0.19.1", features = ["bevy_dev_tools", "file_watcher", "bevy_remote", "free_camera"] }
 bevy_ecs = { version = "0.19.1", features = ["debug"] }
 bytemuck = "1"
 fastrand = "2"

@@ -12,7 +12,7 @@ updated: 2026-10-01
 verified: 2026-10-01
 code:
   - src/character/anim/proportions.rs
-  - examples/character_gallery.rs
+  - src/character/anim/humanoid.rs
   - tools/skin_segment_stretch.py
   - src/character/anim/plugin.rs
 sources:
@@ -102,9 +102,9 @@ and 1.15.
 ## Built: Winter proportions (2026-10-01)
 
 `proportions::winter_factors` works out each factor on `RigGeometry`, and
-`character_gallery --proportions winter [H]` applies it in
-`build_real_mesh_skeleton`, before the anim backend and the ragdoll read
-the rig.
+`character_gallery --proportions winter [H]` applies it as the rig binds
+(`humanoid::bind_gltf_humanoids`, for a root with `HumanoidProportions`),
+before the anim backend and the ragdoll read the rig.
 - **Stature:** `H` defaults to the stature the legs imply (hip to ankle
   is 0.491 H).
 - **Lengths:** thigh, shank, upper arm and forearm are scaled to their

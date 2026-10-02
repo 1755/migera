@@ -64,6 +64,7 @@ pub mod getup;
 /// approximation of it.
 #[cfg(test)]
 pub mod gltf_rig;
+pub mod humanoid;
 pub mod joint_drive;
 pub mod legik;
 pub mod locomotion;
@@ -84,10 +85,13 @@ pub mod stance;
 pub mod transition;
 pub mod walk;
 pub mod walk_balance;
+pub mod walker;
 #[cfg(feature = "anim_studio")]
 pub mod studio;
 
 pub use dho::{default_springs, DhoState};
+pub use humanoid::{spawn_gltf_humanoid, FacingCorrection, GltfHumanoid, HumanoidPlugin, HumanoidProportions, HumanoidSet};
+pub use walker::{Steer, Walker, WalkerPlugin, WalkerSet, WalkerState};
 pub use asset::{AnimAssetPlugin, PoseAsset};
 pub use phase::{GaitPhase, PhaseClock, PhaseLayer, PhaseOscillator};
 pub use plugin::{
@@ -99,7 +103,7 @@ pub use ragdoll::{
     default_joint_limits, Fall, JointLimits, Ragdoll, RagdollStrength, Rise, Stun, StunResponse, FALL_DAMPING, FALL_TONE,
 };
 pub use ragdoll_plugin::{
-    spawn_ragdoll, AnimRagdollPlugin, RagdollHit, RagdollSet, RagdollSpawnConfig,
+    despawn_ragdoll, spawn_ragdoll, AnimRagdollPlugin, RagdollHit, RagdollSet, RagdollSpawnConfig,
 };
 pub use math::{InertializeCubic, Inertializer, RotationInertializer, SpringParams};
 pub use retarget::write_pose_to_skeleton;

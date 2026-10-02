@@ -12,7 +12,7 @@ updated: 2026-09-28
 verified: 2026-09-28
 code:
   - src/character/anim/rig.rs
-  - examples/character_gallery.rs
+  - src/character/anim/humanoid.rs
 sources:
   - Claude memory unsigned_measurements_cannot_see_direction (2026-09-28)
   - commit 4c7fbc9
@@ -43,8 +43,9 @@ rig's own frame.
   `-0.017` (apparently backward) while `knee_fold_direction` read `-0.34`
   (solidly human).
 - An earlier version of the fixed invariant used the parsed asset, went green,
-  and the character still walked on backward knees. `build_real_mesh_skeleton`
-  (`examples/character_gallery.rs`) folds a 180° yaw into
+  and the character still walked on backward knees. Binding the rig
+  (`humanoid::bind_gltf_humanoids`, then the gallery's
+  `build_real_mesh_skeleton`) folds a 180° yaw into
   `hips_root_rotation`, so the parsed rig and the rendered rig disagree about
   facing, which was the one quantity under test.
 

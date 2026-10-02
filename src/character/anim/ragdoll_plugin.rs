@@ -1487,6 +1487,25 @@ pub struct KinematicRoot {
 /// [`RagdollSpawnConfig::collision_layer`] itself.
 pub const RAGDOLL_LAYER_POOL: LayerMask = LayerMask(0xFFFF_0000);
 
+/// Takes `character`'s ragdoll away: despawns every body and joint it
+/// spawned ([`spawn_ragdoll`], and a fall's hinges and limit joints) and
+/// removes the [`Ragdoll`]. The animation keeps driving the skeleton as if
+/// it had never had one. For a character leaving the range where its
+/// physics is worth simulating; one falling should be left to land first.
+pub fn despawn_ragdoll(commands: &mut Commands, character: Entity, ragdoll: &Ragdoll) {
+    let owned = ragdoll
+        .joints
+        .iter()
+        .chain(ragdoll.hinge_joints.iter())
+        .filter_map(|(_, joint)| *joint)
+        .chain(ragdoll.limit_joints.iter().flat_map(|(_, joints)| joints.iter().copied()))
+        .chain(ragdoll.bodies.iter().filter_map(|(_, body)| *body));
+    for entity in owned {
+        commands.entity(entity).try_despawn();
+    }
+    commands.entity(character).remove::<Ragdoll>();
+}
+
 /// The next layer bit from [`RAGDOLL_LAYER_POOL`], round-robin.
 pub fn next_ragdoll_layer() -> LayerMask {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -3968,6 +3987,35 @@ mod tests {
         }
         let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
         assert!(hips.y < 0.4, "it should lie on the floor, hips at {:.2} m", hips.y);
+    }
+
+    #[test]
+    fn a_despawned_ragdoll_leaves_no_body_or_joint_behind() {
+        // A character leaving the range where its physics is simulated
+        // (the playground's distance switch) loses its ragdoll: every body
+        // and joint, a fall's hinges and limit joints included, and the
+        // `Ragdoll` itself. Fallen first, so the fall's own joints exist.
+        let (mut app, character, _, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+        step(&mut app, 30);
+        let count = |app: &mut App| {
+            let all_bodies = app.world_mut().query_filtered::<(), (With<RigidBody>, With<Collider>)>().iter(app.world()).count();
+            let spherical = app.world_mut().query::<&SphericalJoint>().iter(app.world()).count();
+            let revolute = app.world_mut().query::<&RevoluteJoint>().iter(app.world()).count();
+            (all_bodies, spherical, revolute)
+        };
+        let (bodies, spherical, revolute) = count(&mut app);
+        assert!(bodies > 10 && spherical > 10 && revolute > 0, "the fallen ragdoll should have bodies and joints: {bodies}, {spherical}, {revolute}");
+        let ragdoll = app.world().get::<Ragdoll>(character).unwrap().clone();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, app.world());
+        despawn_ragdoll(&mut commands, character, &ragdoll);
+        queue.apply(app.world_mut());
+        step(&mut app, 10);
+        let (bodies, spherical, revolute) = count(&mut app);
+        // The floor alone is left.
+        assert_eq!((bodies, spherical, revolute), (1, 0, 0), "left behind: bodies, ball joints, hinges");
+        assert!(app.world().get::<Ragdoll>(character).is_none(), "the character still has its ragdoll");
     }
 
     // Plan 4.5's bench: wall-clock per frame of one ragdoll, pinned and on
