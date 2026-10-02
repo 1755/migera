@@ -389,6 +389,36 @@ pinned ragdoll following the animation, sole feet (4a).
   pops. Live check, bench, KB notes (decision + Winter 8.1 / 11.2).
   Checkpoint: commit.
 
+### 4.6 Possible further improvements (parked 2026-10-02)
+
+**Decision:** the physics path stays as it is. Pushes only need to look
+right, and the kinematic stumble (H1, 5.7) does that better and cheaper.
+Take these up only if the body must stand, or eventually walk, under
+physics. Why each is needed, the measurements, and what failed are in
+[the stepping note](./docs/knowledge/character-animation/ragdoll-and-physics/a-step-on-its-own-feet-aims-its-swing-in-the-world.md).
+
+Judge every step with `probe_own_feet_push_score` (baseline 53/80 caught,
+25 of those with the feet left apart; 15/80 without stepping), never on
+one push matrix. Each step is a go/no-go gate:
+
+- [ ] **4.6.1 Double support as a whole body.** Control the pelvis and COM
+  through both legs together, with Jacobian-transpose leg forces (no new
+  dependency) before trying a contact QP. Do it first only in a stance
+  displaced after a step. Gate: every current test passes, quiet stance
+  holds within 5 mm for a minute, and the score stays ≥ 53/80.
+- [ ] **4.6.2 Close the stance after a step.** Gate: far fewer than 25
+  catches left apart, with no loss in the score.
+- [ ] **4.6.3 Crossover side steps** (code parked on branch
+  `experiment/own-feet-crossover`, with the other attempts behind env
+  switches): the far
+  leg crosses in front. It already cut the single-support pelvis drop
+  from ~15° to 2-6°. Gate: sideways catches rise, and no crossed stance
+  falls later.
+- [ ] **4.6.4 A planted foot can unload** (heel lift, or a fully stretched
+  leg released), so the trailing leg stops being a tether. Only if 4.6.1-3
+  still leave stretched legs limiting recovery. It needs a replacement
+  for the planted-foot dominance that stopped the soles sinking 52 mm.
+
 ## 3b. Body proportions (§4.0.1), spike only
 
 - [x] **Spike, done 2026-10-01.** Scale one `character.glb` segment

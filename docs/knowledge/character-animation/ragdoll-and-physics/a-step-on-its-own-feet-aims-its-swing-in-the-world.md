@@ -190,6 +190,11 @@ changed nothing:
   - Front and Left gizmo views agree with the headless runs.
 ## Revisit when
 
+Parked by decision (2026-10-02): pushes only need to look right, and the
+kinematic stumble does that better and cheaper. These are listed as
+`WINTER_MOTION_PLAN.md` 4.6, to take up only if the body must stand or
+walk under physics.
+
 - **Double support is controlled as a whole body:** pelvis and COM by
   the legs together (Jacobian-transpose or a contact QP), not a COP law
   fed as statics into anchored legs. Then a stance can be closed by
