@@ -367,9 +367,12 @@ pinned ragdoll following the animation, sole feet (4a).
   0.4 m/s each way caught with ankles < 1.6 N·m/kg; falls from 0.6
   forward and back, 0.8 sideways. Live both rigs: still within 5-6 mm.
   With 4.2-4.5 and strength per direction (2026-10-02): forward (−Z) 0.4
-  caught, 0.5 falls; back 0.5 / 0.6; sideways 0.5 / 0.6. Stepping on its
-  own feet is built but off (`steps_on_own_feet`): the swing foot
-  drifts outward and the body runs away sideways.
+  caught, 0.5 falls; back 0.5 / 0.6; sideways 0.5 / 0.6 (forward is
+  weakest because the stance holds the COM 8.6 cm ahead of the ankles:
+  room / √k exactly). Past that it steps on its own feet
+  (`steps_on_own_feet`, on by default): forward to 0.7, back to 0.8,
+  sideways to 0.7. See the
+  [stepping note](./docs/knowledge/character-animation/ragdoll-and-physics/a-step-on-its-own-feet-aims-its-swing-in-the-world.md).
   Not built: the co-contraction log (none possible by construction).
 - [x] **4.3 Balance controller** (built as 4c above). Part 2's controller on the measured COM:
   A/P ankle torque = W·(COP target − ankle); M/L hip abductor load/unload.

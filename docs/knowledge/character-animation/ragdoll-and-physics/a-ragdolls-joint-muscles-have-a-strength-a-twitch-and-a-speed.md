@@ -17,6 +17,9 @@ sources:
   - "Vasavada, Li & Delp (2001), neck strength, https://pubmed.ncbi.nlm.nih.gov/11568704/"
   - "Anderson, Madigan & Nussbaum (2007), Maximum voluntary joint torque as a function of joint angle and angular velocity, J Biomech 40:3105, https://stacks.cdc.gov/view/cdc/188754/cdc_188754_DS1.pdf"
   - "Armour et al. (2004), knee internal/external rotation strength; pronation/supination https://pmc.ncbi.nlm.nih.gov/articles/PMC9515161/; wrist deviation https://pubmed.ncbi.nlm.nih.gov/8884484/; hip all directions https://pmc.ncbi.nlm.nih.gov/articles/PMC11329127/"
+  - "Jessop & Pain (2016), Maximum velocities in flexion and extension actions for sport, J Hum Kinet 50:37, https://pmc.ncbi.nlm.nih.gov/articles/PMC5260637/"
+  - "Hernandez & Camarillo (2019), voluntary head rotation speeds, J Neurotrauma, doi:10.1089/neu.2016.4758; Margulies et al. (1998), Aviat Space Environ Med"
+  - "Zemková et al., Trunk rotational velocity in young and older adults, https://www.researchgate.net/publication/327746048 (venue unconfirmed)"
   - "Thelen (2003), Adjustment of muscle mechanics model parameters to simulate dynamic contractions in older adults, J Biomech Eng 125:70, https://nmbl.stanford.edu/publications/pdf/Thelen2003.pdf"
   - "Winter, Biomechanics and Motor Control of Human Movement, 4th ed., §7.4.5 (walking moments), §9.0.5 (twitch), §9.2.1-9.2.2 (force-velocity)"
   - "tests joint_drive::tests; ragdoll_plugin::tests::no_joint_of_a_ragdoll_on_its_own_feet_exceeds_its_budget, a_ragdoll_too_weak_for_its_weight_folds, a_struck_arm_goes_slack_and_comes_back_on_its_own_feet"
@@ -78,8 +81,17 @@ has: a maximum, a delay and a speed.
   the same slope. The maximum speeds are where that curve best fits
   Anderson, Madigan & Nussbaum's (2007) measured torque-velocity in young
   men: ankle 21 rad/s, knee 24, hip 19 (theirs is near-linear there).
-  The elbow's 16.5 is its unloaded flexion speed; the trunk's, neck's,
-  shoulder's and wrist's are estimates.
+  No such fit exists for the upper body or trunk (2026-10-02 search).
+  There the speed is the fastest a maximal unloaded movement reaches,
+  which the limb's own inertia holds under the true value:
+  - elbow 16.5 (Jessop & Pain: 18.6);
+  - shoulder 20 (flexion 15.0-17.6, extension 16.1-18.7, Jessop & Pain
+    2016);
+  - wrist 23 (flexion 23.3, extension 21.3, the joint alone, same study);
+  - neck 15 (head pitch 17.4 against the world, Hernandez & Camarillo
+    2019; 7.9 against the torso, Margulies 1998);
+  - trunk 12 (axial rotation 12.2 with a 1 kg bar, Zemková et al.). The
+    trunk's flexion-extension has no usable measure; 12 is assumed.
 - **The balance's correction lags by a twitch** (`twitch_seconds`,
   `activate`): what each joint carries as the body stands now (the
   pressure straight under the COM) is the muscles' tone, applied at once.
@@ -121,11 +133,13 @@ has: a maximum, a delay and a speed.
   the strength per axis (2026-10-02): forward (−Z on the drawn rig) 0.4
   m/s caught, 0.5 falls; back 0.5 caught, 0.6 falls; sideways 0.5
   caught, 0.6 falls. 0.4-0.5 m/s before a step is needed is in the
-  human range. Why forward is the weakest is open; it is not the
-  dorsiflexors (a forward push loads the plantarflexors). Earlier
-  versions of this note had forward and back swapped: the drawn rig
-  faces −Z, so a +Z push is backward. Lagging the whole command instead
-  cut the limits by about 0.1 m/s, and at twice the twitch even 0.4 fell.
+  human range. Forward is the weakest because of where the stance holds
+  the COM, not because of a muscle: 8.6 cm ahead of the ankles leaves
+  less sole ahead than behind, and the limits are room / √k exactly (see
+  the standing note). Earlier versions of this note had forward and back
+  swapped: the drawn rig faces −Z, so a +Z push is backward. Lagging the
+  whole command instead cut the limits by about 0.1 m/s, and at twice the
+  twitch even 0.4 fell.
 - **The axes are checked against the physics**
   (`a_standing_body_pulls_each_joint_the_anatomical_way`): pushed
   forward, the ankle pulls the toes down (positive about left) by over
@@ -145,8 +159,9 @@ has: a maximum, a delay and a speed.
 
 ## Revisit when
 
-- Sources turn up for the estimates (shoulder rotation sizes, the
-  trunk's, neck's, shoulder's and wrist's maximum speeds).
+- Sources turn up for the estimates that remain: the shoulder's rotation
+  sizes and the trunk's flexion-extension speed. A fitted Hill speed for
+  any upper-body joint would replace the unloaded peaks.
 - A character is not a young man: the table is per kg, but strength per
   kg falls with age and differs by sex (Harbo: women ~10-30 % less).
 - Strength should vary with joint angle (the force-length curve, Winter

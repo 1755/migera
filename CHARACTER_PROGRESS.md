@@ -41,6 +41,55 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Stepping on its own feet works; forward weakness explained; speeds sourced
+
+- **The step, on by default** (`steps_on_own_feet`). Found by tracing
+  pushes frame by frame:
+  - The swing thigh aims in the world (SIMBICON). Held to its pelvis, it
+    followed a ~20° pelvis yaw: this was the 7-13 cm outward drift.
+  - The swing is tracked implicitly (per-axis gains, the leg as a lump,
+    4 Hz) with the arc's rate and acceleration fed forward. Explicit, it
+    chattered; sized on the lump, the shin spun; without the feed-forward,
+    it landed at 0.18-0.21 of a 0.31 m step.
+  - Swing targets take their twist from the animation; from the bodies'
+    own twist, the hip spun up to 9 rad/s.
+  - The landing is re-aimed each frame at where the capture point will be,
+    4 cm outside it sideways. A step ends when it arrives. The body rests
+    where it was caught, and the other foot joins once the body has
+    settled.
+- **Measured** (`probe_own_feet_push_matrix`, `puppet_base`):
+
+  | Direction | Feet only | Stepping |
+  |---|---|---|
+  | Forward | 0.4 m/s | 0.7 |
+  | Back | 0.5 | 0.8 |
+  | Sideways | 0.5 | 0.7 |
+
+  - Forward and back recoveries end joined: hips within 15 mm, pelvis
+    within 5°. Side steps end in a wide stance that does not join.
+  - A step lands ~1 cm from its aim on a 22 cm step.
+  - Live, Front and Left gizmo views:
+    - `puppet_base`: a 3 m/s backward hip blow steps and stands in 8 of
+      9 runs; 4-5 m/s fall.
+    - `character.glb`: 2.5 m/s stands in 3 of 3; 3 m/s falls.
+- **Forward weaker than back, explained.** The stance holds the COM 8.6 cm
+  ahead of the ankles, leaving 13.5 cm of sole ahead and 17.3 behind. The
+  limits are room / √k: 0.41 and 0.52 m/s, matching the measured 0.4 and
+  0.5.
+- **Tried and dropped** (no gain on the matrix, or a loss):
+  - holding the COM at 5 cm (turned the limits round but broke side
+    steps);
+  - an 8 cm swing lift;
+  - a structural knee twist limit;
+  - capping the step at the leg's reach;
+  - choosing the joining foot by where the step caught the body.
+- **Speeds sourced** (none was a fitted Hill speed; these are unloaded
+  peaks): wrist 20 → 23 and shoulder 20 kept (Jessop & Pain 2016); trunk
+  15 → 12 (axial rotation 12.2); neck 15 kept (Hernandez & Camarillo
+  2019). The trunk's flexion-extension speed is still assumed.
+- [Stepping note](./docs/knowledge/character-animation/ragdoll-and-physics/a-step-on-its-own-feet-aims-its-swing-in-the-world.md).
+  `cargo test --release --lib`: 1088 passed. Clippy: 0 warnings.
+
 ### Muscle gaps: strength per direction, measured speeds; stepping on its own feet tried
 
 - **Strength per axis and direction.** Each drive caps its torque per

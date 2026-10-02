@@ -156,10 +156,9 @@ pub struct Ragdoll {
     /// body starts or stops carrying itself, so neither switch pops.
     pub stand_blend: f32,
     /// Whether a body standing on its own feet steps when its feet cannot
-    /// catch it, rather than falling. EXPERIMENTAL, off by default: the
-    /// step swings and lands, but a swinging foot drifts outward and the
-    /// body then runs away sideways (see the knowledge note on a standing
-    /// ragdoll).
+    /// catch it, rather than falling. On by default: it only acts where the
+    /// body would otherwise fall, and it catches pushes about 0.2 m/s
+    /// harder each way (see the knowledge note on a standing ragdoll).
     pub steps_on_own_feet: bool,
     /// A recovery step under way on its own feet
     /// (`joint_drive::carry_weight`).
@@ -174,6 +173,10 @@ pub struct Ragdoll {
     /// The leg the weight is moving onto before the other joins it, after a
     /// recovery step on its own feet.
     pub own_transfer: Option<usize>,
+    /// Where the COM comes to rest after a recovery step on its own feet
+    /// (horizontal `x`, `z`, world): the capture point as the step landed,
+    /// held to until the feet are together again.
+    pub own_rest: Option<Vec2>,
 }
 
 /// A recovery step a body standing on its own feet is taking: one foot
@@ -193,6 +196,9 @@ pub struct OwnStep {
     /// The foot's world rotation as it lifted, flat on the floor: it is
     /// carried so through the swing, to land flat.
     pub foot: Quat,
+    /// Whether it is a recovery step, its landing aimed afresh every frame
+    /// at where the capture point will be (a join's landing is fixed).
+    pub recovery: bool,
 }
 
 /// How long switching between a pinned root and standing on its own feet
@@ -328,11 +334,12 @@ impl Default for Ragdoll {
             self_supporting: false,
             stand_rest: None,
             stand_blend: 0.0,
-            steps_on_own_feet: false,
+            steps_on_own_feet: true,
             own_step: None,
             feet_home: None,
             stand_height: None,
             own_transfer: None,
+            own_rest: None,
         }
     }
 }

@@ -69,6 +69,33 @@ pub const STEP_MARGIN: f32 = 0.05;
 /// join it, metres: that foot holds the body through the join's swing.
 pub const JOIN_REACH: f32 = 0.08;
 
+/// How far out to the side of where the capture point will be a recovery
+/// step on its own feet lands, metres (Hof et al. 2007's lateral margin,
+/// a few centimetres).
+pub const SIDE_MARGIN: f32 = 0.04;
+
+/// How near its landing a stepping foot on its own feet must be for the
+/// step to end (before its 1.5 × time runs out), metres.
+pub const ARRIVED: f32 = 0.04;
+
+/// How long a step on its own feet takes, seconds, sideways as well as
+/// ahead or back. The standing balance's 0.2 s side step
+/// (`balance::SIDE_STEP_SECONDS`) is beyond the hip's abductors: at the
+/// swing's speed Hill's curve leaves them ~50 of their 90 N·m, and the foot
+/// covered half the step. People take 0.3-0.4 s.
+pub const OWN_STEP_SECONDS: f32 = 0.3;
+
+/// How slowly the COM must move for the other foot to join after a
+/// recovery step on its own feet, m/s: the feet apart settle the body first.
+/// At 0.15, a join began with the body still drifting 0.1 m/s sideways,
+/// which one ankle's evertors (0.42 N·m/kg) could not stop, and it fell
+/// over the standing foot.
+pub const JOIN_SPEED: f32 = 0.05;
+
+/// How fast the weight moves onto the foot that will stand after a
+/// recovery step on its own feet, m/s (where the COM comes to rest).
+pub const SHIFT_SPEED: f32 = 0.2;
+
 /// A drive's damping per unit stiffness, seconds.
 pub const DRIVE_DAMPING_SECONDS: f32 = 0.1;
 
@@ -128,9 +155,18 @@ pub fn drive_share(bone: Bone) -> f32 {
 /// The speeds, rad/s, are where Hill's curve at `k` = 0.25 best fits
 /// Anderson, Madigan & Nussbaum's (2007) measured torque-velocity of young
 /// men: ankle 21 (plantarflexion), knee 24 (extension), hip 19
-/// (extension, near-linear there). The elbow's 16.5 is its unloaded
-/// flexion speed (Sci Rep 2017); the trunk's, neck's, shoulder's and
-/// wrist's are estimates.
+/// (extension, near-linear there). No such fit exists for the rest; there
+/// the speed is the fastest a maximal unloaded movement reaches, which the
+/// limb's own inertia holds under the true value:
+/// - Elbow 16.5: its unloaded flexion (Sci Rep 2017; Jessop & Pain 2016,
+///   J Hum Kinet 50:37, measured 18.6 in seven young male athletes).
+/// - Shoulder 20: flexion 15.0-17.6, extension 16.1-18.7 (Jessop & Pain).
+/// - Wrist 23: flexion 23.3, extension 21.3, the joint moved alone (Jessop
+///   & Pain); the hand is light, so near the true value.
+/// - Neck 15: head pitch 17.4 against the world (Hernandez & Camarillo
+///   2019, J Neurotrauma), 7.9 against the torso (Margulies et al. 1998).
+/// - Trunk 12: axial rotation 12.2, seated with a 1 kg bar (Zemková et
+///   al.); its flexion-extension has no usable measure, 12 is assumed.
 pub fn joint_strengths(bone: Bone) -> ([[f32; 2]; 3], f32) {
     // A hinge's sideways bend is held by its bones and ligaments, not its
     // muscles: the ball joint standing in for a knee or an elbow gets a
@@ -143,11 +179,11 @@ pub fn joint_strengths(bone: Bone) -> ([[f32; 2]; 3], f32) {
         Bone::LeftFoot | Bone::RightFoot | Bone::LeftToeBase | Bone::RightToeBase => ([[1.8, 0.57], [0.42, 0.46], [0.3, 0.3]], 21.0), // ESTIMATE: up
         Bone::LeftLeg | Bone::RightLeg => ([[1.5, 3.5], [HINGE, HINGE], [0.35, 0.35]], 24.0),
         Bone::LeftUpLeg | Bone::RightUpLeg => ([[2.5, 2.2], [1.29, 1.08], [0.66, 0.72]], 19.0),
-        Bone::Neck | Bone::Head => ([[0.40, 0.70], [0.48, 0.48], [0.20, 0.20]], 15.0), // ESTIMATE: speed
-        Bone::LeftArm | Bone::RightArm | Bone::LeftShoulder | Bone::RightShoulder => ([[1.25, 1.0], [0.84, 1.07], [0.4, 0.6]], 20.0), // ESTIMATE: speed, rotation sizes
+        Bone::Neck | Bone::Head => ([[0.40, 0.70], [0.48, 0.48], [0.20, 0.20]], 15.0),
+        Bone::LeftArm | Bone::RightArm | Bone::LeftShoulder | Bone::RightShoulder => ([[1.25, 1.0], [0.84, 1.07], [0.4, 0.6]], 20.0), // ESTIMATE: rotation sizes
         Bone::LeftForeArm | Bone::RightForeArm => ([[0.61, 0.67], [HINGE, HINGE], [0.127, 0.076]], 16.5),
-        Bone::LeftHand | Bone::RightHand => ([[0.13, 0.15], [0.155, 0.33], [0.1, 0.1]], 20.0), // ESTIMATE: up, speed
-        _ => ([[2.2, 3.0], [1.75, 1.75], [1.25, 1.25]], 15.0), // ESTIMATE: speed
+        Bone::LeftHand | Bone::RightHand => ([[0.13, 0.15], [0.155, 0.33], [0.1, 0.1]], 23.0), // ESTIMATE: up
+        _ => ([[2.2, 3.0], [1.75, 1.75], [1.25, 1.25]], 12.0),
     };
     let right = matches!(
         bone,
@@ -225,6 +261,18 @@ pub struct JointDrive {
     /// The child's rotation relative to the parent to drive toward instead
     /// of the animation's (a stepping leg's swing, `carry_weight`).
     pub relative_override: Option<Quat>,
+    /// Whether `relative_override` is the child's WORLD rotation instead: a
+    /// swinging thigh aims in the world, whatever its pelvis does.
+    pub override_world: bool,
+    /// How fast `relative_override` turns, rad/s, in the parent body's
+    /// frame (the world's, with `override_world`): a swing's damping acts
+    /// on the joint's spin less this, so it follows a moving arc rather
+    /// than lagging it.
+    pub override_rate: Vec3,
+    /// How fast `override_rate` changes, rad/s², in the same frame: a
+    /// swinging joint is fed the torque its leg needs for it
+    /// (`swing_inertia` times this), so it does not trail a speeding arc.
+    pub override_acceleration: Vec3,
     /// For a swinging joint: the leg beyond it as a lump about the joint,
     /// kg·m², world. Each substep it is driven along its arc with
     /// `I·(−ω²·e − 2ω·ω_rel)` at [`SWING_FREQUENCY`], critically damped.
@@ -280,12 +328,18 @@ pub fn force_velocity(shortening: f32) -> f32 {
 /// its negative): see the module doc. `inverse_inertia` is both bodies'
 /// world inverse angular inertias summed.
 pub fn drive_impulse(error: Vec3, relative_velocity: Vec3, inverse_inertia: Mat3, stiffness: f32, damping: f32, h: f32) -> Vec3 {
-    let c = h * damping + h * h * stiffness;
-    let a = Mat3::IDENTITY + inverse_inertia * c;
+    drive_impulse_with(error, relative_velocity, inverse_inertia, Mat3::IDENTITY * stiffness, Mat3::IDENTITY * damping, h)
+}
+
+/// [`drive_impulse`] with a stiffness and a damping per direction (world
+/// matrices, symmetric): `P = −(1 + C·K)⁻¹ (h·Kp·e + C·v)`, `C = h·Kd + h²·Kp`.
+pub fn drive_impulse_with(error: Vec3, relative_velocity: Vec3, inverse_inertia: Mat3, stiffness: Mat3, damping: Mat3, h: f32) -> Vec3 {
+    let c = damping * h + stiffness * (h * h);
+    let a = Mat3::IDENTITY + c * inverse_inertia;
     if a.determinant().abs() < 1.0e-12 {
         return Vec3::ZERO;
     }
-    -(a.inverse() * (error * (h * stiffness) + relative_velocity * c))
+    -(a.inverse() * (stiffness * error * h + c * relative_velocity))
 }
 
 /// The child's rotation error from where `parent_target⁻¹ · child_target`
@@ -320,22 +374,40 @@ pub(crate) fn apply_joint_drives(
         let child_now = (child_body.delta_rotation.0 * child_rotation.0).normalize();
         let parent_now = (parent_body.delta_rotation.0 * parent_rotation.0).normalize();
         let error = match drive.relative_override {
+            Some(world) if drive.override_world => drive_error(child_now, Quat::IDENTITY, world, Quat::IDENTITY),
             Some(relative) => drive_error(child_now, parent_now, relative, Quat::IDENTITY),
             None => drive_error(child_now, parent_now, child_target.target, parent_target.target),
         };
         let relative = child_body.angular_velocity - parent_body.angular_velocity;
+        // The spin the arc asks for, as the drive's damping sees it: relative
+        // to the parent, or, aimed in the world, the child's own less what
+        // the parent already gives it.
+        let wanted_spin = match (drive.relative_override, drive.override_world) {
+            (Some(_), true) => drive.override_rate - parent_body.angular_velocity,
+            (Some(_), false) => parent_now * drive.override_rate,
+            (None, _) => Vec3::ZERO,
+        };
         let (child_inverse, parent_inverse) =
             (child_inertia.effective_inv_angular_inertia().to_mat3(), parent_inertia.effective_inv_angular_inertia().to_mat3());
         let sized_on = if drive.child_grounded { parent_inverse } else { child_inverse + parent_inverse };
         let strength = drive.strength.clamp(0.0, 1.0);
-        let mut impulse = drive_impulse(error, relative, sized_on, drive.stiffness * strength, drive.damping * strength, h) + drive.feedforward * h;
-        // A swinging joint follows its arc, every substep: explicit, but at
-        // ω·h ≈ 0.03 stable whatever the leg's true inertia. Once per
-        // physics step instead, it chattered and once flung the body away.
+        let (mut stiffness, mut damping) = (Mat3::IDENTITY * (drive.stiffness * strength), Mat3::IDENTITY * (drive.damping * strength));
+        // A swinging joint follows its arc at `SWING_FREQUENCY`, critically
+        // damped, its gains the whole leg beyond it as a lump, solved
+        // implicitly with the drive on the bodies' own inertia. Explicit
+        // instead (`I·(−ω²e − 2ω·ω_rel)` added after), the thigh body alone
+        // took the whole leg's damping and chattered ±100 N·m against its
+        // abductors' budget. Sized on the lump, a ball-joint knee passing no
+        // twist on, the shin spun ~50 rad/s about its own length.
+        let mut lead = Vec3::ZERO;
         if let Some(lump) = drive.swing_inertia {
             let w = std::f32::consts::TAU * SWING_FREQUENCY;
-            impulse += lump * (-error * (w * w) - relative * (2.0 * w)) * (strength * h);
+            stiffness += lump * (w * w * strength);
+            damping += lump * (2.0 * w * strength);
+            let speeding = if drive.override_world { drive.override_acceleration } else { parent_now * drive.override_acceleration };
+            lead = lump * speeding * strength;
         }
+        let mut impulse = drive_impulse_with(error, relative - wanted_spin, sized_on, stiffness, damping, h) + (drive.feedforward + lead) * h;
         if drive.child_grounded
             && let Some((sole, _, weight)) = drive.sole
         {
@@ -449,6 +521,9 @@ pub(crate) fn manage_joint_drives(
                         primed: false,
                         strength: 1.0,
                         relative_override: None,
+                        override_world: false,
+                        override_rate: Vec3::ZERO,
+                        override_acceleration: Vec3::ZERO,
                         swing_inertia: None,
                     });
                 }
@@ -547,6 +622,7 @@ pub(crate) fn carry_weight(
             ragdoll.stand_height = None;
             ragdoll.own_step = None;
             ragdoll.own_transfer = None;
+            ragdoll.own_rest = None;
             continue;
         }
         let all: Vec<Bone> = Bone::ALL.iter().copied().filter(|&bone| ragdoll.bodies[bone].is_some()).collect();
@@ -570,9 +646,16 @@ pub(crate) fn carry_weight(
         let touching = |leg: usize| feet_bodies[leg].is_some_and(|foot| touches_ground(foot, &contacts, &kinds));
         // A step under way: the swinging foot is not planted; it lands once
         // its time is up and it is down.
+        let mut landed = false;
         if let Some(mut step) = ragdoll.own_step {
             step.elapsed += time.delta_secs();
-            ragdoll.own_step = (step.elapsed < step.duration || !touching(step.leg)).then_some(step);
+            // Down once its time is up and it is on the ground where it was
+            // going, or, late, wherever it is: ended on touching alone, a
+            // dragging foot ended its side step 20 cm short.
+            let ankle = state[FEET[step.leg]].2;
+            let arrived = Vec2::new(ankle.x - step.to.x, ankle.z - step.to.z).length() < ARRIVED || step.elapsed >= step.duration * 1.5;
+            ragdoll.own_step = (step.elapsed < step.duration || !touching(step.leg) || !arrived).then_some(step);
+            landed = step.recovery && ragdoll.own_step.is_none();
         }
         let swinging = ragdoll.own_step.map(|step| step.leg);
         let planted: Vec<usize> = (0..2).filter(|&leg| Some(leg) != swinging && touching(leg)).collect();
@@ -631,6 +714,12 @@ pub(crate) fn carry_weight(
             let apart = state[Bone::RightFoot].2 - state[Bone::LeftFoot].2;
             let apart = Vec3::new(apart.x, 0.0, apart.z);
             if planted.len() == 2 && ragdoll.stand_rest.is_none() {
+                // Where the animation stands it. On the drawn stance that is
+                // 8.6 cm ahead of the ankles, leaving the pressure 13.5 cm of
+                // sole ahead and 17.3 behind: why it catches 0.4 m/s forward
+                // and 0.5 back (room / √k, exactly). Held at quiet stance's
+                // ~5 cm instead, the limits turned (0.5 forward, 0.4 back)
+                // but the side steps on its own feet failed at 0.6 m/s.
                 ragdoll.stand_rest = Some(Vec3::new(com.x - middle.x, 0.0, com.z - middle.z));
                 ragdoll.feet_home = Some(apart);
                 let hips = (state[Bone::LeftUpLeg].2.y + state[Bone::RightUpLeg].2.y) * 0.5;
@@ -648,8 +737,17 @@ pub(crate) fn carry_weight(
                 // Not moved over it first: pushed onto it, the COM ran on past
                 // the foot's outer edge, asked for a side step outward, and
                 // each widened the stance until it ran away.
+                // And only once that foot can hold it alone: its capture
+                // point, not just its COM, over it. Joined as the COM came
+                // near, a body still drifting 0.14 m/s ran on over the one
+                // foot and fell.
                 let (over, inside) = nearest_in_polygon(flat(com), &soles[onto].0);
-                if (inside || over.distance(flat(com)) < JOIN_REACH) && flat(velocity).length() < 0.15 {
+                let held = {
+                    let k = ((com.y - state[FEET[onto]].2.y) / gravity.0.length().max(1.0e-6)).max(0.0);
+                    let (edge, within) = nearest_in_polygon(flat(com) + flat(velocity) * k.sqrt(), &soles[onto].0);
+                    within || edge.distance(flat(com) + flat(velocity) * k.sqrt()) < UNCATCHABLE
+                };
+                if (inside || over.distance(flat(com)) < JOIN_REACH) && held && flat(velocity).length() < JOIN_SPEED {
                     let home = ragdoll.feet_home.unwrap_or(apart);
                     let joining = 1 - onto;
                     let to = if joining == 1 { state[Bone::LeftFoot].2 + home } else { state[Bone::RightFoot].2 - home };
@@ -662,6 +760,7 @@ pub(crate) fn carry_weight(
                         elapsed: 0.0,
                         duration: super::balance::JOIN_SECONDS,
                         foot,
+                        recovery: false,
                     });
                     ragdoll.own_transfer = None;
                 }
@@ -670,9 +769,34 @@ pub(crate) fn carry_weight(
             }
             let ankles = planted.iter().map(|&leg| state[FEET[leg]].2.y).sum::<f32>() / planted.len() as f32;
             let k = ((com.y - ankles) / gravity.0.length().max(1.0e-6)).max(0.0);
+            let hull = convex_hull(soles.iter().flat_map(|(sole, _)| sole.iter().copied()).collect());
+            // After a recovery step the body comes to rest where it was
+            // caught, the capture point as it landed, and the feet join
+            // there: pulled back to their middle instead, a forward step's
+            // staggered stance sent it back at 0.39 m/s, past the rear foot.
+            // Settled there with the feet wide, the weight shifts onto the foot
+            // that will stand, for the other to join: never moved over it, a
+            // side step's wide stance stood 7 cm low and never joined.
+            if !displaced {
+                ragdoll.own_rest = None;
+            } else if landed || ragdoll.own_rest.is_none() {
+                ragdoll.own_rest = Some(nearest_in_polygon(flat(com) + flat(velocity) * k.sqrt(), &hull).0);
+            } else if planted.len() == 2
+                && ragdoll.own_step.is_none()
+                && flat(velocity).length() < JOIN_SPEED
+                && let Some(onto) = ragdoll.own_transfer
+            {
+                // At a walk's weight-shift pace: moved there at once, the law
+                // asked ~4 m/s² of a body 30 cm off, which through the
+                // ankle's 9 cm height is more than its evertors give.
+                let centre = soles[onto].0.iter().copied().sum::<Vec2>() / soles[onto].0.len().max(1) as f32;
+                let now = ragdoll.own_rest.unwrap_or(flat(com));
+                let way = centre - now;
+                ragdoll.own_rest = Some(now + way.clamp_length_max(SHIFT_SPEED * time.delta_secs()));
+            }
+            let rest = ragdoll.own_rest.unwrap_or(rest);
             let (w, zeta) = (super::balance::RECOVERY_FREQUENCY, super::balance::RECOVERY_DAMPING);
             let wanted = flat(com) + (flat(com) - rest) * (k * w * w) + flat(velocity) * (2.0 * zeta * w * k);
-            let hull = convex_hull(soles.iter().flat_map(|(sole, _)| sole.iter().copied()).collect());
             // Beyond what the feet can catch: the capture point (Hof) out of
             // the soles. It steps where the capture point will be, as the
             // standing balance does (`balance::Balance`); with no step that
@@ -680,6 +804,38 @@ pub(crate) fn carry_weight(
             // body. Mid-step the capture point is outside the one sole
             // standing, as it must be.
             let capture = flat(com) + flat(velocity) * k.sqrt();
+            // A recovery step under way lands where the capture point will be
+            // when it does, aimed afresh each frame (Hof's foot placement, as
+            // Raibert's hoppers update theirs): planned once, the body standing
+            // on one foot beside its COM drifted sideways through the swing,
+            // ran on past the joined feet and fell.
+            let half = ragdoll.feet_home.map_or(0.11, |home| Vec2::new(home.x, home.z).length() * 0.5);
+            if let Some(step) = ragdoll.own_step.as_mut()
+                && step.recovery
+                && let [stance] = planted[..]
+            {
+                let remaining = (step.duration - step.elapsed).max(0.0);
+                let (pressure, _) = nearest_in_polygon(capture, &soles[0].0);
+                let then = pressure + (capture - pressure) * (remaining / k.max(1.0e-4).sqrt()).exp();
+                let mut landing = then + (capture - pressure).normalize_or_zero() * STEP_MARGIN;
+                // Out to the side, past where the capture point will be by
+                // `SIDE_MARGIN` (Hof's lateral foot placement), and never
+                // across the standing foot: at least the stance's own
+                // half-width out. Landed only its forward margin past it, a
+                // body drifting sideways through the swing ran on over the
+                // new foot and fell as the other joined.
+                let left = flat(state[Bone::LeftUpLeg].2 - state[Bone::RightUpLeg].2).normalize_or_zero();
+                let side = if stance == 0 { -left } else { left };
+                let stance_centre = soles[0].0.iter().copied().sum::<Vec2>() / soles[0].0.len().max(1) as f32;
+                let out = (landing - stance_centre).dot(side);
+                let wanted = half.max((then - stance_centre).dot(side) + SIDE_MARGIN);
+                if out < wanted {
+                    landing += side * (wanted - out);
+                }
+                let start = flat(step.from);
+                let travel = (landing - start).clamp_length_max(super::balance::MAX_STEP);
+                step.to = Vec3::new(start.x + travel.x, step.from.y, start.y + travel.y);
+            }
             let (edge, caught) = nearest_in_polygon(capture, &hull);
             if !caught && edge.distance(capture) > UNCATCHABLE && ragdoll.own_step.is_none() {
                 let step = (ragdoll.steps_on_own_feet && planted.len() == 2)
@@ -764,22 +920,44 @@ pub(crate) fn carry_weight(
             }
         };
         // A swinging leg is driven along its arc: the thigh and shin turned
-        // to put the ankle on it (`leg_toward`), relative to their parents;
-        // the foot keeps the animation's angle to the shin.
-        let mut swing: Vec<(Bone, Quat)> = Vec::new();
+        // to put the ankle on it (`leg_toward`); the foot carried flat. The
+        // thigh aims in the world (SIMBICON's swing hip), the rest relative
+        // to their parents: held to its pelvis, the thigh followed the
+        // pelvis's ~20° yaw in single support and the foot landed 8 cm wide
+        // and short. Each entry: bone, rotation, whether it is world.
+        let mut swing: Vec<(Bone, Quat, bool)> = Vec::new();
+        let rotation = |bone: Bone| ragdoll.bodies[bone].and_then(|body| bodies.get(body).ok()).map(|(_, rotation, ..)| rotation.0);
+        let target = |bone: Bone| ragdoll.bodies[bone].and_then(|body| targets.get(body).ok()).map(|target| target.target);
+        // A leg's thigh and shin, world, aimed along `thigh_way` and
+        // `shin_way` under a pelvis at `pelvis`: each the animation's
+        // rotation under its parent, swung the least that aims it. Aimed from
+        // the body's own rotation instead, a target kept whatever twist the
+        // thigh had, its rate fed that twist back, and the swinging hip spun
+        // up to 9 rad/s about its length.
+        let aim_leg = |leg: usize, pelvis: Quat, thigh_way: Vec3, shin_way: Vec3| -> Option<(Quat, Quat)> {
+            let [thigh, shin, foot] = [[Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot], [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot]][leg];
+            let (hip, knee, ankle) = (state[thigh].2, state[shin].2, state[foot].2);
+            let aim = |parent: Quat, parent_bone: Bone, bone: Bone, from: Vec3, way: Vec3| -> Option<Quat> {
+                let base = (parent * (target(parent_bone)?.inverse() * target(bone)?)).normalize();
+                let along = base * (rotation(bone)?.inverse() * from.normalize_or_zero());
+                Some((Quat::from_rotation_arc(along.normalize_or_zero(), way) * base).normalize())
+            };
+            let thigh_world = aim(pelvis, Bone::Hips, thigh, knee - hip, thigh_way)?;
+            let shin_world = aim(thigh_world, thigh, shin, ankle - knee, shin_way)?;
+            Some((thigh_world, shin_world))
+        };
         if let Some(step) = ragdoll.own_step {
             let [thigh, shin, foot] = [[Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot], [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot]][step.leg];
             let (hip, knee, ankle) = (state[thigh].2, state[shin].2, state[foot].2);
             let left = state[Bone::LeftUpLeg].2 - state[Bone::RightUpLeg].2;
             let forward = Vec3::new(left.x, 0.0, left.z).normalize_or_zero().cross(Vec3::Y);
             let (thigh_way, shin_way) = leg_toward(hip, swing_point(&step), hip.distance(knee), knee.distance(ankle), forward);
-            let rotation = |bone: Bone| ragdoll.bodies[bone].and_then(|body| bodies.get(body).ok()).map(|(_, rotation, ..)| rotation.0);
-            if let (Some(pelvis), Some(thigh_now), Some(shin_now)) = (rotation(Bone::Hips), rotation(thigh), rotation(shin)) {
-                let thigh_world = Quat::from_rotation_arc((knee - hip).normalize_or_zero(), thigh_way) * thigh_now;
-                let shin_world = Quat::from_rotation_arc((ankle - knee).normalize_or_zero(), shin_way) * shin_now;
-                swing.push((thigh, (pelvis.inverse() * thigh_world).normalize()));
-                swing.push((shin, (thigh_world.inverse() * shin_world).normalize()));
-                swing.push((foot, (shin_world.inverse() * step.foot).normalize()));
+            if let Some(pelvis) = target(Bone::Hips)
+                && let Some((thigh_world, shin_world)) = aim_leg(step.leg, pelvis, thigh_way, shin_way)
+            {
+                swing.push((thigh, thigh_world, true));
+                swing.push((shin, (thigh_world.inverse() * shin_world).normalize(), false));
+                swing.push((foot, (shin_world.inverse() * step.foot).normalize(), false));
             }
         }
         // With the feet off their stance (a step under way, or taken), the
@@ -788,10 +966,9 @@ pub(crate) fn carry_weight(
         // upright pelvis, its foot kept as it lies. Left on the animation's
         // angles, the closed chain tilted the trunk 7-23° after a step.
         if ragdoll.own_step.is_some() || feet_apart {
-            let pelvis_target = ragdoll.bodies[Bone::Hips].and_then(|body| targets.get(body).ok()).map(|target| target.target);
+            let pelvis_target = target(Bone::Hips);
             let left = state[Bone::LeftUpLeg].2 - state[Bone::RightUpLeg].2;
             let forward = Vec3::new(left.x, 0.0, left.z).normalize_or_zero().cross(Vec3::Y);
-            let rotation = |bone: Bone| ragdoll.bodies[bone].and_then(|body| bodies.get(body).ok()).map(|(_, rotation, ..)| rotation.0);
             for &leg in &planted {
                 let [thigh, shin, foot] = [[Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot], [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot]][leg];
                 let (hip, knee, ankle) = (state[thigh].2, state[shin].2, state[foot].2);
@@ -804,12 +981,12 @@ pub(crate) fn carry_weight(
                 let reach = ((0.98 * (upper + lower)).powi(2) - across * across).max(0.0).sqrt();
                 let held = Vec3::new(hip.x, ankle.y + height.min(reach), hip.z);
                 let (thigh_way, shin_way) = leg_toward(held, ankle, upper, lower, forward);
-                if let (Some(pelvis), Some(thigh_now), Some(shin_now), Some(foot_now)) = (pelvis_target, rotation(thigh), rotation(shin), rotation(foot)) {
-                    let thigh_world = Quat::from_rotation_arc((knee - hip).normalize_or_zero(), thigh_way) * thigh_now;
-                    let shin_world = Quat::from_rotation_arc((ankle - knee).normalize_or_zero(), shin_way) * shin_now;
-                    swing.push((thigh, (pelvis.inverse() * thigh_world).normalize()));
-                    swing.push((shin, (thigh_world.inverse() * shin_world).normalize()));
-                    swing.push((foot, (shin_world.inverse() * foot_now).normalize()));
+                if let (Some(pelvis), Some(foot_now)) = (pelvis_target, rotation(foot))
+                    && let Some((thigh_world, shin_world)) = aim_leg(leg, pelvis, thigh_way, shin_way)
+                {
+                    swing.push((thigh, (pelvis.inverse() * thigh_world).normalize(), false));
+                    swing.push((shin, (thigh_world.inverse() * shin_world).normalize(), false));
+                    swing.push((foot, (shin_world.inverse() * foot_now).normalize(), false));
                 }
             }
         }
@@ -828,7 +1005,21 @@ pub(crate) fn carry_weight(
         };
         for &bone in &all {
             let Ok(mut drive) = drives.get_mut(ragdoll.bodies[bone].unwrap()) else { continue };
-            drive.relative_override = swing.iter().find(|(b, _)| *b == bone).map(|(_, relative)| *relative);
+            let next = swing.iter().find(|(b, ..)| *b == bone);
+            let world = next.is_some_and(|(_, _, world)| *world);
+            let next = next.map(|(_, rotation, _)| *rotation);
+            let dt = time.delta_secs();
+            let (rate, acceleration) = match (drive.relative_override, next) {
+                (Some(before), Some(now)) if dt > 0.0 && drive.override_world == world => {
+                    let rate = to_scaled_angle_axis(neighborhood(before, now) * before.inverse()) / dt;
+                    (rate, (rate - drive.override_rate) / dt)
+                }
+                _ => (Vec3::ZERO, Vec3::ZERO),
+            };
+            drive.override_rate = rate;
+            drive.override_acceleration = acceleration;
+            drive.relative_override = next;
+            drive.override_world = world;
             // The weight it carries as the body stands now (the pressure
             // under the COM), and with the balance's pressure.
             let (still, _) = carried(bone, flat(com));
@@ -889,7 +1080,7 @@ fn plan_own_step(capture: Vec2, k: f32, soles: &[(Vec<Vec2>, f32)], state: &supe
         1
     };
     let (pressure, _) = nearest_in_polygon(capture, &soles[1 - leg].0);
-    let seconds = if sideways { super::balance::SIDE_STEP_SECONDS } else { super::balance::STEP_SECONDS };
+    let seconds = OWN_STEP_SECONDS;
     // A little past where the capture point will be (Hof's foot placement),
     // so the stance it lands in can brake: landed exactly there, the body
     // was only just caught and ran on.
@@ -903,13 +1094,15 @@ fn plan_own_step(capture: Vec2, k: f32, soles: &[(Vec<Vec2>, f32)], state: &supe
         return None;
     }
     let from = state[[Bone::LeftFoot, Bone::RightFoot][leg]].2;
-    Some(super::ragdoll::OwnStep { leg, from, to: from + Vec3::new(travel.x, 0.0, travel.y), elapsed: 0.0, duration: seconds, foot: Quat::IDENTITY })
+    Some(super::ragdoll::OwnStep { leg, from, to: from + Vec3::new(travel.x, 0.0, travel.y), elapsed: 0.0, duration: seconds, foot: Quat::IDENTITY, recovery: true })
 }
 
 /// Where a swinging ankle should be `elapsed` into `step`, world: eased
 /// from where it lifted to where it lands, lifted
 /// [`super::balance::STEP_LIFT`] at mid-swing; once its time is up,
-/// pressed a little into the ground to find it.
+/// pressed a little into the ground to find it. (Carried 8 cm high from
+/// the first third to the last fifth instead, the push matrix lost as many
+/// steps as it gained.)
 pub fn swing_point(step: &super::ragdoll::OwnStep) -> Vec3 {
     let t = (step.elapsed / step.duration).clamp(0.0, 1.0);
     if t >= 1.0 {
