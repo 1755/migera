@@ -370,8 +370,9 @@ pinned ragdoll following the animation, sole feet (4a).
   caught, 0.5 falls; back 0.5 / 0.6; sideways 0.5 / 0.6 (forward is
   weakest because the stance holds the COM 8.6 cm ahead of the ankles:
   room / √k exactly). Past that it steps on its own feet
-  (`steps_on_own_feet`, on by default): forward to 0.7, back to 0.8,
-  sideways to 0.7. See the
+  (`steps_on_own_feet`, on by default): 53 of 80 pushes of 0.5-0.8 m/s
+  caught over five timings, against 15 without; a stance left apart after
+  a step does not close (needs whole-body double-support control). See the
   [stepping note](./docs/knowledge/character-animation/ragdoll-and-physics/a-step-on-its-own-feet-aims-its-swing-in-the-world.md).
   Not built: the co-contraction log (none possible by construction).
 - [x] **4.3 Balance controller** (built as 4c above). Part 2's controller on the measured COM:

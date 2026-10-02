@@ -3706,8 +3706,10 @@ mod tests {
         // Each push falls without a step (0.4-0.5 m/s is the most the feet
         // catch) and is caught with one: the body stands 5 s later. Ahead and
         // back, the other foot joins and it stands as before, its pelvis as
-        // it stood, its hips at their height. Measured (`probe_own_feet_push_matrix`):
-        // caught to 0.7 m/s forward and sideways, 0.8 back.
+        // it stood, its hips at their height. One timing only: near the
+        // limits the push's timing decides as much as the push, so the
+        // limits are scored over five (`probe_own_feet_push_score`: 53 of
+        // 80 caught stepping, 15 without).
         for push in [Vec3::NEG_Z, Vec3::Z, Vec3::X, Vec3::NEG_X].map(|d| d * 0.6) {
             let fallen = |stepping: bool| {
                 let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
@@ -4005,7 +4007,10 @@ mod tests {
                     stored.stand_on_own_feet();
                     stored.steps_on_own_feet = stepping;
                 }
-                step(&mut app, (2.0 / TIMESTEP) as usize);
+                // `PUSH_DELAY=n`: the push n frames later, to tell a result from
+                // the chaos near each limit.
+                let delay: usize = std::env::var("PUSH_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(0);
+                step(&mut app, (2.0 / TIMESTEP) as usize + delay);
                 shove(&mut app, &ragdoll, direction * speed);
                 let mut steps = 0;
                 let mut was = false;
@@ -4033,6 +4038,47 @@ mod tests {
             }
             println!("{line}");
         }
+    }
+
+    // The push matrix scored over five push timings, which near each limit
+    // decide the outcome as much as the push (the idle's breathing phase):
+    // how many of 20 pushes per direction (0.5-0.8 m/s × 5 timings) end
+    // standing 12 s later, and how many of those with the feet left apart.
+    // One matrix at one timing flipped cells either way; compare changes on
+    // this score, never on a single matrix.
+    // `cargo test --release -- --ignored --nocapture probe_own_feet_push_score`.
+    #[test]
+    #[ignore]
+    fn probe_own_feet_push_score() {
+        let directions = [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("right", Vec3::X), ("left", Vec3::NEG_X)];
+        let mut total = 0;
+        for (name, direction) in directions {
+            let (mut caught, mut wide) = (0, 0);
+            for speed in [0.5f32, 0.6, 0.7, 0.8] {
+                for delay in [0usize, 7, 13, 19, 25] {
+                    let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+                    {
+                        let mut stored = app.world_mut().get_mut::<Ragdoll>(character).unwrap();
+                        stored.stand_on_own_feet();
+                        // `PROBE_NO_STEPS=1`: the feet alone.
+                        stored.steps_on_own_feet = std::env::var("PROBE_NO_STEPS").is_err();
+                    }
+                    step(&mut app, (2.0 / TIMESTEP) as usize + delay);
+                    shove(&mut app, &ragdoll, direction * speed);
+                    // 12 s: a stance left crossed by a (tried) crossover step
+                    // stood 6 s and fell at 9.
+                    step(&mut app, (12.0 / TIMESTEP) as usize);
+                    let stored = app.world().get::<Ragdoll>(character).unwrap();
+                    if stored.fall.is_none() && stored.carries_itself() {
+                        caught += 1;
+                        wide += stored.own_rest.is_some() as usize;
+                    }
+                }
+            }
+            total += caught;
+            println!("SCORE {name:>7}: {caught}/20 caught, {wide} left apart");
+        }
+        println!("SCORE total {total}/80");
     }
 
     // Plan step 4b: the drawn stance, stood pinned for 1 s, then on its own

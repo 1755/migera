@@ -1,6 +1,6 @@
 ---
 title: A step on its own feet aims its swing in the world and lands where the capture point will be
-description: "A ragdoll on its own feet steps past its capture point (on by default): swing thigh aimed in the world, tracked implicitly with the arc's rate and acceleration fed forward, landing re-aimed each frame. Catches ~0.2 m/s more each way. Read before changing stepping in joint_drive.rs."
+description: "A ragdoll on its own feet steps past its capture point (on by default): swing thigh aimed in the world, landing re-aimed each frame; 53/80 pushes caught vs 15. Why stances left apart cannot close (tether legs, closed chain), and seven fixes scored and dropped. Read before changing stepping."
 type: decision
 status: current
 tags:
@@ -17,7 +17,8 @@ code:
   - src/character/anim/ragdoll_plugin.rs
 sources:
   - "tests ragdoll_plugin::tests::a_step_on_its_own_feet_lands_where_it_was_aimed, a_push_its_feet_cannot_catch_is_caught_by_a_step_on_its_own_feet"
-  - "probes ragdoll_plugin::tests::probe_own_feet_push_matrix, probe_driven_ragdoll_stands (PUSH_V=x,z; ignored)"
+  - "probes ragdoll_plugin::tests::probe_own_feet_push_score, probe_own_feet_push_matrix (PUSH_DELAY), probe_driven_ragdoll_stands (PUSH_V=x,z; ignored)"
+  - "Maki & McIlroy (1997), The role of limb movements in maintaining upright stance: the change-in-support strategy, Phys Ther 77:488 (crossover steps in lateral recovery)"
   - "Yin, Loken & van de Panne (2007), SIMBICON: Simple Biped Locomotion Control, SIGGRAPH (swing hip in the world frame, stance hip takes the torso)"
   - "Hof, Gazendam & Sinke (2005), The condition for dynamic stability, J Biomech 38:1 (extrapolated COM, foot placement past it)"
   - "Raibert (1986), Legged Robots That Balance (foot placement re-aimed through the flight/swing)"
@@ -38,14 +39,25 @@ When its capture point leaves its soles, a body standing on its own feet
 (`Ragdoll::steps_on_own_feet`, on by default since 2026-10-02) steps
 rather than falls. It only acts where the body would otherwise fall, so it
 can never lose a push the feet catch. Measured with
-`probe_own_feet_push_matrix` on `puppet_base`, pushes on every body but
-the feet:
+`probe_own_feet_push_score` on `puppet_base` (2026-10-02). Pushes act on
+every body but the feet, at 0.5-0.8 m/s, each at five timings, and the
+body must still stand 12 s later:
 
-| Direction (drawn rig faces −Z) | Feet only | Stepping |
-|---|---|---|
-| Forward | 0.4 m/s | 0.5-0.7 (two steps, joined) |
-| Back | 0.5 | 0.6-0.8 (0.7+ ends in a wide stance) |
-| Sideways, each way | 0.5 | 0.6-0.7 (one side step, wide stance) |
+| Direction (drawn rig faces −Z) | Feet only | Stepping | Of those, feet left apart |
+|---|---|---|---|
+| Forward | 0 / 20 | 9 / 20 | 1 |
+| Back | 5 / 20 | 19 / 20 | 9 |
+| Right | 5 / 20 | 13 / 20 | 8 |
+| Left | 5 / 20 | 12 / 20 | 7 |
+| **Total** | **15 / 80** | **53 / 80** | 25 |
+
+**Score over timings, never one matrix.** Delaying a push by 7-25 frames
+changes the idle's breathing phase at the push. Near each limit that
+flipped as many cells as any change did. One matrix at one timing put the
+limits at "forward 0.7, back 0.8, sideways 0.7", but at another timing
+forward 0.6 fell. Several changes that looked like gains on one matrix
+lost 5-18 pushes on the score. This is the trap the fall-landing note
+describes.
 
 ## Context
 
@@ -134,13 +146,41 @@ changed nothing:
 - Steps land within 4 cm of their aim, measured ~1 cm on a 22 cm step
   (`a_step_on_its_own_feet_lands_where_it_was_aimed`). Re-aimed relative
   to the pelvis, the same test misses by 92 mm and the forward push falls.
-- **Side steps end in a wide stance (feet ~0.6 m apart, hips 7-8 cm low)
-  that never joins.** The weight cannot be shifted across it: the far
-  ankle's evertors saturate (0.9-1.1 of budget) through its 9 cm height.
-- **Single support is the weak phase.** The stance hip's abductors yield
-  (1.2× budget, eccentric) and the pelvis rolls 10-15° toward the swing,
-  which costs the swinging foot its clearance. This, not the step's aim,
-  is what limits sideways recovery.
+- **A stance left apart never closes** (25 of the 53 catches; side steps
+  leave the feet ~0.6-0.7 m apart and the hips 7-10 cm low). Two causes
+  were found (`DEBUG`-traced COP command against motion, 2026-10-02):
+  - **The trailing leg is a tether.** Planted feet are dominant, so they
+    are anchors. Once the trailing leg is at full stretch, the body cannot
+    move further toward the stepped foot. After a 0.6 m/s side step it
+    stopped 0.2-0.3 m short of the foot it was caught over.
+  - **The COP law cannot steer a closed chain.** With both feet anchored,
+    the legs' joint targets place the pelvis. Re-solved each frame from
+    wherever the hips already were, nothing held it there. The body moved
+    against the law's command: commanded to the left of the COM, it slid
+    back left at 0.29 m/s. The contacts carry only the feet's own ~20 N,
+    so there is no real ground COP to read. Standing normally, the
+    animation's fixed joint angles hold the pelvis, which is why ordinary
+    standing is stable.
+- **Single support is the weak phase sideways.** Stepping out with the
+  near leg leaves the body on the far foot as its COM races away from it.
+  The stance hip's abductors would need ~150 N·m of their 90; they yield
+  (1.2×, eccentric), and the pelvis rolls 10-15° toward the swing, costing
+  the swinging foot its clearance.
+- **Tried against both, each scored and dropped** (`probe_own_feet_push_score`,
+  baseline 53 / 80):
+
+  | Tried | Score | What happened |
+  |---|---|---|
+  | Crossover step: the far leg crosses in front (`around` 15 cm), the body stands on the near foot | 52 (47 with the hold below) | Pelvis roll in single support fell from 14-15° to 2-6°, the crossing foot landed on its aim, and right pushes gained (17 / 20). But the crossed stance stood 10 cm low with the knee and ankle twist saturated (1.3-1.4×); left pushes fell later (8 / 20), one at 9 s |
+  | Join as soon as the trailing leg is taut, while still moving (closes the stance) | 45 | Side stances closed (0 left apart), but the joins fell: the COM stopped short of where the capture point promised |
+  | Planted legs hold the hips at a set point moving to the rest at 0.3 m/s | 53 | Back pushes closed more often, but no total gain |
+  | Both legs to the lower leg's hip height (a lateral lunge) while shifting weight; choosing the foot to shift onto once settled | 54 / 45 | The lunge alone did nothing; with the settled choice the shift began, and the joins after it fell |
+  | Shuffle: side steps capped 0.25 m past stance width, then the trailing foot closes | all side pushes fell | A short step cannot brake 0.6 m/s; the body fell over the lead foot during the close |
+  | Legs solved 3 cm ahead of the hips, toward the rest point | lost forward pushes | Pulled the body past the front foot |
+  | Knee and ankle axial twist held as structure (hinge strength) | 53-58, within noise | No change in which joints saturate overall |
+
+  Every way of closing the stance found so far costs more catches than it
+  gains. The stance stays apart.
 - **Live** (`character_gallery`, a blow to the hips alone, which also
   stuns them):
   - On `puppet_base`, a 3 m/s backward blow steps and stands again, feet
@@ -148,15 +188,16 @@ changed nothing:
   - On `character.glb`, 2.5 m/s stands in 3 of 3 runs and 3 m/s falls in
     3 of 3; at 2 m/s the ankles alone hold it.
   - Front and Left gizmo views agree with the headless runs.
-- The outcomes near each limit are chaotic: one cell of the matrix flips
-  with small changes, as with fall landings.
-
 ## Revisit when
 
-- A wide stance should close up: that needs a weight shift through the
-  hips rather than the far ankle, or a step of the near foot instead.
-- Lateral recovery should go further: a crossover step, or a stance hip
-  that holds the pelvis level in single support.
+- **Double support is controlled as a whole body:** pelvis and COM by
+  the legs together (Jacobian-transpose or a contact QP), not a COP law
+  fed as statics into anchored legs. Then a stance can be closed by
+  moving the weight, and a crossed stance held.
+- **A planted foot can unload** (heel or toe lift, or dominance released
+  when its leg goes taut), so the trailing leg stops being a tether.
+- Either of these is a redesign of double support, not a tuning of the
+  step. Score any attempt with `probe_own_feet_push_score`.
 
 ## Related
 

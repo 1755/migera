@@ -41,6 +41,36 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Closing a stance after a step, and the sideways pelvis drop: tried, not fixed
+
+- **The push matrix is noisy.** Delaying a push 7-25 frames (the idle's
+  breathing phase) flips as many cells as a change does. Added
+  `probe_own_feet_push_score`, which scores 4 directions × 0.5-0.8 m/s ×
+  5 timings, standing 12 s later.
+  - Committed stepping: 53 / 80 caught (25 with the feet left apart).
+  - Stepping off: 15 / 80.
+  - The earlier "0.7 / 0.8 / 0.7 m/s" limits were one timing's.
+- **Root causes found** (commanded COP traced against the motion):
+  - With dominant planted feet, the trailing leg is a tether at full
+    stretch.
+  - In double support the COP law cannot steer the closed chain, and the
+    body moved against its command (0.29 m/s the wrong way).
+  - Stepping out sideways leaves the body on the far foot as the COM
+    races off it: ~150 N·m asked of 90 N·m of hip abductors.
+- **Scored and dropped** (each below the baseline or within its noise):
+  - crossover steps (pelvis roll 15° → 2-6°, but crossed stances 10 cm
+    low that fell later: 52, or 47 with the hip hold);
+  - early joins on a taut leg (45);
+  - legs holding the hips at a moving set point (53);
+  - a lateral lunge with the shift foot chosen once settled (45-54);
+  - shuffle side steps (every side push fell);
+  - legs solved ahead toward the rest point (lost forward pushes);
+  - a structural knee and ankle twist (within noise).
+- **Code unchanged; the attempt is kept as a patch, not committed.**
+  Closing a stance needs a redesign of double support: whole-body control
+  of the pelvis and COM by both legs, and feet that can unload. See the
+  [stepping note](./docs/knowledge/character-animation/ragdoll-and-physics/a-step-on-its-own-feet-aims-its-swing-in-the-world.md).
+
 ### Stepping on its own feet works; forward weakness explained; speeds sourced
 
 - **The step, on by default** (`steps_on_own_feet`). Found by tracing
