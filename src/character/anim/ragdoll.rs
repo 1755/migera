@@ -155,6 +155,44 @@ pub struct Ragdoll {
     /// own feet, `0..=1`: eased in and out over [`SWITCH_SECONDS`] as the
     /// body starts or stops carrying itself, so neither switch pops.
     pub stand_blend: f32,
+    /// Whether a body standing on its own feet steps when its feet cannot
+    /// catch it, rather than falling. EXPERIMENTAL, off by default: the
+    /// step swings and lands, but a swinging foot drifts outward and the
+    /// body then runs away sideways (see the knowledge note on a standing
+    /// ragdoll).
+    pub steps_on_own_feet: bool,
+    /// A recovery step under way on its own feet
+    /// (`joint_drive::carry_weight`).
+    pub own_step: Option<OwnStep>,
+    /// Standing on its own feet, the right ankle's place from the left's as
+    /// the body first stood (horizontal, world): where a joining foot goes.
+    pub feet_home: Option<Vec3>,
+    /// Standing on its own feet, how high the hip joints stood over the
+    /// ankles as the body first stood, metres: what a planted leg is solved
+    /// to hold the hips at after a step.
+    pub stand_height: Option<f32>,
+    /// The leg the weight is moving onto before the other joins it, after a
+    /// recovery step on its own feet.
+    pub own_transfer: Option<usize>,
+}
+
+/// A recovery step a body standing on its own feet is taking: one foot
+/// swinging from where it stood to where the capture point will be.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OwnStep {
+    /// Which leg: 0 the left, 1 the right.
+    pub leg: usize,
+    /// The ankle's joint point where it lifted, and where it lands, world.
+    pub from: Vec3,
+    /// See `from`.
+    pub to: Vec3,
+    /// Seconds into the swing, and how long it takes.
+    pub elapsed: f32,
+    /// See `elapsed`.
+    pub duration: f32,
+    /// The foot's world rotation as it lifted, flat on the floor: it is
+    /// carried so through the swing, to land flat.
+    pub foot: Quat,
 }
 
 /// How long switching between a pinned root and standing on its own feet
@@ -290,6 +328,11 @@ impl Default for Ragdoll {
             self_supporting: false,
             stand_rest: None,
             stand_blend: 0.0,
+            steps_on_own_feet: false,
+            own_step: None,
+            feet_home: None,
+            stand_height: None,
+            own_transfer: None,
         }
     }
 }

@@ -3608,36 +3608,104 @@ mod tests {
     #[test]
     fn a_ragdoll_on_its_own_feet_recovers_a_push_within_its_ankles_budget() {
         // Winter's pendulum law on the measured COM moves the pressure; the
-        // ankles carry it, held to what the sole can give. 0.4 m/s each way
-        // is caught on the feet; the COM comes back where it stood. The
-        // ankles stay under Winter's per-kg peak (§7.4.5, ~1.6 N·m/kg).
-        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
-        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
-        step(&mut app, (2.0 / TIMESTEP) as usize);
-        let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
-        let stood = centre_of_mass(&app, &ragdoll);
-        let feet = [Bone::LeftFoot, Bone::RightFoot].map(|b| app.world().get::<Position>(ragdoll.bodies[b].unwrap()).unwrap().0);
+        // ankles carry it, held to what the sole can give. Each push from a
+        // fresh stance is caught on the feet; the COM comes back where it
+        // stood. The ankles stay under their plantarflexors' 1.8 N·m/kg.
+        //
+        // 0.4 m/s each way. With the muscles' twitch on the balance and each
+        // direction's own strength, the limits are 0.5 forward and
+        // sideways, 0.4 back (the dorsiflexors' 0.57 N·m/kg).
         for push in [Vec3::Z, Vec3::NEG_Z, Vec3::X, Vec3::NEG_X].map(|d| d * 0.4) {
+            let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+            step(&mut app, (2.0 / TIMESTEP) as usize);
+            let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
+            let stood = centre_of_mass(&app, &ragdoll);
+            let feet = [Bone::LeftFoot, Bone::RightFoot].map(|b| app.world().get::<Position>(ragdoll.bodies[b].unwrap()).unwrap().0);
             shove(&mut app, &ragdoll, push);
             let (mut furthest, mut strongest) = (0.0f32, 0.0f32);
-            for _ in 0..(3.0 / TIMESTEP) as usize {
+            for frame in 0..(3.0 / TIMESTEP) as usize {
                 app.update();
+                assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_none(), "{push}: it fell {:.2} s in", frame as f32 * TIMESTEP);
                 furthest = furthest.max(Vec3::new(1.0, 0.0, 1.0).dot((centre_of_mass(&app, &ragdoll) - stood).abs()));
                 for foot in [Bone::LeftFoot, Bone::RightFoot] {
                     let drive = app.world().get::<super::super::joint_drive::JointDrive>(ragdoll.bodies[foot].unwrap()).unwrap();
                     strongest = strongest.max(drive.feedforward.length());
                 }
             }
-            assert!(app.world().get::<Ragdoll>(character).unwrap().fall.is_none(), "{push}: it fell");
             let back = centre_of_mass(&app, &ragdoll) - stood;
             assert!(Vec3::new(back.x, 0.0, back.z).length() < 0.01, "{push}: the COM stopped {:.0} mm off", back.length() * 1e3);
             assert!(furthest > 0.02, "{push}: the push hardly moved it ({:.0} mm)", furthest * 1e3);
-            assert!(strongest / mass < 1.6, "{push}: an ankle carried {:.2} N·m/kg", strongest / mass);
+            assert!(strongest / mass < 1.8, "{push}: an ankle carried {:.2} N·m/kg", strongest / mass);
             for (leg, foot) in [Bone::LeftFoot, Bone::RightFoot].into_iter().enumerate() {
                 let moved = app.world().get::<Position>(ragdoll.bodies[foot].unwrap()).unwrap().0 - feet[leg];
                 assert!(moved.length() < 0.003, "{push}: the {} moved {:.1} mm", foot.name(), moved.length() * 1e3);
             }
         }
+    }
+
+    #[test]
+    fn a_side_push_settles_on_its_own_feet() {
+        // With the whole command lagged by the twitch, a leaning trunk's
+        // weight arrived after it had leant further: a 0.3 m/s side push
+        // left the body swaying ±10-18 mm, the trunk 1-4.6°, without end.
+        // The posture's weight is the muscles' tone, at once; only the
+        // balance's correction lags.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        step(&mut app, (2.0 / TIMESTEP) as usize);
+        shove(&mut app, &ragdoll, Vec3::NEG_X * 0.3);
+        step(&mut app, (4.0 / TIMESTEP) as usize);
+        let (mut low, mut high) = (Vec3::MAX, Vec3::MIN);
+        for _ in 0..(2.0 / TIMESTEP) as usize {
+            app.update();
+            let com = centre_of_mass(&app, &ragdoll);
+            (low, high) = (low.min(com), high.max(com));
+        }
+        let wander = Vec3::new(high.x - low.x, 0.0, high.z - low.z).length();
+        assert!(wander < 0.003, "4 s after the push, the COM still wanders {:.1} mm", wander * 1e3);
+    }
+
+    #[test]
+    fn an_experimental_step_on_its_own_feet_swings_to_where_it_planned() {
+        // `steps_on_own_feet`, experimental: past what its feet catch, the
+        // body plans a step (Winter's capture point, as the standing
+        // balance does) and the swinging foot travels it, carried flat. Pins
+        // what works: before the swing was tracked on the leg as a lump,
+        // every substep, the foot covered 4 cm of a 20 cm step; now about
+        // 70 % of it. Not pinned:
+        // the foot drifts 7-9 cm outward on the way, which is what still
+        // makes the body run away sideways afterwards.
+        let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+        {
+            let mut stored = app.world_mut().get_mut::<Ragdoll>(character).unwrap();
+            stored.stand_on_own_feet();
+            stored.steps_on_own_feet = true;
+        }
+        step(&mut app, (2.0 / TIMESTEP) as usize);
+        // Backward: the drawn character faces −Z.
+        shove(&mut app, &ragdoll, Vec3::Z * 0.6);
+        let mut planned = None;
+        for _ in 0..(1.0 / TIMESTEP) as usize {
+            app.update();
+            let stored = app.world().get::<Ragdoll>(character).unwrap();
+            match (planned, stored.own_step) {
+                (None, Some(step)) => planned = Some(step),
+                (Some(step), None) => {
+                    let foot = ragdoll.bodies[[Bone::LeftFoot, Bone::RightFoot][step.leg]].unwrap();
+                    let ankle = app.world().get::<Position>(foot).unwrap().0 - rotation_of(&app, foot) * ragdoll.body_offsets[[Bone::LeftFoot, Bone::RightFoot][step.leg]];
+                    let way = step.to - step.from;
+                    let travelled = (ankle - step.from).dot(way.normalize());
+                    assert!(way.length() > 0.1, "a step of only {:.0} mm", way.length() * 1e3);
+                    // Measured: 153 of 221 mm, about 70 %: the swing lags
+                    // its arc and lands short.
+                    assert!(travelled > 0.6 * way.length(), "the foot travelled {:.0} mm of a {:.0} mm step", travelled * 1e3, way.length() * 1e3);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        panic!("no step was planned and landed within 1 s (planned: {planned:?})");
     }
 
     #[test]
@@ -3674,22 +3742,81 @@ mod tests {
         step(&mut app, (1.0 / TIMESTEP) as usize);
         let mass: f32 = ragdoll.bodies.iter().filter_map(|(_, b)| *b).map(|b| app.world().get::<ComputedMass>(b).unwrap().value()).sum();
         for (bone, drive) in drives_of(&app, &ragdoll) {
-            let expected = super::super::joint_drive::joint_budget(bone).0 * mass;
-            assert!((drive.budget - expected).abs() < 0.01 * expected, "{}: budget {:.1}, expected {expected:.1}", bone.name(), drive.budget);
+            let expected = super::super::joint_drive::joint_strengths(bone).0;
+            for (axis, ways) in expected.iter().enumerate() {
+                for (way, per_kg) in ways.iter().enumerate() {
+                    let budget = drive.budgets[axis][way];
+                    assert!((budget - per_kg * mass).abs() < 0.01 * per_kg * mass, "{}: budget {budget:.1}, expected {:.1}", bone.name(), per_kg * mass);
+                }
+            }
         }
         shove(&mut app, &ragdoll, Vec3::Z * 0.4);
         app.world_mut().write_message(RagdollHit::new(character, Bone::LeftForeArm, Vec3::Y * 4.0));
         let mut worst: (f32, Bone) = (0.0, Bone::Hips);
+        let parent_rotation = |app: &App, drive: &super::super::joint_drive::JointDrive| rotation_of(app, drive.parent);
         for _ in 0..(2.0 / TIMESTEP) as usize {
             app.update();
             for (bone, drive) in drives_of(&app, &ragdoll) {
-                let used = drive.applied.length() / drive.budget;
-                if used > worst.0 {
-                    worst = (used, bone);
+                // Per axis and way, in the joint's own frame.
+                let axes = Mat3::from_quat(parent_rotation(&app, &drive)) * drive.frame;
+                let torque = axes.transpose() * drive.applied;
+                for axis in 0..3 {
+                    let budget = drive.budgets[axis][if torque[axis] >= 0.0 { 0 } else { 1 }];
+                    let used = torque[axis].abs() / budget;
+                    if used > worst.0 {
+                        worst = (used, bone);
+                    }
                 }
             }
         }
         assert!(worst.0 <= 1.4 + 1.0e-3, "{} used {:.2} of its budget", worst.1.name(), worst.0);
+    }
+
+    #[test]
+    fn a_standing_body_pulls_each_joint_the_anatomical_way() {
+        // The sign conventions of `joint_strengths`, checked against the
+        // physics: standing with the COM ahead of the ankles (Winter's
+        // 4 cm), the ankles hold the body by pushing the toes down
+        // (positive about left). Read the other way, they would be capped
+        // by the dorsiflexors' 0.57 N·m/kg for the plantarflexors' 1.8.
+        // (The knees carry little about left standing, +9.6 N·m: the
+        // weight line passes near them, as Winter's quiet stance has it;
+        // their load is mostly the wide stance's, about forward.)
+        //
+        // Standing still the ankles carry almost nothing that way (the
+        // bodies' COM stands within millimetres of them), so the check is a
+        // push: pushed forward along the character's own forward, the
+        // ankles must push the toes down hard to bring it back; pushed
+        // back, lift them, within the dorsiflexors' budget.
+        let mass = 70.0;
+        for (way, sign) in [(1.0f32, 1.0f32), (-1.0, -1.0)] {
+            let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+            step(&mut app, (1.0 / TIMESTEP) as usize);
+            let foot = ragdoll.bodies[Bone::LeftFoot].unwrap();
+            let about_left = |app: &App| {
+                let drive = *app.world().get::<super::super::joint_drive::JointDrive>(foot).unwrap();
+                let axes = Mat3::from_quat(rotation_of(app, drive.parent)) * drive.frame;
+                ((axes.transpose() * drive.applied).x, axes.col(1))
+            };
+            let (_, forward) = about_left(&app);
+            println!("FACING frame forward {forward}, rig forward {}", crate::character::anim::gltf_rig::puppet_base_as_rendered().forward());
+            shove(&mut app, &ragdoll, forward * 0.3 * way);
+            let mut strongest = 0.0f32;
+            for _ in 0..(0.5 / TIMESTEP) as usize {
+                app.update();
+                let (pull, _) = about_left(&app);
+                if pull * sign > strongest * sign || strongest == 0.0 {
+                    strongest = pull;
+                }
+            }
+            if way > 0.0 {
+                assert!(strongest > 20.0, "pushed forward, the left ankle pulled at most {strongest:.1} N·m about left: not plantarflexing");
+            } else {
+                assert!(strongest < -10.0, "pushed back, the left ankle pulled at least {strongest:.1} N·m about left: not dorsiflexing");
+                assert!(strongest > -0.57 * mass * 1.4 - 1.0, "pushed back, the ankle pulled {strongest:.1} N·m, past the dorsiflexors");
+            }
+        }
     }
 
     #[test]
@@ -3703,7 +3830,7 @@ mod tests {
             if let Some(body) = *body
                 && let Some(mut drive) = app.world_mut().get_mut::<super::super::joint_drive::JointDrive>(body)
             {
-                drive.budget *= 0.1;
+                drive.budgets = drive.budgets.map(|ways| ways.map(|b| b * 0.1));
             }
         }
         let hips = ragdoll.bodies[Bone::Hips].unwrap();
@@ -3834,8 +3961,10 @@ mod tests {
     fn probe_driven_ragdoll_stands() {
         let (mut app, character, ragdoll, _) = drawn_standing_ragdoll_with(|_| {});
         app.world_mut().get_mut::<Ragdoll>(character).unwrap().stand_on_own_feet();
+        // `PROBE_STEPS=1`: the experimental steps on its own feet.
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().steps_on_own_feet = std::env::var("PROBE_STEPS").is_ok();
         let hips = ragdoll.bodies[Bone::Hips].unwrap();
-        let pose =|app: &App, body: Entity| app.world().get::<GlobalTransform>(body).unwrap().compute_transform();
+        let pose = |app: &App, body: Entity| app.world().get::<GlobalTransform>(body).unwrap().compute_transform();
         let start = pose(&app, hips);
         let feet = [Bone::LeftFoot, Bone::RightFoot].map(|b| pose(&app, ragdoll.bodies[b].unwrap()).translation);
         let foot_start_rotation = pose(&app, ragdoll.bodies[Bone::LeftFoot].unwrap()).rotation;
@@ -3890,6 +4019,69 @@ mod tests {
             }
             app.update();
             lowest_after = lowest_after.min(pose(&app, hips).translation.y);
+            let pushed_at = (2.0 / TIMESTEP) as usize;
+            if push.is_some() && frame >= pushed_at && frame < pushed_at + 90 && (frame - pushed_at).is_multiple_of(3) {
+                let stored = app.world().get::<Ragdoll>(character).unwrap();
+                let ankle = |bone: Bone| {
+                    let body = ragdoll.bodies[bone].unwrap();
+                    let at = app.world().get::<Position>(body).unwrap().0 - rotation_of(&app, body) * ragdoll.body_offsets[bone];
+                    format!("({:+.2},{:+.2},{:+.2})", at.x, at.y, at.z)
+                };
+                let hip_torque = |bone: Bone| {
+                    let body = ragdoll.bodies[bone].unwrap();
+                    app.world().get::<super::super::joint_drive::JointDrive>(body).map_or("-".to_string(), |drive| {
+                        let axes = Mat3::from_quat(rotation_of(&app, drive.parent)) * drive.frame;
+                        let t = axes.transpose() * drive.applied;
+                        format!("({:+.0},{:+.0},{:+.0}) of ({:.0}/{:.0},{:.0}/{:.0})", t.x, t.y, t.z, drive.budgets[0][0], drive.budgets[0][1], drive.budgets[1][0], drive.budgets[1][1])
+                    })
+                };
+                let swing_error = |bone: Bone| {
+                    let body = ragdoll.bodies[bone].unwrap();
+                    app.world().get::<super::super::joint_drive::JointDrive>(body).and_then(|drive| {
+                        let relative = drive.relative_override?;
+                        Some(super::super::joint_drive::drive_error(rotation_of(&app, body), rotation_of(&app, drive.parent), relative, Quat::IDENTITY).length().to_degrees())
+                    })
+                };
+                let (mut momentum, mut mass) = (Vec3::ZERO, 0.0);
+                for (_, body) in ragdoll.bodies.iter() {
+                    let Some(body) = *body else { continue };
+                    let m = app.world().get::<ComputedMass>(body).unwrap().value();
+                    momentum += app.world().get::<LinearVelocity>(body).unwrap().0 * m;
+                    mass += m;
+                }
+                let com = com_of(&app);
+                let velocity = momentum / mass;
+                let pelvis = rotation_of(&app, hips);
+                let roll = (pelvis * Vec3::X).y.asin().to_degrees();
+                println!(
+                    "COMSTATE com x {:+.3} z {:+.3} y {:.3} | v x {:+.2} z {:+.2} | capture x {:+.3} z {:+.3} | pelvis roll {:+.1}°",
+                    com.x,
+                    com.z,
+                    com.y,
+                    velocity.x,
+                    velocity.z,
+                    com.x + velocity.x * 0.105f32.sqrt(),
+                    com.z + velocity.z * 0.105f32.sqrt(),
+                    roll
+                );
+                let _ = hip_torque;
+                println!(
+                    "SWINGERR thigh L {:?} R {:?} shin L {:?} R {:?}",
+                    swing_error(Bone::LeftUpLeg).map(|e| e.round()),
+                    swing_error(Bone::RightUpLeg).map(|e| e.round()),
+                    swing_error(Bone::LeftLeg).map(|e| e.round()),
+                    swing_error(Bone::RightLeg).map(|e| e.round())
+                );
+                println!(
+                    "STEP +{:.2}s: step {:?} | ankles L {} R {} | hips y {:.3} | falling {}",
+                    (frame - pushed_at) as f32 * TIMESTEP,
+                    stored.own_step.map(|s| format!("leg {} t {:.2}/{:.2} to ({:+.2},{:+.2})", s.leg, s.elapsed, s.duration, s.to.x, s.to.z)),
+                    ankle(Bone::LeftFoot),
+                    ankle(Bone::RightFoot),
+                    pose(&app, hips).translation.y,
+                    stored.fall.is_some()
+                );
+            }
             if frame == 15 || frame == 30 || frame == 300 {
                 println!("ERRORS frame {frame}:{}", errors(&app));
             }

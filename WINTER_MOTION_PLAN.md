@@ -347,8 +347,8 @@ pinned ragdoll following the animation, sole feet (4a).
   torque per kg (Harbo 2012; Winter's walking peaks are use, not
   capacity), times body mass, on each joint's whole torque; at a tenth
   the body folds. Muscle behaviour: Hill force-velocity on the cap, and
-  the command lagged by Winter's twitch time (legs 75 ms, arms 50); the
-  lag cuts the push caught on the feet to ~0.4 m/s. Mode switching:
+  the balance correction lagged by Winter's twitch time (legs 75 ms,
+  arms 50); the lag cuts the push caught on the feet to ~0.4-0.5 m/s. Mode switching:
   `stop_standing_on_own_feet` re-pins where the body stands and eases to
   the animation, the screen blends 0.3 s each way (≤ 2 mm and 0.6° a
   frame against 20 mm and 2.2° snapped); a hit's stun slackens the
@@ -366,6 +366,10 @@ pinned ragdoll following the animation, sole feet (4a).
   sole; past the capture point it falls. Stands a minute within 5 mm;
   0.4 m/s each way caught with ankles < 1.6 N·m/kg; falls from 0.6
   forward and back, 0.8 sideways. Live both rigs: still within 5-6 mm.
+  With 4.2-4.5 and strength per direction (2026-10-02): forward (−Z) 0.4
+  caught, 0.5 falls; back 0.5 / 0.6; sideways 0.5 / 0.6. Stepping on its
+  own feet is built but off (`steps_on_own_feet`): the swing foot
+  drifts outward and the body runs away sideways.
   Not built: the co-contraction log (none possible by construction).
 - [x] **4.3 Balance controller** (built as 4c above). Part 2's controller on the measured COM:
   A/P ankle torque = W·(COP target − ankle); M/L hip abductor load/unload.

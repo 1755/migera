@@ -41,6 +41,7 @@ aliases:
 
 Contents: [Context](#context) · [Decision](#decision) ·
 [Alternatives](#alternatives-considered) · [Consequences](#consequences) ·
+[Stepping](#stepping-on-its-own-feet-tried-experimental-off-by-default) ·
 [Revisit when](#revisit-when)
 
 `Ragdoll::stand_on_own_feet` (plan step 4b) releases the pinned root and
@@ -191,23 +192,62 @@ after 1 s pinned:
     - 0.4 m/s each way: caught, the COM back within 1 cm, feet ≤ 3 mm,
       ankles ≤ 1.6 N·m/kg
       (`a_ragdoll_on_its_own_feet_recovers_a_push_within_its_ankles_budget`).
-    - Forward: 0.5 caught, 0.6 falls. Back: 0.4 caught, 0.6 falls.
-      Sideways: 0.6 caught, 0.8 falls
+    - Before the muscles' limits: back 0.5 caught, 0.6 falls; forward
+      0.4 caught, 0.6 falls; sideways 0.6 caught, 0.8 falls
       (`a_push_beyond_its_feet_makes_a_ragdoll_on_its_own_feet_fall`).
+    - With them (strength per axis, force-velocity, the balance's twitch
+      lag, 2026-10-02): forward 0.4 caught, 0.5 falls; back 0.5 caught,
+      0.6 falls; sideways 0.5 caught, 0.6 falls. Why forward is the
+      weakest is open: the sole reaches 0.22 m ahead of the ankle and
+      0.08 behind it.
+    - The drawn test character faces −Z. These limits were first
+      recorded with forward and back swapped (a +Z push is backward).
   - **Live, both rigs:** the last 5 s within 5-6 mm (the idle animation's
     breathing moves the targets).
 - The plan's co-contraction ratio is not logged: one feed-forward split
   by share and relative drives cannot co-contract by construction.
 - After a get-up the body stands on its own feet again, the screen
   blending in afresh from the rise's end.
-- The push limits above are without the muscles' lag. With it, forward
-  0.4 m/s is caught and 0.5 falls, sideways 0.6 falls (see the muscles
-  note).
+
+## Stepping on its own feet: tried, experimental, off by default
+
+`Ragdoll::steps_on_own_feet` (2026-10-02) steps instead of falling when
+the capture point leaves the soles. Each part was found by tracing a
+backward 0.6 m/s push frame by frame (`probe_driven_ragdoll_stands`,
+`PROBE_STEPS=1`):
+- **Where:** the standing balance's own rule, the swinging sole landing
+  where the capture point will be (`e^{T/√k}` from the stance foot's
+  pressure point), plus `STEP_MARGIN` 5 cm. Landed exactly there, the
+  body was only just caught and ran on.
+- **The swing:** the thigh and shin are driven toward a two-bone IK
+  solution (`leg_toward`, unit-tested) along a lifted arc. A tracking
+  torque `I·(−ω²e − 2ω·ω_rel)` on the leg as a lump about each joint
+  is applied every substep at 4 Hz. Sized on the thigh body alone, the
+  foot covered 4 cm of a 20 cm step. Applied once per physics step, the
+  tracking chattered and once flung the body away. Now the foot covers
+  ~70 % of the step (`an_experimental_step_on_its_own_feet_swings_to_where_it_planned`).
+- **The foot is carried flat** as it lifted: at the animation's angle to
+  a shin swung forward, it landed toes down and behind, on a corner.
+- **Support is the whole sole face**, whatever its tilt: taken as the
+  corners on the ground, a backward step landing toes first stood on its
+  toe edge and read as uncaught.
+- **After a step:** the planted legs are solved to their feet from the
+  hips held at the stance's height, against the animation's upright
+  pelvis. Solved from where the hips were, they let the body sink 50 mm
+  in 0.6 s; left on the animation's angles, the trunk tilted 7-23°. Then
+  the other foot joins at the stance's own width. Pushing the COM onto
+  the stepped foot first carried it past the foot's edge and into ever
+  wider side steps.
+- **Still open, why it stays off:** the swinging foot drifts 7-13 cm
+  outward although its target and IK are right, at any tracking
+  stiffness (4-10 Hz). The body then stands on a foot far to the side,
+  falls toward the swing side, and runs away in side steps. Most pushes
+  past the feet still fall.
 
 ## Revisit when
 
-- The body should step on its own feet: the capture-point fall is then
-  where the step starts.
+- The swinging foot's outward drift is understood (see the stepping
+  section): then `steps_on_own_feet` can be on by default.
 - A planted foot must roll onto its toes or heel, or a hand bears weight:
   the planted test is "touches the ground", and dominance pins the whole
   foot.

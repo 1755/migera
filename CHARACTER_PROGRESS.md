@@ -41,6 +41,34 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Muscle gaps: strength per direction, measured speeds; stepping on its own feet tried
+
+- **Strength per axis and direction.** Each drive caps its torque per
+  axis of the character (left, forward, up) and per way, in N·m/kg
+  (Harbo 2012 and others): ankle plantarflexion 1.8, dorsiflexion 0.57;
+  knee and elbow side axes `HINGE` 5 (a hinge's frontal torque is the
+  joint's structure, not a muscle; a 0.6 cap there let the body wander
+  sideways). The right side mirrors forward and up.
+- **Measured maximal speeds** (Anderson 2007): ankle 21, knee 24, hip 19,
+  elbow 16.5 rad/s, the rest estimated.
+- **Only the balance correction lags** by the twitch time; the static
+  weight acts at once. Lagging the whole command swayed the trunk
+  without end (28.9 mm of wander after a side push, now under 3).
+- **Push limits, with the directions corrected** (the drawn rig faces
+  −Z; earlier entries had forward and back swapped): forward 0.4 m/s
+  caught, 0.5 falls; back 0.5 caught, 0.6 falls; sideways 0.5 caught,
+  0.6 falls. Why forward is weakest is open.
+- **Stepping on its own feet: built, off by default**
+  (`Ragdoll::steps_on_own_feet`). Swing by two-bone IK with lumped-inertia
+  tracking each substep, the foot carried flat, the stance hips held at
+  standing height, support from the whole sole face. The swing foot
+  covers ~70 % of a planned step (153 of 221 mm), but drifts 7-13 cm
+  outward at any tracking stiffness, and the body then runs away in
+  side steps. See the
+  [standing note](./docs/knowledge/character-animation/ragdoll-and-physics/a-standing-ragdoll-carries-its-weight-through-joint-torques.md#stepping-on-its-own-feet-tried-experimental-off-by-default).
+- `cargo test --release --lib`: 1087 passed, 20 ignored. Clippy: 0
+  warnings.
+
 
 ### Steps 4.2, 4.4, 4.5: muscle strength, twitch, speed, and mode switching
 
@@ -58,9 +86,9 @@ purely because fixed overhead is not amortized.
   - The commanded torque lags by Winter's twitch time (legs 75 ms, arms
     50, trunk 60 by choice), a critically damped response solved
     exactly. The drive's stiffness stays immediate.
-  - The lag costs pushes: forward caught to 0.4 m/s (0.5 without it),
-    sideways under 0.6 (0.6 without). At twice the twitch, even 0.4
-    falls.
+  - The lag costs pushes: backward caught to 0.4 m/s (0.5 without it;
+    first logged as forward, see the entry above), sideways under 0.6
+    (0.6 without). At twice the twitch, even 0.4 falls.
 - **4.5 mode switching.**
   - On its own feet the screen shows the bodies. `stop_standing_on_own_feet`
     pins the root where the body stands and eases it to the animation;
@@ -92,8 +120,10 @@ purely because fixed overhead is not amortized.
     undamped.
   - 0.4 m/s pushes each way are caught: the COM is back within 1 cm, the
     feet move ≤ 3 mm, the ankles carry < 1.6 N·m/kg.
-  - Limits without a step: forward 0.5 caught, 0.6 falls; back 0.4
-    caught, 0.6 falls; sideways 0.6 caught, 0.8 falls.
+  - Limits without a step: back 0.5 caught, 0.6 falls; forward 0.4
+    caught, 0.6 falls; sideways 0.6 caught, 0.8 falls. (First logged
+    with forward and back swapped: the drawn rig faces −Z, so a +Z push
+    is backward.)
   - Live, both rigs: hips within 5-6 mm over the last 5 s, feet 0.0 mm.
 - **Tried and dropped:**
   - the COP on the ankles alone: the knees gave way, ±5 mm sway, never
