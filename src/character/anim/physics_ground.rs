@@ -32,8 +32,10 @@ pub struct PhysicsGround {
     /// The floor's height, metres: the answer away from the feet, and below
     /// any hit lower than it.
     pub floor: f32,
-    /// The highest surface above the floor a foot will stand on, metres;
-    /// anything taller is an obstacle the foot does not climb.
+    /// The highest surface above the ground the body stands on (`support`)
+    /// a foot will stand on, metres; anything taller is an obstacle the foot
+    /// does not climb. Measured from the floor, it hid every stair above the
+    /// second and every ramp above 0.35 m.
     pub max_step: f32,
     /// The grid's spacing, metres, and how many samples it reaches out from
     /// the foot's centre each way.
@@ -45,6 +47,9 @@ pub struct PhysicsGround {
     /// The ground the body stands on: the mean height under its two feet,
     /// eased over [`SUPPORT_SECONDS`]. Written by [`sample_physics_ground`].
     pub support: f32,
+    /// That mean as sampled this frame, before the ease: well below
+    /// `support`, the feet are over a drop.
+    pub under: f32,
 }
 
 /// How quickly the body rises or sinks to the ground under its feet,
@@ -57,7 +62,7 @@ impl Default for PhysicsGround {
     fn default() -> Self {
         // ±0.2 m about the ankle at 5 cm: the sole's 0.22 m ahead and 0.09
         // behind, with a margin for a foot moving a frame's worth.
-        Self { floor: 0.0, max_step: 0.35, spacing: 0.05, reach: 4, ignore: Vec::new(), support: 0.0 }
+        Self { floor: 0.0, max_step: 0.35, spacing: 0.05, reach: 4, ignore: Vec::new(), support: 0.0, under: 0.0 }
     }
 }
 
@@ -121,15 +126,17 @@ pub fn sample_physics_ground(
             // Centred between ankle and ball, the sole's middle.
             let centre = (ankle.translation() + toe.translation()) * 0.5;
             soles.push(centre);
-            let from = config.floor + config.max_step + 0.3;
+            // From a step above the ground the body stands on, down to the
+            // floor: a stair or ramp the body is on, and any drop below it.
+            let from = config.support + config.max_step + 0.3;
             for i in -config.reach..=config.reach {
                 for j in -config.reach..=config.reach {
                     let x = centre.x + i as f32 * config.spacing;
                     let z = centre.z + j as f32 * config.spacing;
                     let Some(hit) = spatial.cast_ray(Vec3::new(x, from, z), Dir3::NEG_Y, from - config.floor + 0.05, true, &filter) else { continue };
                     let height = from - hit.distance;
-                    // The floor itself, or anything too tall to stand on.
-                    if height <= config.floor + 1.0e-3 || height > config.floor + config.max_step {
+                    // The floor itself, or anything too tall to step onto.
+                    if height <= config.floor + 1.0e-3 || height > config.support + config.max_step {
                         continue;
                     }
                     samples.push((Vec2::new(x, z), GroundHit { height, normal: hit.normal }));
@@ -140,6 +147,7 @@ pub fn sample_physics_ground(
         let mut sampled = SampledGround { floor: config.floor, samples, spacing: config.spacing, body: None, support: config.floor };
         if !soles.is_empty() {
             let under = soles.iter().map(|sole| sampled.sample(*sole).map_or(config.floor, |hit| hit.height)).sum::<f32>() / soles.len() as f32;
+            config.under = under;
             let ease = 1.0 - (-time.delta_secs() / SUPPORT_SECONDS).exp();
             config.support += (under - config.support) * ease;
         }

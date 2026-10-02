@@ -9,6 +9,21 @@
 //! one low enough to step on stands on it (`PhysicsGround`), a taller one
 //! is pushed.
 //!
+//! Around the room, static terrain to climb and fall from, free-standing
+//! (open on every side, to step off):
+//! - in the north, five ramps of 15°, 25°, 35°, 45° and 50°, rising to
+//!   platforms 1.0, 1.5, 2.0, 2.5 and 3.0 m high;
+//! - in the east, a stair to a landing 5 m up: 30 risers of 167 mm on
+//!   300 mm treads (within the IBC's 178 mm riser and 279 mm tread limits,
+//!   2R + T = 0.63 m on Blondel's 0.63-0.65);
+//! - in the south, fences 2 m wide and 1 m thick, 0.1, 0.2, 0.4, 0.8, 1.0
+//!   and 1.6 m high.
+//!
+//! A walker climbs a rise of up to [`MAX_RISE`] and a slope of up to
+//! [`MAX_SLOPE_DEGREES`], and turns from anything steeper as from a wall.
+//! It does not turn from a drop: one stepping off a ledge falls (with a
+//! ragdoll) and gets up below.
+//!
 //! Each character is physical in one of two ways, by its distance from the
 //! camera (`--physics lod`, the default):
 //! - near: a pinned active ragdoll (`AnimRagdollPlugin`), every limb a
@@ -32,7 +47,9 @@
 //! `--camera X,Y,Z` and `--look X,Y,Z` (where the camera starts, and what
 //! at), `--avoid off`, `--plank H` (a feet-on-props test: one plank across
 //! the first character's path, no props), `--trace-feet` (prints the first
-//! character's ankles and heading every frame).
+//! character's ankles and heading every frame), `--start X,Z,YAW` (where
+//! the first character starts, and its heading in degrees, 0 along -Z: to
+//! walk it at one structure).
 
 use std::f32::consts::PI;
 
@@ -56,11 +73,27 @@ use migera::character::{Bone, HumanoidSkeleton};
 const HALF_ROOM: f32 = 12.5;
 const WALL_HEIGHT: f32 = 3.0;
 const WALL_THICKNESS: f32 = 0.5;
-/// The walls' own collision layer, which the bounce's ray looks for alone.
-const WALL_LAYER: LayerMask = LayerMask(1 << 1);
+/// The static terrain's own collision layer (floor, walls, ramps, stairs,
+/// fences), which the steering's rays look for alone, never a prop.
+const TERRAIN_LAYER: LayerMask = LayerMask(1 << 1);
 /// How far ahead a walker looks for a wall, metres: at 1.2 m/s and a turn
 /// of [`BOUNCE_TURN_RATE`] it turns within ~1 m.
 const LOOK_AHEAD: f32 = 2.0;
+/// The spacing of the ground samples along the way ahead, metres: under a
+/// tread (0.3 m), so no two risers fall between two samples.
+const PROBE_STEP: f32 = 0.2;
+/// The tallest rise between two samples a walker steps up, metres: a stair
+/// riser and the 0.2 m fence, not the 0.4 m one. Below the feet's own
+/// limit (`PhysicsGround::max_step`, 0.35), so a foot stands on whatever
+/// the walker walks onto.
+const MAX_RISE: f32 = 0.3;
+/// The steepest slope a walker walks up or down, degrees: the 35° ramp,
+/// not the 45°.
+const MAX_SLOPE_DEGREES: f32 = 40.0;
+/// How far the ground under the soles may fall below the ground the body
+/// stands on before a ragdolled walker falls, metres: one foot over a 1 m
+/// ledge (half its drop), never a stair's riser or a slope's step.
+const LEDGE_DROP: f32 = 0.45;
 /// The side rays' angle from the heading, radians.
 const WHISKER: f32 = 0.6;
 /// The least angle a walker leaves a wall at, radians.
@@ -71,6 +104,37 @@ const BOUNCE_TURN_RATE: f32 = 2.5;
 /// its ragdoll, and how much further to lose it, metres: so one standing
 /// at the boundary does not flicker between the two.
 const HYSTERESIS: f32 = 1.0;
+
+/// The ramps in the north: each slope's angle (degrees) and the height it
+/// rises to (metres), 2 m wide, 4 m apart from x = -9, rising northward to
+/// a 1.5 m deep platform. Free-standing, 2.5 m clear of the wall: a
+/// walker can step off a platform's side or back, fall and get up, where
+/// against the wall one fell into a 1 m gap it could not turn out of.
+const RAMPS: [(f32, f32); 5] = [(15.0, 1.0), (25.0, 1.5), (35.0, 2.0), (45.0, 2.5), (50.0, 3.0)];
+const RAMP_WIDTH: f32 = 2.0;
+const RAMP_SPACING: f32 = 4.0;
+const RAMP_FIRST_X: f32 = -9.0;
+const PLATFORM_DEPTH: f32 = 1.5;
+/// Where the platforms' backs stand, z.
+const PLATFORM_BACK: f32 = -10.0;
+/// The stair in the east, rising northward, free-standing 2 m from the
+/// wall: its height, risers, tread and width, metres, the landing at the
+/// top, and where the landing's back stands (x of its middle, z).
+const STAIR_HEIGHT: f32 = 5.0;
+const STAIR_RISERS: usize = 30;
+const STAIR_TREAD: f32 = 0.3;
+const STAIR_WIDTH: f32 = 2.0;
+const LANDING_DEPTH: f32 = 1.5;
+const STAIR_X: f32 = 9.5;
+const LANDING_BACK: f32 = -3.2;
+/// The fences in the south: their heights, metres; each 2 m wide (x) and
+/// 1 m thick (z), 3 m apart from x = -9.5, centred on z = 9.5.
+const FENCES: [f32; 6] = [0.1, 0.2, 0.4, 0.8, 1.0, 1.6];
+const FENCE_WIDTH: f32 = 2.0;
+const FENCE_THICKNESS: f32 = 1.0;
+const FENCE_SPACING: f32 = 3.0;
+const FENCE_FIRST_X: f32 = -9.5;
+const FENCE_Z: f32 = 9.5;
 
 #[derive(Resource, Clone)]
 struct Config {
@@ -95,6 +159,8 @@ struct Config {
     camera: Vec3,
     /// What the camera starts looking at (`--look X,Y,Z`).
     look: Vec3,
+    /// `--start X,Z,YAW`: the first character's place and heading (radians).
+    start: Option<(Vec2, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -125,6 +191,7 @@ impl Config {
             shot: None,
             camera: Vec3::new(0.0, 9.0, 22.0),
             look: Vec3::new(0.0, 1.0, 0.0),
+            start: None,
         };
         let mut args = std::env::args().skip(1);
         let mut at_frame = 300;
@@ -156,6 +223,12 @@ impl Config {
                     at_frame = value().parse().unwrap_or(at_frame);
                     if let Some(shot) = config.shot.as_mut() {
                         shot.1 = at_frame;
+                    }
+                }
+                "--start" => {
+                    let parts: Vec<f32> = value().split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                    if let [x, z, yaw] = parts[..] {
+                        config.start = Some((Vec2::new(x, z), yaw.to_radians()));
                     }
                 }
                 "--camera" | "--look" => {
@@ -240,8 +313,8 @@ fn main() {
         .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, PhysicsGroundPlugin, FreeCameraPlugin))
         .insert_resource(config)
         .add_systems(Startup, (spawn_room, spawn_props, spawn_characters, spawn_camera_and_light, spawn_hud))
-        .add_systems(Update, (bounce_off_walls, avoid_each_other).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (choose_physics, draw_bodies, update_hud, auto_shot, bench))
+        .add_systems(Update, (turn_from_terrain, avoid_each_other).chain().before(WalkerSet::Drive))
+        .add_systems(Update, (choose_physics, fall_off_ledges, draw_bodies, update_hud, auto_shot, bench))
         .add_systems(PostUpdate, trace_feet.after(TransformSystems::Propagate))
         .add_systems(FixedUpdate, carry_proxies)
         .run();
@@ -260,35 +333,112 @@ fn spawn_camera_and_light(mut commands: Commands, config: Res<Config>) {
     commands.insert_resource(GlobalAmbientLight { brightness: 400.0, ..default() });
 }
 
-/// The floor and four walls, static, drawn and solid.
-fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+/// One static solid of the room or its terrain.
+struct Solid {
+    shape: Shape,
+    centre: Vec3,
+    rotation: Quat,
+    color: Color,
+}
+
+enum Shape {
+    /// A box of this size.
+    Cuboid(Vec3),
+    /// A ramp's solid wedge, rising along its local +X from its origin over
+    /// `run` to `height`, `width` wide across its local Z (centred).
+    Wedge { run: f32, height: f32, width: f32 },
+}
+
+impl Solid {
+    /// An upright box standing on the floor, its footprint centred on `x`, `z`.
+    fn standing(size: Vec3, x: f32, z: f32, color: Color) -> Self {
+        Self { shape: Shape::Cuboid(size), centre: Vec3::new(x, size.y * 0.5, z), rotation: Quat::IDENTITY, color }
+    }
+
+    fn collider_and_mesh(&self) -> (Collider, Mesh) {
+        match self.shape {
+            Shape::Cuboid(size) => (Collider::cuboid(size.x, size.y, size.z), Cuboid::new(size.x, size.y, size.z).into()),
+            Shape::Wedge { run, height, width } => {
+                let triangle = Triangle2d::new(Vec2::ZERO, Vec2::new(run, 0.0), Vec2::new(run, height));
+                let half = width * 0.5;
+                let corners = triangle.vertices.iter().flat_map(|v| [v.extend(-half), v.extend(half)]).collect();
+                (Collider::convex_hull(corners).expect("a wedge is a convex solid"), Extrusion::new(triangle, width).into())
+            }
+        }
+    }
+}
+
+/// The room and its terrain: every static box, and the footprints of the
+/// structures (`x`, `z`), which no character is spawned on.
+fn layout() -> (Vec<Solid>, Vec<Rect>) {
     let side = HALF_ROOM * 2.0;
-    commands.spawn((
-        RigidBody::Static,
-        Collider::cuboid(side, 0.2, side),
-        Friction::new(1.0),
-        Mesh3d(meshes.add(Cuboid::new(side, 0.2, side))),
-        MeshMaterial3d(materials.add(Color::srgb(0.45, 0.47, 0.45))),
-        // Its top at y = 0, where the walkers' flat ground is.
-        Transform::from_xyz(0.0, -0.1, 0.0),
-    ));
-    let wall = materials.add(Color::srgb(0.62, 0.58, 0.52));
+    let mut solids = Vec::new();
+    let mut footprints = Vec::new();
+    // The floor, its top at y = 0, where the walkers' flat ground is.
+    solids.push(Solid { shape: Shape::Cuboid(Vec3::new(side, 0.2, side)), centre: Vec3::new(0.0, -0.1, 0.0), rotation: Quat::IDENTITY, color: Color::srgb(0.45, 0.47, 0.45) });
+    let wall = Color::srgb(0.62, 0.58, 0.52);
     let long = side + WALL_THICKNESS * 2.0;
-    for (size, at) in [
-        (Vec3::new(long, WALL_HEIGHT, WALL_THICKNESS), Vec3::new(0.0, 0.0, -HALF_ROOM - WALL_THICKNESS * 0.5)),
-        (Vec3::new(long, WALL_HEIGHT, WALL_THICKNESS), Vec3::new(0.0, 0.0, HALF_ROOM + WALL_THICKNESS * 0.5)),
-        (Vec3::new(WALL_THICKNESS, WALL_HEIGHT, side), Vec3::new(-HALF_ROOM - WALL_THICKNESS * 0.5, 0.0, 0.0)),
-        (Vec3::new(WALL_THICKNESS, WALL_HEIGHT, side), Vec3::new(HALF_ROOM + WALL_THICKNESS * 0.5, 0.0, 0.0)),
-    ] {
+    let out = HALF_ROOM + WALL_THICKNESS * 0.5;
+    solids.push(Solid::standing(Vec3::new(long, WALL_HEIGHT, WALL_THICKNESS), 0.0, -out, wall));
+    solids.push(Solid::standing(Vec3::new(long, WALL_HEIGHT, WALL_THICKNESS), 0.0, out, wall));
+    solids.push(Solid::standing(Vec3::new(WALL_THICKNESS, WALL_HEIGHT, side), -out, 0.0, wall));
+    solids.push(Solid::standing(Vec3::new(WALL_THICKNESS, WALL_HEIGHT, side), out, 0.0, wall));
+
+    // Ramps: a solid wedge from the floor up to a platform. A tilted slab
+    // left a hollow under it, where the steering's ray across, just above
+    // the floor, met the slab's underside and turned a walker into it.
+    let platform_front = PLATFORM_BACK + PLATFORM_DEPTH;
+    for (i, (degrees, height)) in RAMPS.into_iter().enumerate() {
+        let x = RAMP_FIRST_X + i as f32 * RAMP_SPACING;
+        let color = Color::hsl(200.0 - i as f32 * 40.0, 0.45, 0.55);
+        solids.push(Solid::standing(Vec3::new(RAMP_WIDTH, height, PLATFORM_DEPTH), x, PLATFORM_BACK + PLATFORM_DEPTH * 0.5, color));
+        let run = height / degrees.to_radians().tan();
+        // The wedge's +X turned to the room's -Z, its origin at the foot.
+        solids.push(Solid {
+            shape: Shape::Wedge { run, height, width: RAMP_WIDTH },
+            centre: Vec3::new(x, 0.0, platform_front + run),
+            rotation: Quat::from_rotation_y(PI * 0.5),
+            color,
+        });
+        footprints.push(Rect::new(x - RAMP_WIDTH * 0.5, PLATFORM_BACK, x + RAMP_WIDTH * 0.5, platform_front + run));
+    }
+
+    // The stair: solid steps rising northward to the landing.
+    let riser = STAIR_HEIGHT / STAIR_RISERS as f32;
+    let landing_front = LANDING_BACK + LANDING_DEPTH;
+    let stair = Color::srgb(0.5, 0.5, 0.56);
+    for k in 1..STAIR_RISERS {
+        let front = landing_front + (STAIR_RISERS - k) as f32 * STAIR_TREAD;
+        solids.push(Solid::standing(Vec3::new(STAIR_WIDTH, k as f32 * riser, STAIR_TREAD), STAIR_X, front - STAIR_TREAD * 0.5, stair));
+    }
+    solids.push(Solid::standing(Vec3::new(STAIR_WIDTH, STAIR_HEIGHT, LANDING_DEPTH), STAIR_X, LANDING_BACK + LANDING_DEPTH * 0.5, stair));
+    let stair_foot = landing_front + (STAIR_RISERS - 1) as f32 * STAIR_TREAD;
+    footprints.push(Rect::new(STAIR_X - STAIR_WIDTH * 0.5, LANDING_BACK, STAIR_X + STAIR_WIDTH * 0.5, stair_foot));
+
+    // Fences.
+    let fence = Color::srgb(0.72, 0.48, 0.28);
+    for (i, height) in FENCES.into_iter().enumerate() {
+        let x = FENCE_FIRST_X + i as f32 * FENCE_SPACING;
+        solids.push(Solid::standing(Vec3::new(FENCE_WIDTH, height, FENCE_THICKNESS), x, FENCE_Z, fence));
+        footprints.push(Rect::new(x - FENCE_WIDTH * 0.5, FENCE_Z - FENCE_THICKNESS * 0.5, x + FENCE_WIDTH * 0.5, FENCE_Z + FENCE_THICKNESS * 0.5));
+    }
+    (solids, footprints)
+}
+
+/// The room and its terrain, static, drawn and solid.
+fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    for solid in layout().0 {
+        let (collider, mesh) = solid.collider_and_mesh();
         commands.spawn((
             RigidBody::Static,
-            Collider::cuboid(size.x, size.y, size.z),
-            // Its own layer as well as the default, so the bounce's ray finds
-            // walls alone, never a prop lying in the way.
-            CollisionLayers::new(LayerMask::DEFAULT | WALL_LAYER, LayerMask::ALL),
-            Mesh3d(meshes.add(Cuboid::new(size.x, size.y, size.z))),
-            MeshMaterial3d(wall.clone()),
-            Transform::from_translation(at + Vec3::Y * WALL_HEIGHT * 0.5),
+            collider,
+            Friction::new(1.0),
+            // Its own layer as well as the default, so the steering's rays
+            // find the terrain alone, never a prop lying in the way.
+            CollisionLayers::new(LayerMask::DEFAULT | TERRAIN_LAYER, LayerMask::ALL),
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(materials.add(solid.color)),
+            Transform::from_translation(solid.centre).with_rotation(solid.rotation),
         ));
     }
 }
@@ -333,19 +483,34 @@ fn spawn_props(mut commands: Commands, config: Res<Config>, mut meshes: ResMut<A
     }
 }
 
-/// The first character at the centre, the rest scattered; each walking
-/// straight on a random heading.
+/// The first character at the centre (or `--start`), the rest scattered
+/// over the floor clear of the terrain; each walking straight on a random
+/// heading.
 fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, config: Res<Config>) {
     let mut rng = fastrand::Rng::with_seed(config.seed ^ 0x9e37);
+    // A metre clear of every structure, so none starts inside or on one.
+    let footprints: Vec<Rect> = layout().1.into_iter().map(|rect| rect.inflate(1.0)).collect();
     for i in 0..config.characters {
-        let at = if i == 0 {
-            Vec3::ZERO
-        } else {
-            Vec3::new((rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 4.0), 0.0, (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 4.0))
-        };
+        let mut at = Vec3::ZERO;
+        if i > 0 {
+            for _ in 0..100 {
+                let x = (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5);
+                let z = (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5);
+                at = Vec3::new(x, 0.0, z);
+                if !footprints.iter().any(|rect| rect.contains(Vec2::new(x, z))) {
+                    break;
+                }
+            }
+        }
         let yaw = rng.f32() * PI * 2.0 - PI;
         // Facing the plank (along -Z, yaw zero), for its test.
-        let yaw = if i == 0 && config.plank.is_some() { 0.0 } else { yaw };
+        let mut yaw = if i == 0 && config.plank.is_some() { 0.0 } else { yaw };
+        if i == 0
+            && let Some((start, heading)) = config.start
+        {
+            at = Vec3::new(start.x, 0.0, start.y);
+            yaw = heading;
+        }
         // `puppet_base.gltf` faces +Z; this crate's forward is -Z.
         let root = spawn_gltf_humanoid(&mut commands, &asset_server, "models/puppet_base.gltf", PI, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)));
         commands.entity(root).insert((Walker { speed: config.speed, steer: Steer::Toward { yaw, rate: BOUNCE_TURN_RATE }, ..default() }, WallBouncer::default()));
@@ -357,11 +522,66 @@ fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, conf
     }
 }
 
-/// Turns each walker nearing a wall onto the wall's reflection of its
-/// heading, `d − 2(d·n)n`, give or take `--jitter`.
-fn bounce_off_walls(config: Res<Config>, spatial: SpatialQuery, mut walkers: Query<(&mut Walker, &mut WallBouncer, &WalkerState, &Transform)>, mut rng: Local<Option<fastrand::Rng>>) {
+/// Where the way along `direction` from `from` (on the ground) is blocked
+/// within [`LOOK_AHEAD`], and the face blocking it, as its horizontal
+/// normal: a wall, a rise taller than [`MAX_RISE`] between two samples, or
+/// a slope steeper than [`MAX_SLOPE_DEGREES`], up or down. A drop is no
+/// block.
+///
+/// The ground is sampled every [`PROBE_STEP`] by a ray straight down from
+/// well above the last sample's height: a horizontal ray at one height, as
+/// the walls had, hit a stair's riser or a gentle ramp as squarely as a
+/// wall.
+fn blocked_along(spatial: &SpatialQuery, terrain: &SpatialQueryFilter, from: Vec3, direction: Vec3) -> Option<Vec3> {
+    let max_slope_cos = MAX_SLOPE_DEGREES.to_radians().cos();
+    // Started inside something (a wall taller than this), a ray is hit at
+    // its origin: a rise of the whole reach.
+    let ground_at = |at: Vec3, above: f32| {
+        let top = above + 4.0;
+        spatial.cast_ray(Vec3::new(at.x, top, at.z), Dir3::NEG_Y, top + 1.0, true, terrain).map(|hit| (top - hit.distance, hit.normal))
+    };
+    // From the ground under the walker, not its height: that is eased
+    // (`physics_ground::SUPPORT_SECONDS`) and the mean under both soles, and
+    // lagged 0.18 m below the ground halfway up the 35° ramp, which read as
+    // a riser too tall and turned the walker back off the ramp's side.
+    let mut height = ground_at(from, from.y).map_or(from.y, |(ground, _)| ground);
+    let mut distance = 0.0;
+    while distance < LOOK_AHEAD {
+        let before = from + direction * distance;
+        distance += PROBE_STEP;
+        let at = from + direction * distance;
+        // The room's walls: past one, its inward face.
+        let over = Vec2::new(at.x.abs(), at.z.abs()) - Vec2::splat(HALF_ROOM);
+        if over.max_element() > 0.0 {
+            return Some(if over.x > over.y { Vec3::NEG_X * at.x.signum() } else { Vec3::NEG_Z * at.z.signum() });
+        }
+        let Some((ground, normal)) = ground_at(at, height) else { continue };
+        let rise = ground - height;
+        let steep = normal.y < max_slope_cos && rise.abs() > 0.01;
+        if rise > MAX_RISE || steep {
+            // Up: the face between the two samples, met by a ray across
+            // just above the lower one, else the slope's own lean. Down: the
+            // edge, facing back up the way it came. Else straight back.
+            let face = if rise > 0.0 {
+                let across = Dir3::new(direction).ok().and_then(|d| spatial.cast_ray(Vec3::new(before.x, height + 0.1, before.z), d, PROBE_STEP + 0.1, true, terrain));
+                across.map_or(normal, |hit| hit.normal)
+            } else {
+                -normal
+            };
+            let face = Vec3::new(face.x, 0.0, face.z).normalize_or_zero();
+            return Some(if face == Vec3::ZERO { -direction } else { face });
+        }
+        height = ground;
+    }
+    None
+}
+
+/// Turns each walker nearing a wall, or ground too tall or steep to walk
+/// onto, onto its face's reflection of its heading, `d − 2(d·n)n`, give
+/// or take `--jitter`.
+fn turn_from_terrain(config: Res<Config>, spatial: SpatialQuery, mut walkers: Query<(&mut Walker, &mut WallBouncer, &WalkerState, &Transform)>, mut rng: Local<Option<fastrand::Rng>>) {
     let rng = rng.get_or_insert_with(|| fastrand::Rng::with_seed(config.seed ^ 0xb0b));
-    let walls = SpatialQueryFilter::from_mask(WALL_LAYER);
+    let terrain = SpatialQueryFilter::from_mask(TERRAIN_LAYER);
     for (mut walker, mut bouncer, state, transform) in &mut walkers {
         let yaw = state.facing.yaw;
         if let Some(target) = bouncer.turning_to {
@@ -373,21 +593,16 @@ fn bounce_off_walls(config: Res<Config>, spatial: SpatialQuery, mut walkers: Que
         }
         // Yaw zero faces -Z; the heading turns about +Y.
         let ahead = Quat::from_rotation_y(yaw) * Vec3::NEG_Z;
-        let origin = transform.translation + Vec3::Y * 1.0;
         // Straight ahead and two whiskers to the sides: met at a shallow
-        // angle, a wall reached the straight ray only when the walker was
-        // nearly touching it (2 m × sin 5° ≈ 0.17 m; measured 0.13).
-        let hit = [0.0f32, WHISKER, -WHISKER].into_iter().find_map(|angle| {
-            let direction = Dir3::new(Quat::from_rotation_y(angle) * ahead).ok()?;
-            spatial.cast_ray(origin, direction, LOOK_AHEAD, true, &walls)
-        });
-        let Some(hit) = hit else { continue };
-        let normal = Vec3::new(hit.normal.x, 0.0, hit.normal.z).normalize_or_zero();
-        // Only a wall it is heading into; one it already walks away from or
-        // along, a whisker merely grazed.
-        if normal == Vec3::ZERO || ahead.dot(normal) >= 0.0 {
-            continue;
-        }
+        // angle, a wall reached the straight probe only when the walker was
+        // nearly touching it (2 m × sin 5° ≈ 0.17 m; measured 0.13). Only a
+        // face it is heading into; one it already walks away from or along
+        // (the wall beside a stair), a whisker merely grazed.
+        let blocked = [0.0f32, WHISKER, -WHISKER]
+            .into_iter()
+            .filter_map(|angle| blocked_along(&spatial, &terrain, transform.translation, Quat::from_rotation_y(angle) * ahead))
+            .find(|normal| ahead.dot(*normal) < 0.0);
+        let Some(normal) = blocked else { continue };
         let mirrored = ahead - normal * (2.0 * ahead.dot(normal));
         let jitter = (rng.f32() * 2.0 - 1.0) * config.jitter;
         let mut leaving = Quat::from_rotation_y(jitter) * mirrored;
@@ -555,6 +770,19 @@ fn carry_proxies(time: Res<Time>, characters: Query<&Transform, Without<ProxyOf>
     }
 }
 
+/// A ragdolled walker whose feet have stepped out over a drop falls
+/// ([`LEDGE_DROP`]), lands below and gets up. Without a ragdoll there is no
+/// body to fall: the walker steps down to the ground below within the
+/// body's ease (`physics_ground::SUPPORT_SECONDS`).
+fn fall_off_ledges(mut walkers: Query<(&mut Walker, &PhysicsGround, &Ragdoll)>) {
+    for (mut walker, ground, ragdoll) in &mut walkers {
+        if !ragdoll.is_falling() && ground.support - ground.under > LEDGE_DROP {
+            info!("playground: stepped off a {:.2} m drop, falling", ground.support - ground.under);
+            walker.fall_now = true;
+        }
+    }
+}
+
 /// `--gizmos on`: every ragdoll body and kinematic capsule drawn, the
 /// physics the animation is standing in.
 fn draw_bodies(
@@ -611,6 +839,7 @@ fn update_hud(
     for mut text in &mut hud {
         text.0 = format!(
             "{fps:.0} fps | physics {:?} (ragdoll within {:.0} m) | {} characters: {ragdolls} ragdoll ({falling} falling), {capsules} capsule\n\
+             north: ramps 15/25/35/45/50 deg, east: 5 m stair, south: fences 0.1-1.6 m\n\
              WASD move, Q/E down/up, hold right mouse (or M) to look, Shift run, wheel speed",
             config.physics,
             config.ragdoll_distance,
@@ -620,12 +849,19 @@ fn update_hud(
 }
 
 /// `--trace-feet`: the first character's ankles (world) and heading each
-/// frame, as rendered: `FEET t yaw lx ly lz rx ry rz hips_y`.
-fn trace_feet(config: Res<Config>, time: Res<Time>, characters: Query<(&HumanoidSkeleton, &WalkerState)>, world: Query<&GlobalTransform>) {
+/// frame, as rendered, then where it stands and whether it is falling:
+/// `FEET t yaw lx ly lz rx ry rz hips_y x z support falling`.
+#[allow(clippy::type_complexity)]
+fn trace_feet(
+    config: Res<Config>,
+    time: Res<Time>,
+    characters: Query<(&HumanoidSkeleton, &WalkerState, &Transform, Option<&PhysicsGround>, Option<&Ragdoll>)>,
+    world: Query<&GlobalTransform>,
+) {
     if !config.trace_feet {
         return;
     }
-    let Some((skeleton, state)) = characters.iter().next() else { return };
+    let Some((skeleton, state, root, ground, ragdoll)) = characters.iter().next() else { return };
     let (Ok(left), Ok(right), Ok(hips)) =
         (world.get(skeleton.entity(Bone::LeftFoot)), world.get(skeleton.entity(Bone::RightFoot)), world.get(skeleton.entity(Bone::Hips)))
     else {
@@ -633,7 +869,7 @@ fn trace_feet(config: Res<Config>, time: Res<Time>, characters: Query<(&Humanoid
     };
     let (l, r) = (left.translation(), right.translation());
     println!(
-        "FEET {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}",
+        "FEET {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.3} {:.3} {:.3} {}",
         time.elapsed_secs(),
         state.facing.yaw,
         l.x,
@@ -642,7 +878,11 @@ fn trace_feet(config: Res<Config>, time: Res<Time>, characters: Query<(&Humanoid
         r.x,
         r.y,
         r.z,
-        hips.translation().y
+        hips.translation().y,
+        root.translation.x,
+        root.translation.z,
+        ground.map_or(0.0, |g| g.support),
+        ragdoll.is_some_and(|r| r.is_falling()) as u8
     );
 }
 

@@ -41,6 +41,38 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Playground: ramps, a 5 m stair, fences; climbing and falling off
+
+- **Terrain, all free-standing:**
+  - ramps of 15°/25°/35°/45°/50° rising to platforms 1.0-3.0 m high;
+  - a 5 m stair, 30 risers × 167 mm on 300 mm treads, within IBC 1011.5.2
+    (≤ 178 mm riser, ≥ 279 mm tread), 2R + T = 0.63 m;
+  - fences 2 × 1 m, 0.1-1.6 m high.
+
+  Characters still spawn at random, now clear of every structure, among
+  the dynamic props. Against the walls, a walker that fell off a platform
+  into the 1 m gap beside it walked out through the platform and the
+  wall.
+- **`PhysicsGround::max_step` is relative to the ground the body stands
+  on**, not the floor, which hid every riser above the second. A new
+  field, `under`, is the raw mean under the soles.
+- **Steering reads the ground profile ahead** (downward rays every 0.2 m;
+  rise ≤ 0.3 m, slope ≤ 40°). Ragdolled walkers fall off ledges.
+  `--start X,Z,YAW` places the first character.
+- Measured (ragdoll, one walker per structure): it climbs the 15°/25°/35°
+  ramps to 1.0/1.5/2.0 m and the stair to 5.0 m, then steps off, falls,
+  gets up and walks on. It is turned at the foot of 45°/50° and at
+  fences ≥ 0.4 m, and steps over 0.1/0.2 m.
+- 16 walkers for 60 s: 0 of 208 pelvis samples outside the room or under
+  the terrain.
+- Two traps, both fixed:
+  - the eased height lagged 0.18 m on the 35° ramp and read as a riser;
+  - a hollow tilted-slab ramp reflected a walker into itself; ramps are
+    now solid wedges.
+
+  See [the note](./docs/knowledge/character-animation/ik-and-locomotion/steer-over-terrain-by-the-ground-profile-ahead.md).
+- `cargo test --release --lib`: 1091 passed. Clippy: 0 warnings.
+
 ### Playground: smaller room, avoidance, feet on props, the wall-turn foot flicker fixed, physics cost
 
 - **The room is 25 × 25 m.**

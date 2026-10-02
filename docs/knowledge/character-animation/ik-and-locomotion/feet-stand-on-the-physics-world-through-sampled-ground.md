@@ -45,8 +45,15 @@ origin.
 - **Under a foot:** the highest hit within a grid spacing. Taking the
   nearest sample instead, a foot on a prop's edge would flicker between
   the prop and the floor as the nearest sample changed.
-- **Too tall to stand on:** hits above `max_step` (0.35 m) are ignored, so
-  the foot does not climb a big prop; the body pushes it instead.
+- **Too tall to stand on:** hits more than `max_step` (0.35 m) above the
+  ground the body stands on (`support`) are ignored, so the foot does not
+  climb a big prop; the body pushes it instead. The rays start above
+  `support + max_step`. Measured from the floor instead, the limit hid
+  every stair above the second riser and every ramp above 0.35 m. With it
+  relative, a walker climbs a 5 m stair.
+- **Drops are seen:** `under` is this frame's raw mean under the soles,
+  before the ease. Well below `support`, the feet are over a drop; the
+  playground fells a ragdolled walker on it.
 - **The rays skip the character itself:** its ragdoll bodies and any
   proxy it has (`PhysicsGround::ignore`). They must, or the rays hit the
   character's own capsule and discard everything below it.
@@ -100,3 +107,4 @@ origin.
 - [Sample the ground in the world, not the pose](./sample-the-ground-in-the-world-not-the-pose.md) — prerequisite: the IK's ground queries are world points, which this grid answers.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — applies: the body's rise onto a platform is travel the locks must be told of.
 - [Rig authored at critical extension](./rig-authored-at-critical-extension.md) — why the body follows the mean of the soles rather than the higher one.
+- [Steer over terrain by the ground profile ahead](./steer-over-terrain-by-the-ground-profile-ahead.md) — applies: the steering matched to `max_step`, and the ledge falls read from `under`.
