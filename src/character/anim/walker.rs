@@ -240,12 +240,15 @@ type WalkingRig = (
     &'static mut balance::Balance,
     // The same pendulum walking: a push moves the next footfalls.
     &'static mut WalkBalance,
+    // Down or getting up, the walker stands.
+    Option<&'static Ragdoll>,
 );
 
 /// Drives each walker's gait from its clock, in `AnimSet::Target`, so the
 /// phase layer composes on top and the springs smooth the result.
 pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
-    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance) in &mut rigs
+    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll) in
+        &mut rigs
     {
         let state = &mut *state;
         // Composed onto the AUTHORED pose, re-read every frame: composed onto
@@ -287,7 +290,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             walk_balance.push(balance.take_push());
         }
         // A push from behind speeds the walk up (`WalkBalance::surge`).
-        let event = state.transition.advance(walker.speed + walk_balance.surge, cycle_of(&phase), &config, time.delta_secs());
+        // Fallen or getting up, it asks for no speed, and starts walking
+        // again from a stand once up: walking on, the gait's root motion
+        // carried the rising body forward 1.7-2.9 m, sliding.
+        let asked = if ragdoll.is_some_and(Ragdoll::is_falling) { 0.0 } else { walker.speed + walk_balance.surge };
+        let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
         let speed = state.transition.stride_speed;
 
         // A walk's stride grows with its speed, scaled to this rig's leg.
@@ -556,9 +563,11 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
 /// A ragdolled walker falls when its balance finds no step that catches it
 /// (`Balance::falls`), or when asked ([`Walker::fall_now`]). The balances are
 /// reset: the body is the physics' now, and a stumble still being posed
-/// underneath would move the character too.
-pub fn fall_when_uncaught(mut rigs: Query<(&mut Walker, &mut balance::Balance, &mut WalkBalance, &mut Ragdoll, &mut AnimFootIk, &WalkerState)>) {
-    for (mut walker, mut balance, mut walk_balance, mut ragdoll, mut foot_ik, state) in &mut rigs {
+/// underneath would move the character too. So is the gait, to a stand:
+/// the body rises from the ground into standing, not into a walk already
+/// under way, and walks on with a start once up (`drive_walkers`).
+pub fn fall_when_uncaught(mut rigs: Query<(&mut Walker, &mut balance::Balance, &mut WalkBalance, &mut Ragdoll, &mut AnimFootIk, &mut WalkerState)>) {
+    for (mut walker, mut balance, mut walk_balance, mut ragdoll, mut foot_ik, mut state) in &mut rigs {
         let asked = std::mem::take(&mut walker.fall_now);
         if ragdoll.is_falling() || !(asked || balance.falls || walk_balance.falls) {
             continue;
@@ -582,6 +591,7 @@ pub fn fall_when_uncaught(mut rigs: Query<(&mut Walker, &mut balance::Balance, &
         foot_ik.displaced = [Vec3::ZERO; 2];
         foot_ik.planted = [false; 2];
         foot_ik.landing = None;
+        state.transition = transition::Transition::standing();
     }
 }
 

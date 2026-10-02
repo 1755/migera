@@ -24,6 +24,15 @@
 //! It does not turn from a drop: one stepping off a ledge falls (with a
 //! ragdoll) and gets up below.
 //!
+//! Each walker heads for a goal: up a ramp or the stair to its top, across
+//! a fence, or to a random place on the floor. A route goes through a
+//! point lined up in front of the structure, so the walker meets it head
+//! on. A turn from terrain or another walker goes first, and the walker
+//! walks its new way for a moment before turning back to its goal; a goal
+//! not reached in [`GOAL_SECONDS`] (the 45° ramp, the tall fences) is
+//! given up for another. Arrived on top, it picks its next goal and walks
+//! off the edge or back down.
+//!
 //! Each character is physical in one of two ways, by its distance from the
 //! camera (`--physics lod`, the default):
 //! - near: a pinned active ragdoll (`AnimRagdollPlugin`), every limb a
@@ -40,7 +49,7 @@
 //!
 //! Run: `cargo run --release --example physics_character_playground`
 //!
-//! Flags: `--characters N` (1), `--props N` (30), `--speed M_PER_S` (1.2),
+//! Flags: `--characters N` (1), `--props N` (60), `--speed M_PER_S` (1.2),
 //! `--jitter DEGREES` (15), `--ragdoll-distance M` (10), `--seed N`,
 //! `--physics lod|ragdoll|kinematic`, `--gizmos on`,
 //! `--shot PATH --at-frame N` (a screenshot, then exit),
@@ -49,7 +58,8 @@
 //! the first character's path, no props), `--trace-feet` (prints the first
 //! character's ankles and heading every frame), `--start X,Z,YAW` (where
 //! the first character starts, and its heading in degrees, 0 along -Z: to
-//! walk it at one structure).
+//! walk it at one structure; that character then has no goals),
+//! `--goals off` (walk straight and bounce, no goals).
 
 use std::f32::consts::PI;
 
@@ -147,6 +157,9 @@ struct Config {
     physics: PhysicsMode,
     gizmos: bool,
     avoid: bool,
+    /// Walkers head for goals (`--goals off`: they walk straight and only
+    /// bounce, as before).
+    goals: bool,
     /// `--plank H`: a test of feet on props. No props; one H m plank lying
     /// across the first character's path, which starts facing it.
     plank: Option<f32>,
@@ -176,7 +189,7 @@ impl Config {
     fn from_args() -> Self {
         let mut config = Self {
             characters: 1,
-            props: 30,
+            props: 60,
             speed: 1.2,
             jitter: 15f32.to_radians(),
             ragdoll_distance: 10.0,
@@ -184,6 +197,7 @@ impl Config {
             physics: PhysicsMode::Lod,
             gizmos: false,
             avoid: true,
+            goals: true,
             plank: None,
             trace_feet: false,
             bench: None,
@@ -206,6 +220,7 @@ impl Config {
                 "--seed" => config.seed = value().parse().unwrap_or(config.seed),
                 "--gizmos" => config.gizmos = value() != "off",
                 "--avoid" => config.avoid = value() != "off",
+                "--goals" => config.goals = value() != "off",
                 "--plank" => config.plank = value().parse().ok(),
                 "--trace-feet" => config.trace_feet = true,
                 "--bench" => config.bench = value().parse().ok(),
@@ -261,6 +276,50 @@ struct WallBouncer {
     avoiding_to: Option<f32>,
 }
 
+/// A walker heading for a goal: the points of its route still ahead, the
+/// first next.
+#[derive(Component, Default)]
+struct Seeker {
+    name: String,
+    route: Vec<Vec2>,
+    /// How long it has been after this goal, seconds.
+    since: f32,
+    /// How long it still walks its own way after a turn from terrain or
+    /// another walker, seconds, before turning back to its goal: turned
+    /// back at once, it walked straight into what it had turned from.
+    detour: f32,
+}
+
+/// How long a walker pursues a goal before giving it up, seconds.
+const GOAL_SECONDS: f32 = 25.0;
+/// How long a walker walks its new way after a turn before heading for its
+/// goal again, seconds.
+const DETOUR_SECONDS: f32 = 1.5;
+/// How near a route's point counts as reached, metres.
+const ARRIVED: f32 = 0.6;
+/// How far in front of a structure a route's entry point lies, metres: a
+/// walker turning at 2.5 rad/s (a 0.5 m radius at 1.2 m/s) lines up in it.
+const ENTRY: f32 = 2.0;
+
+/// The steering's own time (terrain probes, avoidance and goals), summed
+/// over the frames `--bench` measures, and the walkers it served.
+#[derive(Resource, Default)]
+struct SteerCost {
+    time: std::time::Duration,
+    walker_frames: u64,
+}
+
+/// Adds a steering system's time since `.1`, and `.2` walkers' frames, to
+/// [`SteerCost`] when dropped: at the system's end, whichever way it ends.
+struct TimedBy<'a>(&'a mut SteerCost, std::time::Instant, u64);
+
+impl Drop for TimedBy<'_> {
+    fn drop(&mut self) {
+        self.0.time += self.1.elapsed();
+        self.0.walker_frames += self.2;
+    }
+}
+
 /// The kinematic capsule standing in for a far character's body.
 #[derive(Component)]
 struct ProxyOf(Entity);
@@ -312,8 +371,9 @@ fn main() {
         .insert_resource(SubstepCount(12))
         .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, PhysicsGroundPlugin, FreeCameraPlugin))
         .insert_resource(config)
+        .init_resource::<SteerCost>()
         .add_systems(Startup, (spawn_room, spawn_props, spawn_characters, spawn_camera_and_light, spawn_hud))
-        .add_systems(Update, (turn_from_terrain, avoid_each_other).chain().before(WalkerSet::Drive))
+        .add_systems(Update, (turn_from_terrain, avoid_each_other, seek_goals).chain().before(WalkerSet::Drive))
         .add_systems(Update, (choose_physics, fall_off_ledges, draw_bodies, update_hud, auto_shot, bench))
         .add_systems(PostUpdate, trace_feet.after(TransformSystems::Propagate))
         .add_systems(FixedUpdate, carry_proxies)
@@ -488,19 +548,11 @@ fn spawn_props(mut commands: Commands, config: Res<Config>, mut meshes: ResMut<A
 /// heading.
 fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, config: Res<Config>) {
     let mut rng = fastrand::Rng::with_seed(config.seed ^ 0x9e37);
-    // A metre clear of every structure, so none starts inside or on one.
-    let footprints: Vec<Rect> = layout().1.into_iter().map(|rect| rect.inflate(1.0)).collect();
     for i in 0..config.characters {
         let mut at = Vec3::ZERO;
         if i > 0 {
-            for _ in 0..100 {
-                let x = (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5);
-                let z = (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5);
-                at = Vec3::new(x, 0.0, z);
-                if !footprints.iter().any(|rect| rect.contains(Vec2::new(x, z))) {
-                    break;
-                }
-            }
+            let point = free_floor_point(&mut rng);
+            at = Vec3::new(point.x, 0.0, point.y);
         }
         let yaw = rng.f32() * PI * 2.0 - PI;
         // Facing the plank (along -Z, yaw zero), for its test.
@@ -518,6 +570,103 @@ fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, conf
         // (`--ground flat`: the floor alone, for the bench).
         if !config.flat_ground {
             commands.entity(root).insert(PhysicsGround::default());
+        }
+        // A character set up for a test (`--start`, `--plank`) keeps its
+        // heading.
+        let under_test = i == 0 && (config.start.is_some() || config.plank.is_some());
+        if config.goals && !under_test {
+            commands.entity(root).insert(Seeker::default());
+        }
+    }
+}
+
+/// A random point on the floor a metre clear of every structure.
+fn free_floor_point(rng: &mut fastrand::Rng) -> Vec2 {
+    let footprints: Vec<Rect> = layout().1.into_iter().map(|rect| rect.inflate(1.0)).collect();
+    let mut point = Vec2::ZERO;
+    for _ in 0..100 {
+        point = Vec2::new((rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5), (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 1.5));
+        if !footprints.iter().any(|rect| rect.contains(point)) {
+            break;
+        }
+    }
+    point
+}
+
+/// Every structure's route, named: a point lined up [`ENTRY`] in front of
+/// it, then its top (a ramp's platform, the stair's landing) or just past
+/// it (a fence, crossed southward: northward, its far side's point would
+/// lie within the wall probe's reach and never be reached).
+fn routes() -> Vec<(String, Vec<Vec2>)> {
+    let mut routes = Vec::new();
+    let platform_front = PLATFORM_BACK + PLATFORM_DEPTH;
+    for (i, (degrees, height)) in RAMPS.into_iter().enumerate() {
+        let x = RAMP_FIRST_X + i as f32 * RAMP_SPACING;
+        let foot = platform_front + height / degrees.to_radians().tan();
+        routes.push((format!("{degrees}° ramp"), vec![Vec2::new(x, foot + ENTRY), Vec2::new(x, PLATFORM_BACK + PLATFORM_DEPTH * 0.5)]));
+    }
+    let stair_foot = LANDING_BACK + LANDING_DEPTH + (STAIR_RISERS - 1) as f32 * STAIR_TREAD;
+    routes.push(("stair".into(), vec![Vec2::new(STAIR_X, stair_foot + ENTRY), Vec2::new(STAIR_X, LANDING_BACK + LANDING_DEPTH * 0.5)]));
+    for (i, height) in FENCES.into_iter().enumerate() {
+        let x = FENCE_FIRST_X + i as f32 * FENCE_SPACING;
+        let near = FENCE_Z - FENCE_THICKNESS * 0.5;
+        routes.push((format!("{height} m fence"), vec![Vec2::new(x, near - ENTRY), Vec2::new(x, near + FENCE_THICKNESS + 0.6)]));
+    }
+    routes
+}
+
+/// Steers each [`Seeker`] for the next point of its route, unless a turn
+/// from terrain or another walker is under way or just ended
+/// ([`DETOUR_SECONDS`]). A route done or given up ([`GOAL_SECONDS`]), it
+/// picks another: a structure's route seven times in ten, else a random
+/// place on the floor.
+#[allow(clippy::type_complexity)]
+fn seek_goals(
+    config: Res<Config>,
+    time: Res<Time>,
+    mut cost: ResMut<SteerCost>,
+    mut walkers: Query<(Entity, &mut Walker, &mut Seeker, &WallBouncer, &WalkerState, &Transform, Option<&Ragdoll>)>,
+    mut rng: Local<Option<fastrand::Rng>>,
+    mut all_routes: Local<Vec<(String, Vec<Vec2>)>>,
+) {
+    let _timed = TimedBy(&mut cost, std::time::Instant::now(), 0);
+    let rng = rng.get_or_insert_with(|| fastrand::Rng::with_seed(config.seed ^ 0x60a1));
+    if all_routes.is_empty() {
+        *all_routes = routes();
+    }
+    let dt = time.delta_secs();
+    for (entity, mut walker, mut seeker, bouncer, state, transform, ragdoll) in &mut walkers {
+        // Down or getting up: the goal waits.
+        if ragdoll.is_some_and(|r| r.is_falling()) {
+            continue;
+        }
+        let at = Vec2::new(transform.translation.x, transform.translation.z);
+        seeker.since += dt;
+        while seeker.route.first().is_some_and(|point| point.distance(at) < ARRIVED) {
+            seeker.route.remove(0);
+            if seeker.route.is_empty() {
+                info!("playground: {entity} reached the {}", seeker.name);
+            }
+        }
+        if seeker.route.is_empty() || seeker.since > GOAL_SECONDS {
+            if !seeker.route.is_empty() {
+                info!("playground: {entity} gave up on the {}", seeker.name);
+            }
+            let (name, route) = if rng.f32() < 0.7 { all_routes[rng.usize(..all_routes.len())].clone() } else { ("floor".into(), vec![free_floor_point(rng)]) };
+            *seeker = Seeker { name, route, since: 0.0, detour: 0.0 };
+        }
+        if bouncer.turning_to.is_some() || bouncer.avoiding_to.is_some() {
+            seeker.detour = DETOUR_SECONDS;
+            continue;
+        }
+        if seeker.detour > 0.0 {
+            seeker.detour -= dt;
+            continue;
+        }
+        let toward = seeker.route[0] - at;
+        let yaw = yaw_of(Vec3::new(toward.x, 0.0, toward.y));
+        if angle_between(yaw, state.facing.yaw) > 0.02 {
+            walker.steer = Steer::Toward { yaw, rate: BOUNCE_TURN_RATE };
         }
     }
 }
@@ -579,7 +728,15 @@ fn blocked_along(spatial: &SpatialQuery, terrain: &SpatialQueryFilter, from: Vec
 /// Turns each walker nearing a wall, or ground too tall or steep to walk
 /// onto, onto its face's reflection of its heading, `d − 2(d·n)n`, give
 /// or take `--jitter`.
-fn turn_from_terrain(config: Res<Config>, spatial: SpatialQuery, mut walkers: Query<(&mut Walker, &mut WallBouncer, &WalkerState, &Transform)>, mut rng: Local<Option<fastrand::Rng>>) {
+fn turn_from_terrain(
+    config: Res<Config>,
+    spatial: SpatialQuery,
+    mut cost: ResMut<SteerCost>,
+    mut walkers: Query<(&mut Walker, &mut WallBouncer, &WalkerState, &Transform)>,
+    mut rng: Local<Option<fastrand::Rng>>,
+) {
+    let walker_count = walkers.iter().len() as u64;
+    let _timed = TimedBy(&mut cost, std::time::Instant::now(), walker_count);
     let rng = rng.get_or_insert_with(|| fastrand::Rng::with_seed(config.seed ^ 0xb0b));
     let terrain = SpatialQueryFilter::from_mask(TERRAIN_LAYER);
     for (mut walker, mut bouncer, state, transform) in &mut walkers {
@@ -628,7 +785,8 @@ fn turn_from_terrain(config: Res<Config>, spatial: SpatialQuery, mut walkers: Qu
 /// side the other would pass on, or to the right when dead ahead, so two
 /// meeting head-on both keep right. Looking only at who stood ahead, it
 /// missed characters converging from the side. A wall's turn goes first.
-fn avoid_each_other(config: Res<Config>, mut walkers: Query<(Entity, &mut Walker, &mut WallBouncer, &WalkerState, &Transform)>) {
+fn avoid_each_other(config: Res<Config>, mut cost: ResMut<SteerCost>, mut walkers: Query<(Entity, &mut Walker, &mut WallBouncer, &WalkerState, &Transform)>) {
+    let _timed = TimedBy(&mut cost, std::time::Instant::now(), 0);
     if !config.avoid {
         return;
     }
@@ -887,13 +1045,22 @@ fn trace_feet(
 }
 
 /// `--bench SECS`: after 3 s to load and settle, every frame's wall time
-/// for SECS seconds; then `BENCH` with the count, p50 and p99, and exit.
-fn bench(config: Res<Config>, time: Res<Time<Real>>, mut frames: Local<Vec<f32>>, characters: Query<(Option<&Ragdoll>, Option<&Proxy>), With<WalkerState>>) {
+/// for SECS seconds; then `BENCH` with the count, p50 and p99, and the
+/// steering's own time per walker per frame ([`SteerCost`]), and exit.
+fn bench(
+    config: Res<Config>,
+    time: Res<Time<Real>>,
+    steer: Res<SteerCost>,
+    mut frames: Local<Vec<f32>>,
+    mut steer_at_start: Local<Option<(std::time::Duration, u64)>>,
+    characters: Query<(Option<&Ragdoll>, Option<&Proxy>), With<WalkerState>>,
+) {
     let Some(seconds) = config.bench else { return };
     let now = time.elapsed_secs();
     if now < 3.0 {
         return;
     }
+    let (steer_time, steer_frames) = *steer_at_start.get_or_insert((steer.time, steer.walker_frames));
     frames.push(time.delta_secs() * 1e3);
     if now >= 3.0 + seconds {
         frames.sort_by(f32::total_cmp);
@@ -909,6 +1076,8 @@ fn bench(config: Res<Config>, time: Res<Time<Real>>, mut frames: Local<Vec<f32>>
             at(0.5),
             at(0.99)
         );
+        let walker_frames = (steer.walker_frames - steer_frames).max(1);
+        println!("BENCH steering {:.4} ms per walker per frame ({walker_frames} walker-frames)", (steer.time - steer_time).as_secs_f64() * 1e3 / walker_frames as f64);
         std::process::exit(0);
     }
 }

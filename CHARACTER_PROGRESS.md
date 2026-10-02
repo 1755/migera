@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Playground: walkers seek goals; no slide while getting up; steering cost
+
+- **Goals** (`Seeker`): each walker heads up a ramp or the stair through a
+  lined-up entry point, across a fence, or to a random floor point. Terrain
+  and avoidance turns go first and are followed by a 1.5 s detour; a goal
+  is given up after 25 s.
+  - 16 ragdolled walkers among 60 props, ~2 min: 17 climbs or crossings
+    (ramps 15°/25°/35° 4/5/3, stair 1, fences 0.1/0.2 m 4/4), 16 falls
+    and 16 get-ups.
+  - 0 of 384 pelvis samples outside the room or inside a solid.
+  - About half the reachable goals are still given up in the crowd.
+  - `--goals off` restores pure bouncing. A `--start` character keeps its
+    heading.
+- **Library fix, walker:** the gait kept walking through a fall and the
+  rise, so the rising body slid 1.53–1.69 m forward. Now the gait is set
+  to standing at the fall and asks no speed while the ragdoll is down. The
+  root moves 0.00–0.23 m through the rise (same three starts, before and
+  after), and the walker then starts from a stand.
+- **Steering cost**, timed in its systems (`--bench 10 --characters 16`,
+  two runs each): 0.016 ms per walker per frame without physics,
+  0.029–0.032 ms with 16 ragdolls.
+- Props doubled to 60 by default.
+- See [the note](./docs/knowledge/character-animation/ik-and-locomotion/steer-over-terrain-by-the-ground-profile-ahead.md).
+- `cargo test --release --lib`: 1091 passed. Clippy: 0 warnings.
+
 ### Playground: ramps, a 5 m stair, fences; climbing and falling off
 
 - **Terrain, all free-standing:**

@@ -14,6 +14,7 @@ code:
   - src/character/anim/getup.rs
   - src/character/anim/ragdoll.rs
   - src/character/anim/ragdoll_plugin.rs
+  - src/character/anim/walker.rs
   - examples/character_gallery.rs
 sources:
   - "VanSant (1988), Rising from a supine position to erect stance, Phys Ther 68(2):185-192, https://pubmed.ncbi.nlm.nih.gov/3340655/ — 32 young adults; most common: symmetrical push, symmetrical trunk, symmetrical squat, through sitting to squatting"
@@ -181,6 +182,14 @@ end, when every body is set onto its bone and the root is pinned again.
   won while it wrote last, so every rise slid the character 0.45 m back to
   where it fell from. `follow_the_fallen_body` keeps the gallery's
   position in step; it now rises within 1 mm of where it lay.
+- **A walker stands while it is down.** A `Walker` asked to walk kept its
+  gait running through the fall and the rise. Its root motion carried the
+  rising body 1.5–1.7 m forward while the hips went from 0.13 to 0.94 m,
+  a visible slide (`physics_character_playground`, the same three starts
+  before and after). Now `fall_when_uncaught` sets the gait to standing,
+  and `drive_walkers` asks for no speed while `Ragdoll::is_falling`. The
+  root moves 0.00–0.23 m through the rise, and that is the body settling
+  before it starts. Once up, the walker starts from a stand.
 
 ## Revisit when
 

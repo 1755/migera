@@ -14,13 +14,16 @@ code:
   - src/character/anim/physics_ground.rs
 sources:
   - "live: physics_character_playground --physics ragdoll --props 0 --trace-feet --start X,Z,YAW, one run per ramp, the stair and each fence"
-  - "live BRP: --characters 16 --physics ragdoll --seed 11, every pelvis sampled 13 times over 60 s"
+  - "live BRP: --characters 16 --physics ragdoll --seed 11, every pelvis sampled 13 times over 60 s, and with goals 24 times over ~2 min"
+  - "--bench 10 --characters 16 --physics none|ragdoll, BENCH steering line"
 aliases:
   - turn_from_terrain
   - blocked_along
   - terrain steering
   - walkable slope
   - ledge fall
+  - Seeker
+  - seek_goals
 ---
 
 # Steer over terrain by the ground profile ahead, not a ray at one height
@@ -109,13 +112,42 @@ Measured live, ragdoll mode, one walker started at each structure:
   Against a wall, a ramp with a 1 m gap beside it caught a walker that
   fell into the gap, and it walked through the platform and the wall. The
   structures stand 2-2.5 m apart and from the walls for this reason.
-- **Cost:** not measured separately. It is up to 31 rays per walker per
-  frame, against the 160 of `PhysicsGround` (about 0.1 ms per character).
+- **Cost** of all the steering (probes, avoidance, goals), timed inside
+  its systems (`SteerCost`, `--bench 10 --characters 16`, two runs each):
+
+  | Physics | Steering per walker per frame |
+  |---|---|
+  | none | 0.016 ms |
+  | 16 ragdolls | 0.029–0.032 ms |
+
+  It costs more with ragdolls: the rays filter on the terrain layer, but
+  still walk a query tree that holds every body. For comparison, a ragdoll
+  costs 0.24–0.31 ms and the foot rays 0.09–0.11 ms.
+
+## Goals instead of a navmesh
+
+Reflections alone brought a walker onto a platform only by chance. Each
+walker now has a goal (`Seeker`): a route through a point 2 m in front of
+a structure, lined up with it, then its top or far side, or a random clear
+floor point (3 in 10).
+
+- A turn from terrain or another walker goes first. After it, the walker
+  walks its new way for 1.5 s before re-aiming. Re-aimed at once, it walked
+  straight back into what it had turned from.
+- A goal not reached in 25 s is given up. That is how the 45°/50° ramps
+  and the tall fences end: tried and turned away.
+- 16 ragdolled walkers among 60 props over ~2 min:
+  - 17 climbs or crossings: 15°/25°/35° ramps 4/5/3, the stair 1, the
+    0.1/0.2 m fences 4/4;
+  - 16 falls and 16 get-ups;
+  - 0 of 384 pelvis samples outside the room or inside a solid.
+- About half the reachable goals are given up as well, mostly in crowds.
+  Repeated avoidance turns and detours outlast the 25 s.
 
 ## Revisit when
 
-- Walkers need paths rather than reflections (to aim for a ramp, say): a
-  navmesh, not more probes.
+- Walkers must reach a goal reliably through a crowd or a cluttered room:
+  a navmesh or flow field, not more probes and timeouts.
 - Structures must stand closer together than about 2 m: the steering
   needs to re-check while it turns.
 
