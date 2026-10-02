@@ -73,6 +73,7 @@ up to 4 cm under the surface.
 
 ## Related
 
+- [Feet stand on the physics world through ground sampled under them](./feet-stand-on-the-physics-world-through-sampled-ground.md) — applies: a probe answering these world queries from the physics world.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — same-trap: the other slope fault, a lock blind to the body's rise.
 - [Foot IK on uneven ground has two feedback loops](./foot-ik-feedback-loops.md) — prerequisite: why the IK samples the ANIMATED toe, which still holds.
 - [Getting up goes through key poses chosen by how the body lies](../ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md) — applies: the rise whose clearance this fixed.

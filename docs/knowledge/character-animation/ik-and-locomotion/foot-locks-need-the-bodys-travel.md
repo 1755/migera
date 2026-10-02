@@ -1,14 +1,14 @@
 ---
 title: Foot locks need the body's travel
-description: "A foot lock works in the pose's frame; with root motion moving the entity, a locked foot rode along (~14 cm first-step slide), a planted one never locked mid-walk, and up a slope a planted foot rose 9 cm with the body. Pass all the body's travel, rise included (Turn::travel). Read before touching footlock.rs or anything that moves the character entity."
+description: "A foot lock works in the pose's frame: pass it all the body's travel, rise included (a foot rode along 14 cm, rose 9 cm up a slope), but not the turn, which that frame already has (a foot flicked 0.55 m a frame turning far from the origin). Read before touching footlock.rs or anything that moves or turns the character."
 type: lesson
 status: current
 tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-01
-verified: 2026-10-01
+updated: 2026-10-02
+verified: 2026-10-02
 code:
   - src/character/anim/footlock.rs
   - src/character/anim/plugin.rs
@@ -55,6 +55,20 @@ stance it changed height by 64 mm (median); now 13 mm, as on flat ground
 (17 mm, the heel rising). `ride_rendered_feet` reports the rise the ground
 gave the entity.
 
+**But not the turn.** The pose's frame already turns with the body, so a
+planted foot pivoting with the body (`a_planted_foot_pivots_with_the_body_instead_of_being_dragged`)
+stays where it is there. Until 2026-10-02 the IK stage converted only the
+travel and passed the turn on as it came, rotating the pose-frame anchor
+by each frame's yaw about the character's WORLD position. The anchor
+jumped yaw × the distance from the origin. Turning at 2.5 rad/s at a wall
+7 m out, a planted foot flicked 0.55 m every frame and the hips 6 cm with
+it. Near the origin, as in `character_gallery`'s circle walk, it was
+centimetres. Now the IK stage hands the lock no turn: worst per-frame move
+of a planted foot through a wall turn, 9.9 mm (the foot's own pivot with
+the body), and of the hips, 2.9 mm. The rule is the same as for the
+travel: convert every part of `Turn` into the frame the lock's points are
+in.
+
 ## Measured
 
 Live, start of a walk, worst slide of the planted ball: 17.6 mm → 2.7 mm.
@@ -62,6 +76,8 @@ Unit test: zero world slip over 40 frames of acceleration past the unlock
 speed. It fails on the first frame (1.1 mm) with the travel removed from the
 anchor. `a_planted_foot_stays_put_while_the_body_climbs_over_it` fails on
 its first frame (4 mm) with the rise dropped.
+`plugin::a_planted_foot_turning_far_from_the_origin_stays_with_the_body`
+measured 340 mm in a frame before the turn was dropped, under 5 mm after.
 
 ## Related
 

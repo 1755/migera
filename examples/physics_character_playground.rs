@@ -1,11 +1,13 @@
 //! An animated character in a physical world.
 //!
-//! A 50 × 50 m room: a floor and four 3 m walls, all static colliders.
+//! A 25 × 25 m room: a floor and four 3 m walls, all static colliders.
 //! Characters walk straight, and when one nears a wall it turns away along
 //! the wall's reflection of its heading (the mirrored ray), plus a small
-//! random jitter so no two bounces repeat. Cubes, spheres and capsules
-//! drop from 5 m around the centre and lie where they land, for the
-//! characters to walk into.
+//! random jitter so no two bounces repeat; one nearing another turns aside.
+//! Cubes, spheres and capsules drop from 5 m around the centre and lie
+//! where they land, for the characters to walk into: a foot coming down on
+//! one low enough to step on stands on it (`PhysicsGround`), a taller one
+//! is pushed.
 //!
 //! Each character is physical in one of two ways, by its distance from the
 //! camera (`--physics lod`, the default):
@@ -27,7 +29,10 @@
 //! `--jitter DEGREES` (15), `--ragdoll-distance M` (10), `--seed N`,
 //! `--physics lod|ragdoll|kinematic`, `--gizmos on`,
 //! `--shot PATH --at-frame N` (a screenshot, then exit),
-//! `--camera X,Y,Z` (where the camera starts, looking at the centre).
+//! `--camera X,Y,Z` and `--look X,Y,Z` (where the camera starts, and what
+//! at), `--avoid off`, `--plank H` (a feet-on-props test: one plank across
+//! the first character's path, no props), `--trace-feet` (prints the first
+//! character's ankles and heading every frame).
 
 use std::f32::consts::PI;
 
@@ -38,6 +43,7 @@ use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 
 use migera::character::anim::asset::AnimAssetPlugin;
+use migera::character::anim::physics_ground::{PhysicsGround, PhysicsGroundPlugin};
 use migera::character::anim::plugin::AnimFootIk;
 use migera::character::anim::ragdoll_plugin::sole_blocks;
 use migera::character::anim::{
@@ -47,7 +53,7 @@ use migera::character::anim::{
 use migera::character::{Bone, HumanoidSkeleton};
 
 /// Half the room's side, metres.
-const HALF_ROOM: f32 = 25.0;
+const HALF_ROOM: f32 = 12.5;
 const WALL_HEIGHT: f32 = 3.0;
 const WALL_THICKNESS: f32 = 0.5;
 /// The walls' own collision layer, which the bounce's ray looks for alone.
@@ -55,6 +61,10 @@ const WALL_LAYER: LayerMask = LayerMask(1 << 1);
 /// How far ahead a walker looks for a wall, metres: at 1.2 m/s and a turn
 /// of [`BOUNCE_TURN_RATE`] it turns within ~1 m.
 const LOOK_AHEAD: f32 = 2.0;
+/// The side rays' angle from the heading, radians.
+const WHISKER: f32 = 0.6;
+/// The least angle a walker leaves a wall at, radians.
+const LEAVE_ANGLE: f32 = 0.45;
 /// How fast a walker turns away from a wall, radians per second.
 const BOUNCE_TURN_RATE: f32 = 2.5;
 /// How much nearer than `--ragdoll-distance` a character must come to get
@@ -72,8 +82,19 @@ struct Config {
     seed: u64,
     physics: PhysicsMode,
     gizmos: bool,
+    avoid: bool,
+    /// `--plank H`: a test of feet on props. No props; one H m plank lying
+    /// across the first character's path, which starts facing it.
+    plank: Option<f32>,
+    trace_feet: bool,
+    /// `--bench SECS`: vsync off, 3 s to settle, then frame times for SECS
+    /// seconds, printed (p50, p99), and exit.
+    bench: Option<f32>,
+    flat_ground: bool,
     shot: Option<(String, u32)>,
     camera: Vec3,
+    /// What the camera starts looking at (`--look X,Y,Z`).
+    look: Vec3,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +102,8 @@ enum PhysicsMode {
     Lod,
     Ragdoll,
     Kinematic,
+    /// No body at all: the animation's cost alone, for `--bench`.
+    None,
 }
 
 impl Config {
@@ -94,8 +117,14 @@ impl Config {
             seed: 7,
             physics: PhysicsMode::Lod,
             gizmos: false,
+            avoid: true,
+            plank: None,
+            trace_feet: false,
+            bench: None,
+            flat_ground: false,
             shot: None,
             camera: Vec3::new(0.0, 9.0, 22.0),
+            look: Vec3::new(0.0, 1.0, 0.0),
         };
         let mut args = std::env::args().skip(1);
         let mut at_frame = 300;
@@ -109,10 +138,16 @@ impl Config {
                 "--ragdoll-distance" => config.ragdoll_distance = value().parse().unwrap_or(config.ragdoll_distance),
                 "--seed" => config.seed = value().parse().unwrap_or(config.seed),
                 "--gizmos" => config.gizmos = value() != "off",
+                "--avoid" => config.avoid = value() != "off",
+                "--plank" => config.plank = value().parse().ok(),
+                "--trace-feet" => config.trace_feet = true,
+                "--bench" => config.bench = value().parse().ok(),
+                "--ground" => config.flat_ground = value() == "flat",
                 "--physics" => {
                     config.physics = match value().as_str() {
                         "ragdoll" => PhysicsMode::Ragdoll,
                         "kinematic" => PhysicsMode::Kinematic,
+                        "none" => PhysicsMode::None,
                         _ => PhysicsMode::Lod,
                     }
                 }
@@ -123,10 +158,14 @@ impl Config {
                         shot.1 = at_frame;
                     }
                 }
-                "--camera" => {
+                "--camera" | "--look" => {
                     let parts: Vec<f32> = value().split(',').filter_map(|p| p.trim().parse().ok()).collect();
                     if let [x, y, z] = parts[..] {
-                        config.camera = Vec3::new(x, y, z);
+                        if arg == "--camera" {
+                            config.camera = Vec3::new(x, y, z);
+                        } else {
+                            config.look = Vec3::new(x, y, z);
+                        }
                     }
                 }
                 _ => {}
@@ -143,6 +182,10 @@ struct WallBouncer {
     /// is taken meanwhile, or the ray, still on the wall, would turn it
     /// back.
     turning_to: Option<f32>,
+    /// The heading it is turning onto aside from another character. A wall
+    /// overrides it: blocking the wall's check, an avoiding turn took a
+    /// walker to within 0.38 m of a wall.
+    avoiding_to: Option<f32>,
 }
 
 /// The kinematic capsule standing in for a far character's body.
@@ -153,10 +196,20 @@ struct ProxyOf(Entity);
 #[derive(Component)]
 struct Proxy(Entity);
 
-/// The capsule's radius and its straight length, metres: a body's width and
-/// a 1.7 m character's height.
+/// The capsule's radius and its straight length, metres: a body's width,
+/// from a step's height (`PhysicsGround::max_step`) to a 1.75 m
+/// character's head. Down to the floor, it shoved every prop out from under
+/// the feet before they could step on it.
 const PROXY_RADIUS: f32 = 0.25;
-const PROXY_LENGTH: f32 = 1.2;
+const PROXY_BOTTOM: f32 = 0.35;
+const PROXY_LENGTH: f32 = 1.75 - PROXY_BOTTOM - 2.0 * PROXY_RADIUS;
+/// How near another character a walker looks, metres; how far ahead it
+/// predicts their paths, seconds; how close it lets them pass, metres; and
+/// how far it turns aside each time, radians.
+const AVOID_RADIUS: f32 = 3.5;
+const AVOID_HORIZON: f32 = 1.5;
+const AVOID_CLEARANCE: f32 = 1.0;
+const AVOID_TURN: f32 = 0.6;
 
 fn main() {
     let assets = std::env::current_dir().expect("cwd").join("assets").to_string_lossy().into_owned();
@@ -164,7 +217,16 @@ fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
-                .set(WindowPlugin { primary_window: Some(Window { title: "migera physics character playground".into(), ..default() }), ..default() })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "migera physics character playground".into(),
+                        // Uncapped for `--bench`: at vsync every frame reads the
+                        // display's 16.7 ms whatever it cost.
+                        present_mode: if config.bench.is_some() { bevy::window::PresentMode::AutoNoVsync } else { default() },
+                        ..default()
+                    }),
+                    ..default()
+                })
                 .set(AssetPlugin { file_path: assets, ..default() }),
         )
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
@@ -175,11 +237,12 @@ fn main() {
         // ragdoll's resting contacts jittered and it crept across the floor.
         .add_plugins(PhysicsPlugins::default())
         .insert_resource(SubstepCount(12))
-        .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, FreeCameraPlugin))
+        .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, PhysicsGroundPlugin, FreeCameraPlugin))
         .insert_resource(config)
         .add_systems(Startup, (spawn_room, spawn_props, spawn_characters, spawn_camera_and_light, spawn_hud))
-        .add_systems(Update, bounce_off_walls.before(WalkerSet::Drive))
-        .add_systems(Update, (choose_physics, draw_bodies, update_hud, auto_shot))
+        .add_systems(Update, (bounce_off_walls, avoid_each_other).chain().before(WalkerSet::Drive))
+        .add_systems(Update, (choose_physics, draw_bodies, update_hud, auto_shot, bench))
+        .add_systems(PostUpdate, trace_feet.after(TransformSystems::Propagate))
         .add_systems(FixedUpdate, carry_proxies)
         .run();
 }
@@ -187,7 +250,7 @@ fn main() {
 fn spawn_camera_and_light(mut commands: Commands, config: Res<Config>) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(config.camera).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+        Transform::from_translation(config.camera).looking_at(config.look, Vec3::Y),
         FreeCamera { walk_speed: 6.0, run_speed: 18.0, ..default() },
     ));
     commands.spawn((
@@ -232,11 +295,25 @@ fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
 
 /// Cubes, spheres and capsules, dynamic, dropped from 5 m around the centre.
 fn spawn_props(mut commands: Commands, config: Res<Config>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    if let Some(height) = config.plank {
+        // A platform across the path, deep enough to walk on with both feet,
+        // heavy enough not to skate away.
+        commands.spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(2.0, height, 2.5),
+            Mass(150.0),
+            Friction::new(1.0),
+            Mesh3d(meshes.add(Cuboid::new(2.0, height, 2.5))),
+            MeshMaterial3d(materials.add(Color::srgb(0.55, 0.4, 0.25))),
+            Transform::from_xyz(0.0, height * 0.5, -3.75),
+        ));
+        return;
+    }
     let mut rng = fastrand::Rng::with_seed(config.seed);
     for i in 0..config.props {
         let angle = rng.f32() * PI * 2.0;
         // Around the centre, clear of the first character standing there.
-        let reach = 1.5 + rng.f32() * 6.0;
+        let reach = 1.5 + rng.f32() * 5.0;
         let at = Vec3::new(angle.cos() * reach, 5.0 + rng.f32() * 2.0, angle.sin() * reach);
         let size = 0.25 + rng.f32() * 0.35;
         let color = Color::hsl(rng.f32() * 360.0, 0.55, 0.55);
@@ -267,9 +344,16 @@ fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, conf
             Vec3::new((rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 4.0), 0.0, (rng.f32() * 2.0 - 1.0) * (HALF_ROOM - 4.0))
         };
         let yaw = rng.f32() * PI * 2.0 - PI;
+        // Facing the plank (along -Z, yaw zero), for its test.
+        let yaw = if i == 0 && config.plank.is_some() { 0.0 } else { yaw };
         // `puppet_base.gltf` faces +Z; this crate's forward is -Z.
         let root = spawn_gltf_humanoid(&mut commands, &asset_server, "models/puppet_base.gltf", PI, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)));
         commands.entity(root).insert((Walker { speed: config.speed, steer: Steer::Toward { yaw, rate: BOUNCE_TURN_RATE }, ..default() }, WallBouncer::default()));
+        // Feet on the physics world: on a prop low enough to step on
+        // (`--ground flat`: the floor alone, for the bench).
+        if !config.flat_ground {
+            commands.entity(root).insert(PhysicsGround::default());
+        }
     }
 }
 
@@ -289,18 +373,86 @@ fn bounce_off_walls(config: Res<Config>, spatial: SpatialQuery, mut walkers: Que
         }
         // Yaw zero faces -Z; the heading turns about +Y.
         let ahead = Quat::from_rotation_y(yaw) * Vec3::NEG_Z;
-        let Ok(direction) = Dir3::new(ahead) else { continue };
         let origin = transform.translation + Vec3::Y * 1.0;
-        let Some(hit) = spatial.cast_ray(origin, direction, LOOK_AHEAD, true, &walls) else { continue };
+        // Straight ahead and two whiskers to the sides: met at a shallow
+        // angle, a wall reached the straight ray only when the walker was
+        // nearly touching it (2 m × sin 5° ≈ 0.17 m; measured 0.13).
+        let hit = [0.0f32, WHISKER, -WHISKER].into_iter().find_map(|angle| {
+            let direction = Dir3::new(Quat::from_rotation_y(angle) * ahead).ok()?;
+            spatial.cast_ray(origin, direction, LOOK_AHEAD, true, &walls)
+        });
+        let Some(hit) = hit else { continue };
         let normal = Vec3::new(hit.normal.x, 0.0, hit.normal.z).normalize_or_zero();
-        if normal == Vec3::ZERO {
+        // Only a wall it is heading into; one it already walks away from or
+        // along, a whisker merely grazed.
+        if normal == Vec3::ZERO || ahead.dot(normal) >= 0.0 {
             continue;
         }
         let mirrored = ahead - normal * (2.0 * ahead.dot(normal));
         let jitter = (rng.f32() * 2.0 - 1.0) * config.jitter;
-        let target = yaw_of(mirrored) + jitter;
+        let mut leaving = Quat::from_rotation_y(jitter) * mirrored;
+        // At least `LEAVE_ANGLE` off the wall: from a shallow approach the
+        // reflection leaves it only shallowly, and the jitter turned it back
+        // in, to walk along the wall into the next ray.
+        let away = leaving.dot(normal);
+        let least = LEAVE_ANGLE.sin();
+        if away < least {
+            let along = (leaving - normal * away).normalize_or_zero();
+            leaving = along * LEAVE_ANGLE.cos() + normal * least;
+        }
+        let target = yaw_of(leaving);
         walker.steer = Steer::Toward { yaw: target, rate: BOUNCE_TURN_RATE };
         bouncer.turning_to = Some(target);
+        bouncer.avoiding_to = None;
+    }
+}
+
+/// Turns each walker aside from the other character it would come nearest,
+/// predicted from both headings and speeds over [`AVOID_HORIZON`]: if
+/// they would pass closer than [`AVOID_CLEARANCE`], it turns away from the
+/// side the other would pass on, or to the right when dead ahead, so two
+/// meeting head-on both keep right. Looking only at who stood ahead, it
+/// missed characters converging from the side. A wall's turn goes first.
+fn avoid_each_other(config: Res<Config>, mut walkers: Query<(Entity, &mut Walker, &mut WallBouncer, &WalkerState, &Transform)>) {
+    if !config.avoid {
+        return;
+    }
+    let moving: Vec<(Entity, Vec3, Vec3)> = walkers
+        .iter()
+        .map(|(entity, walker, _, state, transform)| (entity, transform.translation, Quat::from_rotation_y(state.facing.yaw) * Vec3::NEG_Z * walker.speed))
+        .collect();
+    for (entity, mut walker, mut bouncer, state, transform) in &mut walkers {
+        let yaw = state.facing.yaw;
+        if let Some(target) = bouncer.avoiding_to
+            && angle_between(yaw, target) < 0.05
+        {
+            bouncer.avoiding_to = None;
+        }
+        if bouncer.turning_to.is_some() || bouncer.avoiding_to.is_some() {
+            continue;
+        }
+        let ahead = Quat::from_rotation_y(yaw) * Vec3::NEG_Z;
+        let own = ahead * walker.speed;
+        // The soonest pass closer than the clearance: where the other will be,
+        // relative to this one, at their closest.
+        let threat = moving
+            .iter()
+            .filter(|(other, ..)| *other != entity)
+            .filter_map(|(_, at, velocity)| {
+                let rel = Vec3::new(at.x - transform.translation.x, 0.0, at.z - transform.translation.z);
+                let closing = *velocity - own;
+                let t = if closing.length_squared() > 1.0e-6 { (-rel.dot(closing) / closing.length_squared()).clamp(0.0, AVOID_HORIZON) } else { 0.0 };
+                let closest = rel + closing * t;
+                (closest.length() < AVOID_CLEARANCE && rel.length() < AVOID_RADIUS).then_some((t, closest))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((_, closest)) = threat else { continue };
+        // Positive: it would pass on the left (yaw grows to the left).
+        let side = ahead.cross(closest).y;
+        let away = if side > 0.05 { -AVOID_TURN } else if side < -0.05 { AVOID_TURN } else { -AVOID_TURN };
+        let target = yaw + away;
+        walker.steer = Steer::Toward { yaw: target, rate: BOUNCE_TURN_RATE };
+        bouncer.avoiding_to = Some(target);
     }
 }
 
@@ -323,11 +475,14 @@ fn choose_physics(
     mut commands: Commands,
     config: Res<Config>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
-    characters: Query<(Entity, &HumanoidSkeleton, &AnimFootIk, &Transform, Option<&Ragdoll>, Option<&Proxy>), With<WalkerState>>,
+    mut characters: Query<
+        (Entity, &HumanoidSkeleton, &AnimFootIk, &Transform, Option<&Ragdoll>, Option<&Proxy>, Option<&mut PhysicsGround>),
+        With<WalkerState>,
+    >,
     global_transforms: Query<&GlobalTransform>,
 ) {
     let Ok(camera) = cameras.single() else { return };
-    for (entity, skeleton, foot_ik, transform, ragdoll, proxy) in &characters {
+    for (entity, skeleton, foot_ik, transform, ragdoll, proxy, mut ground) in &mut characters {
         // Not until the foot IK has measured the live rig (the ragdoll's
         // soles are built from it) and the bones have been placed.
         let Some(rig) = foot_ik.rig.as_ref() else { continue };
@@ -335,7 +490,12 @@ fn choose_physics(
             continue;
         }
         let distance = camera.translation().distance(transform.translation);
+        // `--physics none`: the animation alone, the bench's baseline.
+        if config.physics == PhysicsMode::None {
+            continue;
+        }
         let near = match config.physics {
+            PhysicsMode::None => false,
             PhysicsMode::Ragdoll => true,
             PhysicsMode::Kinematic => false,
             PhysicsMode::Lod if ragdoll.is_some() => distance < config.ragdoll_distance + HYSTERESIS,
@@ -349,6 +509,9 @@ fn choose_physics(
                 if let Some(proxy) = proxy {
                     commands.entity(proxy.0).despawn();
                     commands.entity(entity).remove::<Proxy>();
+                }
+                if let Some(ground) = ground.as_mut() {
+                    ground.ignore.clear();
                 }
             }
             (false, Some(ragdoll)) if !ragdoll.is_falling() => {
@@ -365,15 +528,20 @@ fn choose_physics(
                     ))
                     .id();
                 commands.entity(entity).insert(Proxy(capsule));
+                // The feet's rays pass through the character's own capsule.
+                if let Some(ground) = ground.as_mut() {
+                    ground.ignore = vec![capsule];
+                }
             }
             _ => {}
         }
     }
 }
 
-/// Where a character's capsule stands: on the floor under it.
+/// Where a character's capsule's centre is: its bottom a step above the
+/// floor under it.
 fn capsule_centre(feet: Vec3) -> Vec3 {
-    feet + Vec3::Y * (PROXY_LENGTH * 0.5 + PROXY_RADIUS)
+    feet + Vec3::Y * (PROXY_BOTTOM + PROXY_RADIUS + PROXY_LENGTH * 0.5)
 }
 
 /// Moves each kinematic capsule after its character by velocity, every
@@ -448,6 +616,60 @@ fn update_hud(
             config.ragdoll_distance,
             characters.iter().count(),
         );
+    }
+}
+
+/// `--trace-feet`: the first character's ankles (world) and heading each
+/// frame, as rendered: `FEET t yaw lx ly lz rx ry rz hips_y`.
+fn trace_feet(config: Res<Config>, time: Res<Time>, characters: Query<(&HumanoidSkeleton, &WalkerState)>, world: Query<&GlobalTransform>) {
+    if !config.trace_feet {
+        return;
+    }
+    let Some((skeleton, state)) = characters.iter().next() else { return };
+    let (Ok(left), Ok(right), Ok(hips)) =
+        (world.get(skeleton.entity(Bone::LeftFoot)), world.get(skeleton.entity(Bone::RightFoot)), world.get(skeleton.entity(Bone::Hips)))
+    else {
+        return;
+    };
+    let (l, r) = (left.translation(), right.translation());
+    println!(
+        "FEET {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}",
+        time.elapsed_secs(),
+        state.facing.yaw,
+        l.x,
+        l.y,
+        l.z,
+        r.x,
+        r.y,
+        r.z,
+        hips.translation().y
+    );
+}
+
+/// `--bench SECS`: after 3 s to load and settle, every frame's wall time
+/// for SECS seconds; then `BENCH` with the count, p50 and p99, and exit.
+fn bench(config: Res<Config>, time: Res<Time<Real>>, mut frames: Local<Vec<f32>>, characters: Query<(Option<&Ragdoll>, Option<&Proxy>), With<WalkerState>>) {
+    let Some(seconds) = config.bench else { return };
+    let now = time.elapsed_secs();
+    if now < 3.0 {
+        return;
+    }
+    frames.push(time.delta_secs() * 1e3);
+    if now >= 3.0 + seconds {
+        frames.sort_by(f32::total_cmp);
+        let at = |q: f32| frames[((frames.len() - 1) as f32 * q) as usize];
+        let ragdolls = characters.iter().filter(|(r, _)| r.is_some()).count();
+        let capsules = characters.iter().filter(|(_, p)| p.is_some()).count();
+        println!(
+            "BENCH physics {:?} characters {} ({ragdolls} ragdoll, {capsules} capsule) props {}: {} frames, p50 {:.2} ms, p99 {:.2} ms",
+            config.physics,
+            config.characters,
+            config.props,
+            frames.len(),
+            at(0.5),
+            at(0.99)
+        );
+        std::process::exit(0);
     }
 }
 

@@ -73,6 +73,7 @@ pub mod pelvis;
 pub mod slide;
 pub mod math;
 pub mod phase;
+pub mod physics_ground;
 pub mod plugin;
 pub mod poses;
 pub mod proportions;

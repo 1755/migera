@@ -41,6 +41,38 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Playground: smaller room, avoidance, feet on props, the wall-turn foot flicker fixed, physics cost
+
+- **The room is 25 × 25 m.**
+- **Characters avoid each other** by predicting each pair's closest
+  approach over 1.5 s from heading and speed, and turning aside 0.6 rad
+  when it would be under 1 m (head-on, both keep right). Six characters,
+  60 s:
+  - avoidance on: closest pair 1.00 m, never under 0.8 m;
+  - avoidance off (`--avoid off`): 0.14 m, 28 samples under 0.8 m.
+- **Wall bounces** got side whiskers and a 25° minimum leaving angle.
+  Before, the jitter could turn a shallow reflection back into the wall,
+  and a walker came within 0.13 m. Now the closest is 1.17 m.
+- **Feet stand on props** (`physics_ground`, `PhysicsGround`): raycast
+  grids under each foot; the body rises to the mean under its soles.
+  On a 0.15 m platform the stances are at +0.15 and the hips rise
+  0.935 → 1.085 m. See
+  [the note](./docs/knowledge/character-animation/ik-and-locomotion/feet-stand-on-the-physics-world-through-sampled-ground.md).
+- **The foot jerk turning at walls was a library bug.** The foot locks
+  were handed the turn about the character's world position, while their
+  anchors live in the pose's frame. Through a wall turn 7 m from the
+  origin, a planted foot flicked 0.55 m every frame and the hips 6 cm.
+  Fixed: the worst per-frame move is now 9.9 mm (foot) and 2.9 mm (hips).
+  The test fails at 340 mm before the fix. The gallery's circle walk is
+  unchanged (2.35 m radius).
+- **Physics cost** (`--bench 10 --characters 16`, vsync off, two runs,
+  median frame), per character per frame:
+  - a ragdoll, 0.24-0.31 ms (p99 15 → 25 ms at 16);
+  - a capsule, within noise;
+  - the foot rays, 0.09-0.11 ms;
+  - animation and rendering together, about 0.4 ms.
+- `cargo test --release --lib`: 1091 passed. Clippy: 0 warnings.
+
 ### Walking character in the library; physics character playground
 
 - **Extracted from `character_gallery` into the library**, so any example

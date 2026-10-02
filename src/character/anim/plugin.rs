@@ -774,7 +774,14 @@ fn solve_foot_ik(
 
             // The body's travel arrives in world axes; the lock works in the
             // pose's, the same rotation the arm targets below go through.
-            let turn = Turn { travel: root_rotation.inverse() * turn.travel, ..turn };
+            //
+            // And no turn: the pose's frame already turns with the body, so a
+            // foot pivoting with it stays where it is there. Rotated by the
+            // frame's yaw about the WORLD pivot as well, an anchor held in the
+            // pose's frame jumped yaw × the character's distance from the
+            // origin: at a wall 7 m out a planted foot flicked 0.55 m each
+            // frame of the turn (`a_planted_foot_turning_far_from_the_origin_stays_with_the_body`).
+            let turn = Turn { travel: root_rotation.inverse() * turn.travel, yaw_delta: 0.0, pivot: Vec3::ZERO };
             let planted = foot_ik.planted[matches!(side, Side::Right) as usize];
             let lock = match side {
                 Side::Left => &mut foot_ik.left,
@@ -1562,6 +1569,43 @@ mod tests {
             heights.push(under);
         }
         assert!((heights[0] - heights[1]).abs() > 0.02, "the feet should stand at different heights: {heights:?}");
+    }
+
+    #[test]
+    fn a_planted_foot_turning_far_from_the_origin_stays_with_the_body() {
+        // The turn handed to the foot locks (`AnimFootIk::turn`) pivots about
+        // the character's WORLD position, but the locks hold their anchors in
+        // the pose's frame, which already turns with the body. Rotated about
+        // a world point metres away, an anchor jumped a frame's yaw × that
+        // distance: turning at a wall 7 m out, a planted foot flicked 0.55 m
+        // back and forth every frame and the hips with it. A planted foot
+        // pivots with the body: in the pose's frame it stays where it is.
+        use crate::character::anim::footlock::Turn;
+        let (mut app, rig, _) = app_with_real_rig(FlatGround::default());
+        let position = Vec3::new(6.0, 0.0, 6.0);
+        app.world_mut().entity_mut(rig).insert(Transform::from_translation(position));
+        step(&mut app, 120);
+        let soles = |app: &App| {
+            let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+            let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
+            let joints = forward_kinematics_on(&pose, &geometry);
+            [joints[Bone::LeftFoot], joints[Bone::RightFoot]]
+        };
+        let (rate, mut yaw, mut worst) = (2.4f32, 0.0f32, 0.0f32);
+        let mut before = soles(&app);
+        for _ in 0..60 {
+            let delta = rate / 60.0;
+            yaw += delta;
+            app.world_mut().get_mut::<Transform>(rig).unwrap().rotation = Quat::from_rotation_y(yaw);
+            app.world_mut().get_mut::<AnimFootIk>(rig).unwrap().turn = Turn { pivot: position, yaw_delta: delta, travel: Vec3::ZERO };
+            step(&mut app, 1);
+            let now = soles(&app);
+            for (a, b) in now.iter().zip(&before) {
+                worst = worst.max(a.distance(*b));
+            }
+            before = now;
+        }
+        assert!(worst < 0.005, "a planted ankle moved {:.1} mm in one frame of the turn", worst * 1e3);
     }
 
     #[test]
