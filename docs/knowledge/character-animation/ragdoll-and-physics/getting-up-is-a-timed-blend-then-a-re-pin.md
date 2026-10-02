@@ -208,3 +208,4 @@ end, when every body is set onto its bone and the root is pinned again.
 - [A pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md) — deeper: why the rise's turn broke the bodies, and the rule that fixed it.
 - [Foot locks need the body's travel](../ik-and-locomotion/foot-locks-need-the-bodys-travel.md) — same-trap: an entity moved behind the locks' back.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: a body's rotation is its bone's, which is what lets it be set back on its bone.
+- [A walking arm swings back, and its hand hangs curled](../ik-and-locomotion/a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md) — context: the rig's fingers curl when standing and straighten while down; the rise's virtual fingertip leaves the real ones 84–90 mm under the floor for a moment.

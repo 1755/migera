@@ -276,6 +276,22 @@ pub fn real_leg_lengths() -> RigGeometry {
     rig
 }
 
+/// A `puppet_base` node's bind, by name, for joints that are not a [`Bone`]
+/// (the fingers): its local rotation and translation, and the world
+/// rotation of everything above it.
+pub fn bind_node(name: &str) -> Option<(Quat, Vec3, Quat)> {
+    let json: serde_json::Value = serde_json::from_str(PUPPET_BASE).ok()?;
+    let nodes = parse_nodes(&json).ok()?;
+    let mut parent_of: HashMap<usize, usize> = HashMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        for &child in &node.children {
+            parent_of.insert(child, index);
+        }
+    }
+    let index = nodes.iter().position(|node| node.name == name)?;
+    Some((nodes[index].rotation, nodes[index].translation, accumulated_rotation_above(&nodes, &parent_of, index)))
+}
+
 /// [`puppet_base`], but reporting failure instead of panicking.
 ///
 /// Separate so the parser's own error paths are testable without a broken

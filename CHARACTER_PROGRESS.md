@@ -41,6 +41,36 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walking arms swing back, elbows fold, hands hang relaxed
+
+- **The arm swing was a march.** Live at 1.3 m/s, the upper arm went 28°
+  forward and 10° back of vertical, and the elbow moved only 20–30°.
+  Murray (1967), 30 men at 1.54 m/s: 8° forward, 24° back, elbow 17–47°.
+  The upper arm swings mostly back, and the hand comes forward by the
+  elbow.
+  - The swing is now centred behind the shoulder (`ARM_SWING_CENTRE`
+    −0.5, `arm_swing` 0.21).
+  - The elbow has a new `GaitParams::elbow_carry` (walk 0.29 with
+    `elbow_bend` 0.73; the run keeps 0.6).
+  - At 1.54 m/s on puppet_base: +7°/−25°, elbow 17–46° (pinned by a test).
+    Live at 1.3 m/s: +9°/−18°, elbow 18–46°.
+- **Fingers curl** (`hand.rs`): the rig's finger joints are not `Bone`s
+  and sat flat at the bind (9° over the middle finger). They now curl to
+  Lee et al.'s relaxed angles as the rig binds (live: 56°). The thumb bends
+  across the palm: bent toward it like a finger, it stuck out into the
+  thigh.
+- **Fingers straighten while the ragdoll is down**, over 0.3 s. Curled,
+  the fingertips lay 45 mm into the floor; now 11–20 mm, as before (the
+  old build: 11–26 mm).
+- **Already there, not fixed:** the get-up's push-up puts the fingertips
+  84–90 mm under the floor for a moment, on the old build too. Its palm
+  uses a virtual fingertip.
+- Front and Left, gizmos without the mesh, then the mesh and hand
+  close-ups: the forearm leads, the upper arm trails, the fingers are
+  curled with the thumb along the index finger.
+- See [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md).
+- `cargo test --release --lib`: 1096 passed. Clippy: 0 warnings.
+
 ### Playground: walkers seek goals; no slide while getting up; steering cost
 
 - **Goals** (`Seeker`): each walker heads up a ramp or the stair through a

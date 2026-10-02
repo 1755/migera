@@ -122,10 +122,16 @@ pub struct GaitParams {
     pub stance_trail: f32,
     /// Peak ankle articulation — toe-off behind, heel-strike ahead.
     pub ankle_range: f32,
-    /// Peak arm swing. The arms counter-swing the legs.
+    /// Half the upper arm's swing, radians. The arms counter-swing the
+    /// legs, about a point behind the shoulder ([`ARM_SWING_CENTRE`]).
     pub arm_swing: f32,
-    /// How far the elbow folds at the peak of its swing.
+    /// How far the elbow folds at the front of its swing, on top of the
+    /// standing bend.
     pub elbow_bend: f32,
+    /// The share of [`Self::elbow_bend`] the elbow keeps at the back of its
+    /// swing. A relaxed arm is never a straight one, and a running arm stays
+    /// bent all the way round.
+    pub elbow_carry: f32,
     /// How far the hips drop at midstance, **as a fraction of leg length**.
     ///
     /// A real gait mechanic, and also what buys the stride its horizontal
@@ -250,9 +256,12 @@ impl GaitParams {
             knee_stance_flex: 0.35,
             stance_trail: 0.40,
             ankle_range: 0.35,
-            // A run swings harder — ~40 degrees forward with the bias.
+            // A run swings harder.
             arm_swing: 0.55,
             elbow_bend: 1.20,
+            // 41-69 degrees on top of the standing bend: a running arm stays
+            // folded.
+            elbow_carry: 0.6,
             // Fractions of leg length. `0.09 m` and `0.05 m` on the
             // synthetic rig's `0.49 m` leg, expressed so they scale — see
             // [`GaitParams::hip_dip`].
@@ -384,14 +393,16 @@ impl Default for GaitParams {
             knee_stance_flex: 0.20,
             stance_trail: 0.28,
             ankle_range: 0.25,
-            // With `ARM_FORWARD_BIAS`, ~22 degrees forward and ~12 back — a
-            // relaxed walking arm. It was 0.5 when the swing mostly spun
-            // the arm about itself on the real rig, and the hands barely
-            // moved; applied as a real swing, 0.5 is a march.
-            arm_swing: 0.30,
-            // With `ELBOW_CARRY`, ~15 degrees at the back of the swing and
-            // ~26 at the front, on top of the standing bend.
-            elbow_bend: 0.45,
+            // Murray, Sepic & Barnard (1967), 30 men at a free pace
+            // (1.54 m/s): the upper arm swings from 8 degrees in front of
+            // the vertical to 24 behind it, a 32-degree excursion. Scaled by
+            // `stride_scale_for` (x1.32 at 1.54 m/s), 0.21 rad gives them;
+            // `ARM_SWING_CENTRE` puts the middle behind the shoulder.
+            arm_swing: 0.21,
+            // Murray's elbow: 17 degrees at the back of the swing, 47 at the
+            // front. On top of the standing pose's ~5 degrees, 12 to 42.
+            elbow_bend: 0.73,
+            elbow_carry: 0.29,
             // Fractions of leg length. `0.06 m` and `0.025 m` on the
             // synthetic rig's `0.49 m` leg, expressed so they scale — see
             // [`GaitParams::hip_dip`].
@@ -1195,13 +1206,17 @@ pub fn walk_pose_on(
     // its opposite footfall ([`ARM_LAG`]): an arm is a pendulum driven from
     // the shoulder, and trails the leg that drives the rhythm.
     //
-    // # Further forward than back, and never a straight elbow
+    // # The upper arm swings back; the forearm carries the hand forward
     //
-    // A walking arm swings further in front of the body than behind it
-    // ([`ARM_FORWARD_BIAS`]), and its elbow carries a relaxed bend all the
-    // way round ([`ELBOW_CARRY`]), folding further as it comes forward. A
-    // symmetric sine and an elbow that snapped straight at the back of
-    // every swing were a large part of what read as mechanical.
+    // Murray, Sepic & Barnard (1967) measured 30 men: the upper arm spends
+    // most of the stride behind the vertical (8 degrees forward, 24 back),
+    // and the elbow folds from 17 to 47 degrees as it comes forward. So the
+    // hand still travels further forward than back, by the elbow. This walk
+    // had it the other way round, the upper arm 28 forward and 10 back on
+    // an elbow that moved 10 degrees: a straight arm thrown forward, which
+    // reads as marching. The swing is now centred behind the shoulder
+    // ([`ARM_SWING_CENTRE`]), and the elbow keeps [`GaitParams::elbow_carry`]
+    // of its fold at the back of the swing.
     let forward = rig.forward();
     let arms = [
         // Left arm with the right leg, which lands at 0.5.
@@ -1229,11 +1244,11 @@ pub fn walk_pose_on(
             ((phase - (opposite_footfall + lag - 0.25)) * std::f32::consts::TAU).sin()
         };
 
-        let swing = params.arm_swing * (at(ARM_LAG) + ARM_FORWARD_BIAS);
+        let swing = params.arm_swing * (at(ARM_LAG) + ARM_SWING_CENTRE);
         // The forearm follows through a little behind the upper arm, and
         // never unfolds below its carried bend.
-        let fold = params.elbow_bend
-            * (ELBOW_CARRY + (1.0 - ELBOW_CARRY) * (0.5 + 0.5 * at(ARM_LAG + ELBOW_FOLLOW)));
+        let carry = params.elbow_carry;
+        let fold = params.elbow_bend * (carry + (1.0 - carry) * (0.5 + 0.5 * at(ARM_LAG + ELBOW_FOLLOW)));
 
         // Turned in the WORLD, about the axis measured on the posed arm —
         // not composed onto the delta, which would apply it in the arm's
@@ -1334,17 +1349,15 @@ fn stance_hip_height(
 /// is what a viewer sees: ~0.1 of a cycle, a natural pendulum's trail.
 const ARM_LAG: f32 = 0.02;
 
-/// How much further forward than back a walking arm swings, as a fraction
-/// of [`GaitParams::arm_swing`]: at 0.3 the arm reaches 1.3x forward and
-/// 0.7x back — close to the roughly 2:1 flexion-to-extension of a real arm
-/// swing.
-const ARM_FORWARD_BIAS: f32 = 0.3;
-
-/// The share of [`GaitParams::elbow_bend`] a walking arm carries all the
-/// way round its swing, on top of the standing pose's own bend: a relaxed
-/// arm is never a straight one. A fraction rather than an angle, so a gait
-/// with its amplitudes zeroed still leaves the pose alone.
-const ELBOW_CARRY: f32 = 0.6;
+/// Where the upper arm's swing is centred, as a fraction of
+/// [`GaitParams::arm_swing`]: at -0.5 it reaches 0.5x forward of the
+/// vertical and 1.5x behind it, Murray's 8 and 24 degrees. It was +0.3,
+/// from a belief that an arm swings 2:1 forward; that is the HAND, carried
+/// forward by the elbow, not the upper arm.
+///
+/// A fraction rather than an angle, so a gait with its amplitudes zeroed
+/// still leaves the pose alone.
+const ARM_SWING_CENTRE: f32 = -0.5;
 
 /// How much further the forearm trails the upper arm, as a fraction of the
 /// cycle — follow-through.
@@ -2341,6 +2354,43 @@ mod tests {
     }
 
     #[test]
+    fn a_walking_arm_swings_back_from_the_shoulder_and_forward_from_the_elbow() {
+        // Murray, Sepic & Barnard (1967), 30 men at their free pace of
+        // 1.54 m/s: the upper arm from 8 degrees in front of the vertical to
+        // 24 behind it, the elbow from 17 to 47 degrees. The walk once had
+        // the upper arm 28 forward and 10 back on an elbow that moved 10
+        // degrees, a march. Their standard deviations are 6-11 degrees.
+        use crate::character::anim::rig::offset_from;
+        let (stood, _, rig) = real_arms();
+        let params = GaitParams::walking_on(1.54, &rig);
+        let standing_upper = offset_from(&stood, &rig, Bone::LeftArm, Bone::LeftForeArm);
+        let (mut forward, mut back, mut straightest, mut most_bent) = (f32::MIN, f32::MIN, f32::MAX, f32::MIN);
+        for i in 0..64 {
+            let pose = walk_pose_on(i as f32 / 64.0, &params, &stood, &rig);
+            let upper = offset_from(&pose, &rig, Bone::LeftArm, Bone::LeftForeArm);
+            // Signed by whether the elbow went ahead of where it stands.
+            let ahead_of_standing = ahead(&pose, &rig, Bone::LeftForeArm) - ahead(&stood, &rig, Bone::LeftForeArm);
+            let angle = standing_upper.angle_between(upper).to_degrees();
+            if ahead_of_standing > 0.0 {
+                forward = forward.max(angle);
+            } else {
+                back = back.max(angle);
+            }
+            let elbow = elbow_flexion(&pose, &rig, Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand).to_degrees();
+            straightest = straightest.min(elbow);
+            most_bent = most_bent.max(elbow);
+        }
+        assert!(
+            (forward - 8.0).abs() < 4.0 && (back - 24.0).abs() < 4.0,
+            "the upper arm should swing 8 degrees forward and 24 back: {forward:.1} and {back:.1}",
+        );
+        assert!(
+            (straightest - 17.0).abs() < 4.0 && (most_bent - 47.0).abs() < 4.0,
+            "the elbow should fold from 17 to 47 degrees: {straightest:.1} to {most_bent:.1}",
+        );
+    }
+
+    #[test]
     fn a_walking_elbow_never_straightens_past_its_relaxed_bend() {
         let (stood, params, rig) = real_arms();
         let relaxed = elbow_flexion(&stood, &rig, Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand);
@@ -2451,6 +2501,7 @@ mod tests {
             ankle_range: 0.0,
             arm_swing: 0.0,
             elbow_bend: 0.0,
+            elbow_carry: 0.0,
             hip_dip: 0.0,
             vertical_bob: 0.0,
             // The measured curves hold the recording's mean posture even at
