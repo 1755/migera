@@ -548,6 +548,68 @@ pub fn side_sit(rig: &RigGeometry, left_down: bool) -> LocalPose {
     pose
 }
 
+/// How far a relaxed body's hips flex, degrees ([`relaxed`]): between a
+/// fallen body's straight hips and the weightless crew's 31°.
+pub const RELAXED_HIP_FLEXION: f32 = 15.0;
+
+/// How far a relaxed body's knees flex, degrees: where Riener & Edrich's
+/// passive knee moment is zero at [`RELAXED_HIP_FLEXION`] (14° with the hip
+/// straight, 26° at 30°).
+pub const RELAXED_KNEE_FLEXION: f32 = 20.0;
+
+/// The pose an unconscious body's joints relax toward: where passive
+/// muscle and connective tissue balance, with nothing loading them.
+///
+/// Mostly the neutral body posture measured in weightlessness, where
+/// gravity loads nothing: the six STS-57 crew's medians (Mount et al. 2003,
+/// NASA TM-2003-104805, Table 1). Hips out 10°, ankles 20° plantarflexed,
+/// waist straight, neck 16° forward, shoulders 45° forward and 30° out,
+/// elbows 70°. (NASA's standard posture, from Skylab, bends further.)
+///
+/// Not its legs. The knee's relaxed angle depends on the hip, two-joint
+/// muscles crossing both: Riener & Edrich's passive knee moment is zero at
+/// 14° of flexion with the hip straight, 26° at 30° of hip flexion, 43° at
+/// 60°. Weightless, the crew's hips flexed 31° and knees 50° together; a
+/// fallen body lies with its hips near straight. Relaxed toward those
+/// (hips 31°, knees 50°), a body lying on its back drew its knees up
+/// against gravity, and they toppled side to side for 8 s without rest.
+/// So the legs relax to [`RELAXED_HIP_FLEXION`] and the knee's zero for it,
+/// [`RELAXED_KNEE_FLEXION`].
+///
+/// Authored as segment directions (`aim`), so no joint's sign convention
+/// enters.
+pub fn relaxed(rig: &RigGeometry) -> LocalPose {
+    let rest = forward_kinematics_on(&LocalPose::REST, rig);
+    let (forward, down, left) = (rig.forward(), Vec3::NEG_Y, rig.left());
+    let mut pose = LocalPose::REST;
+    // 16° of neck flexion, shared by the neck and the head.
+    pose.set_rotation(Bone::Neck, about_left(rig, 8.0));
+    pose.set_rotation(Bone::Head, about_left(rig, 8.0));
+    let toe = |ankle: Bone| if ankle == Bone::LeftFoot { Bone::LeftToeBase } else { Bone::RightToeBase };
+    for (side, [hip, knee, ankle]) in [(left, LEFT_LEG), (-left, RIGHT_LEG)] {
+        let thigh = toward(toward(down, forward, RELAXED_HIP_FLEXION), side, 10.0);
+        // The knee folds the shin back from the thigh, in the leg's plane.
+        let back = (-forward - thigh * thigh.dot(-forward)).normalize();
+        let shin = toward(thigh, back, RELAXED_KNEE_FLEXION);
+        // The foot square to the shin, toes forward, then 20° toward its line.
+        let square = (forward - shin * shin.dot(forward)).normalize();
+        let foot = toward(square, shin, 20.0);
+        aim(&mut pose, &rest, hip, knee, thigh);
+        aim(&mut pose, &rest, knee, ankle, shin);
+        aim(&mut pose, &rest, ankle, toe(ankle), foot);
+    }
+    for (side, [shoulder, elbow, wrist]) in
+        [(left, [Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand]), (-left, [Bone::RightArm, Bone::RightForeArm, Bone::RightHand])]
+    {
+        let upper = toward(toward(down, forward, 45.0), side, 30.0);
+        // The elbow folds the forearm forward from the upper arm.
+        let ahead = (forward - upper * upper.dot(forward)).normalize();
+        aim(&mut pose, &rest, shoulder, elbow, upper);
+        aim(&mut pose, &rest, elbow, wrist, toward(upper, ahead, 70.0));
+    }
+    pose
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +822,46 @@ mod tests {
             let f = rig.forward();
             let show = |b: Bone| format!("{} f{:+.2} y{:.2}", b.name(), at[b].dot(f), at[b].y);
             println!("{key:?}: {}", [Bone::Hips, Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase, Bone::LeftHand, Bone::Head].map(show).join(" | "));
+        }
+    }
+
+    #[test]
+    fn the_relaxed_pose_has_the_neutral_body_postures_angles() {
+        // STS-57's medians: elbow 70°, hip out 10°, shoulder 45° forward and
+        // 30° out, ankle 20° plantarflexed; the hips and knees Riener and
+        // Edrich's (`RELAXED_HIP_FLEXION`, `RELAXED_KNEE_FLEXION`). Signed
+        // in the rig's own frame (forward, left), on both rigs.
+        for (name, rig) in rigs() {
+            let pose = relaxed(&rig);
+            let at = forward_kinematics_on(&pose, &rig);
+            let (forward, left) = (rig.forward(), rig.left());
+            let angle = |a: Vec3, b: Vec3| a.angle_between(b).to_degrees();
+            let segment = |from: Bone, to: Bone| (at[to] - at[from]).normalize();
+            for (side, [hip, knee, ankle, toe], [shoulder, elbow, wrist]) in [
+                (left, [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase], [Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand]),
+                (-left, [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase], [Bone::RightArm, Bone::RightForeArm, Bone::RightHand]),
+            ] {
+                let (thigh, shin, foot) = (segment(hip, knee), segment(knee, ankle), segment(ankle, toe));
+                let (upper, forearm) = (segment(shoulder, elbow), segment(elbow, wrist));
+                let checks = [
+                    ("knee flexion", angle(thigh, shin), RELAXED_KNEE_FLEXION),
+                    ("hip flexion", thigh.dot(forward).atan2(-thigh.y).to_degrees(), RELAXED_HIP_FLEXION),
+                    ("hip abduction", thigh.dot(side).asin().to_degrees(), 10.0),
+                    // Between the shin and the foot: square is 90°,
+                    // plantarflexed 20° is 110°.
+                    ("ankle", 180.0 - angle(shin, foot), 110.0),
+                    ("elbow flexion", angle(upper, forearm), 70.0),
+                    ("shoulder abduction", upper.dot(side).asin().to_degrees(), 30.0),
+                ];
+                for (what, got, want) in checks {
+                    assert!((got - want).abs() < 1.5, "{name}: {what} {got:.1}°, want {want}°");
+                }
+                // Each limb bends the right way: the shin back, the forearm
+                // forward, the foot's toes ahead of the ankle.
+                assert!(shin.dot(forward) < thigh.dot(forward), "{name}: the knee bends forward");
+                assert!(forearm.dot(forward) > upper.dot(forward), "{name}: the elbow bends backward");
+                assert!(foot.dot(forward) > 0.0, "{name}: the toes point back");
+            }
         }
     }
 

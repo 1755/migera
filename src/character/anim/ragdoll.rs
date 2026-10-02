@@ -177,6 +177,24 @@ pub struct Ragdoll {
     /// (horizontal `x`, `z`, world): the capture point as the step landed,
     /// held to until the feet are together again.
     pub own_rest: Option<Vec2>,
+    /// How each drawn wrist (left, right) is turned to keep its fingertips
+    /// out of the ground, in the hand's own frame, as last drawn: the next
+    /// frame's turn changes from it as little as it can
+    /// (`ragdoll_plugin::hold_clear`).
+    pub wrist_lift: [Quat; 2],
+    /// How each rising arm (left, right) is turned at the shoulder to keep
+    /// its hand out of the ground, in the upper arm's own frame, as last
+    /// drawn (`ragdoll_plugin::hold_clear`).
+    pub arm_lift: [Quat; 2],
+    /// How far each drawn knee (left, right) is folded to keep its foot out
+    /// of the ground while rising, radians, signed about its hinge, as last
+    /// drawn: the fold changes at a limited rate
+    /// (`ragdoll_plugin::TUCK_DEEPEN_RATE`, `TUCK_RATE`).
+    pub tucks: [f32; 2],
+    /// How much of a relaxed body's passive joint tone a fall keeps
+    /// (`passive`), `0..`: 1 the measured tone, 0 none (limbs free to
+    /// their stops).
+    pub passive_tone: f32,
 }
 
 /// A recovery step a body standing on its own feet is taking: one foot
@@ -340,6 +358,10 @@ impl Default for Ragdoll {
             stand_height: None,
             own_transfer: None,
             own_rest: None,
+            wrist_lift: [Quat::IDENTITY; 2],
+            arm_lift: [Quat::IDENTITY; 2],
+            tucks: [0.0; 2],
+            passive_tone: 1.0,
         }
     }
 }

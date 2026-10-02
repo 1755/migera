@@ -270,6 +270,7 @@ slope.
 ## Related
 
 - [A fall hands the body to physics](./a-fall-hands-the-body-to-physics.md) — prerequisite: the fall these changes apply during.
+- [A falling body keeps its joints' passive tone](./a-falling-body-keeps-its-passive-joint-tone.md) — applies: the tone that keeps limbs off these stops, pulling about a hinge's axis alone.
 - [Getting up goes through key poses](./getting-up-is-a-timed-blend-then-a-re-pin.md) — applies: the re-pin restores the ball joints; hands now tuck.
 - [avian joint limits are not cone and twist](./avian-joint-limits-are-not-cone-and-twist.md) — context: why a ball joint's limits cannot be one-directional.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: the body frames the hinge axes are expressed in.

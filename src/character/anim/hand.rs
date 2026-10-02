@@ -12,10 +12,18 @@
 //! finger is bent at its three joints toward the palm as the rig binds
 //! ([`relax_hands`]); the thumb bends across the palm ([`bends_toward`]).
 //!
-//! A hand on the floor lies flat. Curled, a fallen body's fingertips went
-//! 45-80 mm into the floor while it lay and pushed itself up. So the fingers
-//! straighten to their bind over [`CURL_SECONDS`] while the ragdoll is down,
-//! and curl again once it stands ([`curl_hands`]).
+//! A falling hand stays limp, and each finger gives way on its own where it
+//! meets the floor: a palm pressed down straightens its fingers, knuckles
+//! landing first curl them further. Curled and left alone, a fallen body's
+//! fingertips went 45-80 mm into the floor. Straightening the whole hand
+//! while down made it a board. So [`RelaxedHands`] keeps each finger's flat
+//! and relaxed rotations, and [`finger_bent`] draws a finger anywhere from
+//! flat (0) through relaxed (1) to further curled. The ragdoll's drawn pose
+//! bends each finger in contact as little as keeps its tip out of the
+//! ground, straighter when its palm faces the ground and curled further
+//! when it faces away ([`palm_faces_ground`]), and lets it ease back to
+//! relaxed at [`RELAX_RATE`]. Picked afresh each frame as the smaller bend,
+//! a finger flipped from 86° curled to 8° in one frame.
 //!
 //! The palm's normal is read from the rig, not assumed: across the
 //! knuckles (index to little) and along the middle finger, crossed in the
@@ -152,15 +160,91 @@ pub fn curled(bind: &FingerBind, palm: Vec3, degrees: [f32; 3]) -> [Quat; 3] {
     out
 }
 
-/// How long the fingers take to straighten onto the floor, or curl again.
-pub const CURL_SECONDS: f32 = 0.3;
+/// The finger's three joints' local rotations for a hand laid flat on the
+/// floor: a finger straight (its bind), the thumb turned at its base into
+/// the palm's plane.
+///
+/// The bind's thumb points out in front of the palm (on `puppet_base`, 0.45
+/// of its length along the palm's normal), so on a palm laid flat its tip
+/// went 76-83 mm into the floor, live, in a fall and in the get-up's
+/// push-up.
+pub fn flat(finger: Finger, bind: &FingerBind, palm: Vec3) -> [Quat; 3] {
+    let out_of_palm = bind.first_segment().dot(palm);
+    if finger != Finger::Thumb || out_of_palm <= 0.0 {
+        return bind.joints.map(|(rotation, _)| rotation);
+    }
+    curled(bind, -palm, [out_of_palm.clamp(0.0, 1.0).asin().to_degrees(), 0.0, 0.0])
+}
 
-/// A character's finger joints, flat (their bind) and relaxed, and how far
-/// between the two they are drawn (1 relaxed).
+/// The furthest a finger curls past relaxed to keep its tip out of the
+/// floor, as a multiple of its relaxed bend: about a loose fist.
+pub const MOST_CURL: f32 = 1.8;
+
+/// How fast a finger let go by the floor returns to relaxed, in bends per
+/// second (a whole bend in 0.25 s). Snapped back, a finger leaving the
+/// floor popped.
+pub const RELAX_RATE: f32 = 4.0;
+
+/// The fastest a finger bends against the floor, in bends per second (flat
+/// to relaxed in 83 ms, five frames). Unlimited, a finger whose hand turned
+/// its palm over in one frame jumped 106-139 mm across the hand; what a
+/// limited finger cannot clear, the wrist turn lifts.
+pub const BEND_RATE: f32 = 12.0;
+
+/// One finger's joints: each joint's entity and its flat ([`flat`]) and
+/// relaxed local rotations, the leaf past its tip, and the bend it is drawn
+/// at ([`finger_bent`]).
+#[derive(Debug, Clone, Copy)]
+pub struct FingerJoints {
+    pub joints: [(Entity, Quat, Quat); 3],
+    pub tip: Entity,
+    pub bend: f32,
+}
+
+/// A character's fingers, left hand then right.
 #[derive(Component, Debug, Clone)]
 pub struct RelaxedHands {
-    pub joints: Vec<(Entity, Quat, Quat)>,
-    pub curl: f32,
+    pub fingers: [Vec<FingerJoints>; 2],
+    /// Each hand's palm normal, in the hand's own frame ([`palm_normal`]).
+    pub palms: [Vec3; 2],
+    /// Whether each hand's fingers give way straighter (its palm toward the
+    /// ground) rather than curled further; see [`palm_faces_ground`].
+    pub straighten: [bool; 2],
+}
+
+/// How far a palm must face the ground (cosine to straight down) before its
+/// fingers give way straighter, and away from it before they curl instead;
+/// between the two a hand keeps its choice, so it does not flicker.
+pub const PALM_DOWN: f32 = 0.2;
+
+/// Whether a hand's fingers give way straighter: a palm pressed to the
+/// floor flattens its fingers, the back of a hand or its knuckles landing
+/// curls them. `palm` is the palm's normal in the world; `was` the last
+/// choice.
+///
+/// Kept on one side whatever the hand did, a finger curled by a landing
+/// stayed a fist under the get-up's flat palm, and the wrist turned 60° in
+/// one frame to clear it.
+pub fn palm_faces_ground(palm: Vec3, was: bool) -> bool {
+    let down = -palm.y;
+    if down > PALM_DOWN {
+        true
+    } else if down < -PALM_DOWN {
+        false
+    } else {
+        was
+    }
+}
+
+/// `finger`'s joints' local rotations at `bend`: 0 flat, 1 relaxed, more
+/// curled further (each joint's turn from flat scaled alike).
+pub fn finger_bent(finger: &FingerJoints, bend: f32) -> [Quat; 3] {
+    finger.joints.map(|(_, flat, relaxed)| {
+        let turn = (flat.inverse() * relaxed).normalize();
+        // The short way round, so a scaled turn never goes the long way.
+        let turn = if turn.w < 0.0 { -turn } else { turn };
+        (flat * Quat::from_scaled_axis(turn.to_scaled_axis() * bend)).normalize()
+    })
 }
 
 /// Curls the fingers of every humanoid that has just bound into
@@ -176,7 +260,7 @@ pub fn relax_hands(
     mut transforms: Query<&mut Transform>,
 ) {
     for (root, skeleton) in &bound {
-        let mut relaxed = RelaxedHands { joints: Vec::new(), curl: 1.0 };
+        let mut relaxed = RelaxedHands { fingers: [Vec::new(), Vec::new()], palms: [Vec3::ZERO; 2], straighten: [true; 2] };
         let mut by_name: HashMap<&str, Entity> = HashMap::new();
         let mut stack = vec![root];
         while let Some(entity) = stack.pop() {
@@ -192,7 +276,7 @@ pub fn relax_hands(
             let hand = skeleton.entity(hand_bone);
             let local = |entity: Entity| transforms.get(entity).map(|t| (t.rotation, t.translation)).ok();
 
-            let mut fingers: Vec<(Finger, [Entity; 3], FingerBind)> = Vec::new();
+            let mut fingers: Vec<(Finger, [Entity; 4], FingerBind)> = Vec::new();
             for finger in Finger::ALL {
                 let Some(chain) = finger
                     .joint_names(side)
@@ -223,7 +307,7 @@ pub fn relax_hands(
                 let (Some(j0), Some(j1), Some(j2), Some((_, tip))) = (local(chain[0]), local(chain[1]), local(chain[2]), local(chain[3])) else {
                     continue;
                 };
-                fingers.push((finger, [chain[0], chain[1], chain[2]], FingerBind { base, joints: [j0, j1, j2], tip }));
+                fingers.push((finger, [chain[0], chain[1], chain[2], chain[3]], FingerBind { base, joints: [j0, j1, j2], tip }));
             }
 
             let find = |wanted: Finger| fingers.iter().find(|(f, _, _)| *f == wanted).map(|(_, _, bind)| *bind);
@@ -231,42 +315,26 @@ pub fn relax_hands(
                 continue;
             };
             let palm = palm_normal(&index, &middle, &little, side);
+            relaxed.palms[usize::from(side == Side::Right)] = palm;
             for (finger, joints, bind) in &fingers {
                 let Some(&(_, degrees)) = RELAXED_FLEXION_DEGREES.iter().find(|(f, _)| f == finger) else { continue };
                 let toward = bends_toward(*finger, &index, &little, palm);
-                for ((entity, rotation), (flat, _)) in joints.iter().zip(curled(bind, toward, degrees)).zip(bind.joints) {
-                    if let Ok(mut transform) = transforms.get_mut(*entity) {
-                        transform.rotation = rotation;
+                let bent = curled(bind, toward, degrees);
+                let flattened = flat(*finger, bind, palm);
+                for k in 0..3 {
+                    if let Ok(mut transform) = transforms.get_mut(joints[k]) {
+                        transform.rotation = bent[k];
                     }
-                    relaxed.joints.push((*entity, flat, rotation));
                 }
+                relaxed.fingers[usize::from(side == Side::Right)].push(FingerJoints {
+                    joints: [0, 1, 2].map(|k| (joints[k], flattened[k], bent[k])),
+                    tip: joints[3],
+                    bend: 1.0,
+                });
             }
         }
-        if !relaxed.joints.is_empty() {
+        if relaxed.fingers.iter().any(|hand| !hand.is_empty()) {
             commands.entity(root).insert(relaxed);
-        }
-    }
-}
-
-/// Straightens the fingers while the ragdoll is down (fallen or rising),
-/// and curls them again once it stands.
-pub fn curl_hands(
-    time: Res<Time>,
-    mut hands: Query<(&mut RelaxedHands, Option<&super::ragdoll::Ragdoll>)>,
-    mut transforms: Query<&mut Transform>,
-) {
-    let step = time.delta_secs() / CURL_SECONDS;
-    for (mut hands, ragdoll) in &mut hands {
-        let target = if ragdoll.is_some_and(super::ragdoll::Ragdoll::is_falling) { 0.0 } else { 1.0 };
-        if hands.curl == target {
-            continue;
-        }
-        hands.curl = if target > hands.curl { (hands.curl + step).min(target) } else { (hands.curl - step).max(target) };
-        let curl = hands.curl;
-        for &(entity, flat, relaxed) in &hands.joints {
-            if let Ok(mut transform) = transforms.get_mut(entity) {
-                transform.rotation = flat.slerp(relaxed, curl);
-            }
         }
     }
 }
@@ -392,6 +460,53 @@ mod tests {
                 (bent[3] - flat[3]).dot(normal),
             );
         }
+    }
+
+    #[test]
+    fn a_flat_hands_thumb_lies_in_the_palms_plane() {
+        // The bind's thumb points out in front of the palm; on a palm laid
+        // flat its tip went 76-83 mm into the floor.
+        for side in [Side::Left, Side::Right] {
+            let (normal, _) = palm(side);
+            let (thumb, _) = finger(Finger::Thumb, side);
+            let bind = positions(&thumb, thumb.joints.map(|(r, _)| r));
+            let laid = positions(&thumb, flat(Finger::Thumb, &thumb, normal));
+            let out = |p: [Vec3; 4]| (p[3] - p[0]).normalize().dot(normal);
+            assert!(out(bind) > 0.3, "{side:?}: the bind thumb was expected out of the palm: {:.2}", out(bind));
+            assert!(out(laid).abs() < 0.02, "{side:?}: a flat thumb out of the palm's plane by {:.2}", out(laid));
+        }
+    }
+
+    #[test]
+    fn a_finger_bent_runs_flat_relaxed_and_further() {
+        let (bind, _) = finger(Finger::Middle, Side::Left);
+        let (normal, _) = palm(Side::Left);
+        let relaxed = curled(&bind, normal, RELAXED_FLEXION_DEGREES[2].1);
+        let joints = FingerJoints {
+            joints: [0, 1, 2].map(|k| (Entity::PLACEHOLDER, bind.joints[k].0, relaxed[k])),
+            tip: Entity::PLACEHOLDER,
+            bend: 1.0,
+        };
+        let at = |bend| finger_bent(&joints, bend);
+        for k in 0..3 {
+            assert!(at(0.0)[k].angle_between(bind.joints[k].0) < 1.0e-4);
+            assert!(at(1.0)[k].angle_between(relaxed[k]) < 1.0e-4);
+            // Half again past relaxed: each joint's turn from flat x1.5.
+            let past = bind.joints[k].0.angle_between(at(1.5)[k]);
+            assert!((past - 1.5 * bind.joints[k].0.angle_between(relaxed[k])).abs() < 1.0e-3);
+        }
+        // Further curled brings the tip further toward the palm.
+        let tip = |bend| positions(&bind, at(bend))[3].dot(normal);
+        assert!(tip(1.5) > tip(1.0) && tip(1.0) > tip(0.0));
+    }
+
+    #[test]
+    fn a_palm_toward_the_ground_straightens_its_fingers_and_away_curls_them() {
+        assert!(palm_faces_ground(Vec3::NEG_Y, false));
+        assert!(!palm_faces_ground(Vec3::Y, true));
+        // Near vertical, a hand keeps its last choice.
+        let edge = Vec3::new(1.0, -0.1, 0.0).normalize();
+        assert!(palm_faces_ground(edge, true) && !palm_faces_ground(edge, false));
     }
 
     #[test]

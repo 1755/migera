@@ -41,6 +41,119 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### A falling body keeps its passive joint tone
+
+- **The fall was a puppet's:** no tone and uniform damping only, so limbs
+  swung free into their stops. Four pushed falls ended there:
+  - hips at −29.9° (30° extension stop) and 116.6° (120° flexion);
+  - abduction 44.4° (stop 45°);
+  - knees and elbows locked at −5°.
+- **`passive.rs`:** each joint pulls its body toward a relaxed pose
+  relative to its parent (not the world pose that failed at tone 0.15).
+  - Stiffness is `k₀·(1 + (θ/θs)²)`, solved implicitly every substep with
+    the parent taking the reaction (`drive_impulse`).
+  - The relaxed pose (`getup::relaxed`) is NASA's neutral body posture
+    (STS-57 medians), with legs at Riener & Edrich's knee zero for straight
+    hips (hip 15°, knee 20°).
+  - The knee's gains are fitted to Riener & Edrich: 4.1/9.5/22.7 N·m
+    against their 4.5/6.2/16.5 at 60/90/130°. Other joints are scaled
+    from it, and the hip's damping is the measured 1.9–4.6 N·m·s/rad.
+  - `Ragdoll::passive_tone` scales it.
+- **Same carried falls, tone off → on:** peak joint spin 52/137/54 →
+  29/43/29 rad/s. Every fall still rests (3.9–7.6 s). The backward fall's
+  hips stay off their stops (flexion 88.5°, abduction 2.9°).
+- **Live:** the collapse buckles at the knees and rolls back with limbs
+  bent in mid-range, rests relaxed, and rises (pelvis back to 0.94 m).
+- **Dead ends on the way:**
+  - A relaxed knee of 50° with hips of 31° (the weightless crew's) raised a
+    supine body's knees against gravity; they never rested.
+  - Pulling a hinged knee in three directions rolled the shin against its
+    hinge (1.4–2 rad/s), so hinged joints pull about their axis alone.
+  - Ankle tone (3, then 1 N·m/rad, all axes or flexion only) made the light
+    feet fight the floor's friction and creep or jolt (0.05–0.5 m/s), so
+    ankles have none.
+- **Tests:**
+  - new: `passive::tests`, `the_relaxed_pose_has_the_neutral_body_postures_angles`,
+    and `passive_tone_slows_a_falling_limb_about_its_joint_and_still_rests`
+    (the same input with tone off and on).
+  - moved:
+    - the flesh test allows a light hand's 24 mm impact dip and 10 mm at
+      rest (passing through was 101–180 mm);
+    - hip adduction may go 1° past its stop, as the elbows do;
+    - the side-rise uses pushes straight out to the side, since the
+      diagonals now land face down.
+- See [the note](./docs/knowledge/character-animation/ragdoll-and-physics/a-falling-body-keeps-its-passive-joint-tone.md).
+- `cargo test --release --lib`: 1105 passed. Clippy: 0 warnings.
+
+### A falling and rising hand no longer pops
+
+- **Live, a hand turned up to 163° between two samples** of a fall and
+  rise. The pre-hand build `f997487` did the same. Per frame, three drawn
+  floor corrections, each solved afresh every frame:
+  - **The wrist turn snapped on and off:** 68-70° a frame against a body
+    turning 15-19°.
+  - **Its axis flipped:** the level line over a hand hanging straight down
+    is undefined; the same lift swung 78°.
+  - **The rising arm's elbow fold jumped:** between none and ~2 rad; the
+    forearm turned 80-115° in a frame. This was found live with a
+    temporary per-frame report; the pushed headless falls never hit it.
+- **Fix** (`hold_clear`):
+  - The wrist and a rising arm's shoulder each hold their turn as one
+    rotation, eased back at 3 rad/s as far as the point stays clear, then
+    turned further up only as far as needed.
+  - Arms lift at the shoulder instead of folding the elbow.
+  - Knee tucks deepen at once and let go at 6 rad/s.
+- **Dead ends:**
+  - Rate limits both ways: fingertips 25 mm under the floor, hips hoisted
+    72-99 mm.
+  - Angle plus axis held: a rising hand turned 134°.
+  - The elbow fold rate-limited: hoisted 99 mm.
+  - Eight times the wrist's damping: no change; those turns are contact
+    impulses.
+- **New test** `a_drawn_hand_turns_no_faster_than_its_body`, on a plain
+  collapse and four pushes:
+  - falling: 6-23° faster than the body (was 49-59°);
+  - rising: 4-8° a frame (was 26-30°);
+  - it fails at 33° with the limits off.
+- **Live, 10 collapses:** no forearm over 50° in a frame (before, 4 of 6).
+  Fingertips stay out of the floor.
+- **What is left is physical:** a hand's body slapping the floor turns up
+  to 45° a frame.
+- See [the note](./docs/knowledge/character-animation/ragdoll-and-physics/a-drawn-floor-correction-is-held-between-frames.md).
+- `cargo test --release --lib`: 1100 passed. Clippy: 0 warnings.
+
+### Fingers give way on the floor one by one; no fingertip under the floor
+
+- **The get-up's push-up put the fingertips 84–90 mm under the floor**,
+  with flat fingers too. Two causes:
+  - The wrist cleared an estimated fingertip (Winter's hand length), 34 mm
+    short of this rig's middle finger.
+  - The bind's thumb points out of the palm, so a flat palm pressed it
+    76–83 mm into the floor.
+
+  Now the wrist clears the real fingertips, and a flat hand's thumb lies in
+  the palm's plane.
+- **Fingers bend on contact instead of the whole hand going flat** (the
+  previous commit straightened every finger while down, a board).
+  - A falling hand stays relaxed.
+  - A finger whose tip would enter the floor bends from where it is as
+    little as clears it: straighter when its palm faces the ground, curled
+    further when it faces away.
+  - Bends are limited to 12/s and ease back to relaxed at 4/s.
+  - Choosing the smaller bend each frame flipped a finger from 86° to 8° in
+    one frame. Keeping its side left a fist under a flat palm and turned
+    the wrist 60° in one frame.
+- **Three falls and get-ups** (BRP):
+  - no fingertip below the floor;
+  - fingers move at most 38–47 mm per sample within the hand's frame
+    (106–139 mm before the rate limit).
+  - Mesh: lying, the fingers rest curled; in the push-up, they lie
+    straight along the floor.
+- **Already there, not changed:** the whole hand turns up to 87–163° per
+  sample during a fall and rise, on `f997487` too (the get-up blend and the
+  wrist's turn).
+- `cargo test --release --lib`: 1099 passed. Clippy: 0 warnings.
+
 ### Walking arms swing back, elbows fold, hands hang relaxed
 
 - **The arm swing was a march.** Live at 1.3 m/s, the upper arm went 28°

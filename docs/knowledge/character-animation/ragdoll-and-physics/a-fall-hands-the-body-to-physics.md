@@ -98,6 +98,9 @@ rotations only, and the gallery had no physics floor.
   substeps over three fall directions: only 1–3/s rested every fall
   (asleep by 2.9–4.8 s); 0 whipped limbs at 7.4 m/s and two of three
   never slept; 10 turned a collapse into a slow ooze and one never slept.
+  The joints also keep a passive tone since 2026-10-03, relative to each
+  parent rather than a world pose (see
+  [a falling body keeps its passive joint tone](./a-falling-body-keeps-its-passive-joint-tone.md)).
 - **Rest has to be declared.** Three layers:
   1. The gallery runs avian at **12 substeps**. At 6, a fallen
      `character.glb` jittered past the sleep bound and crept 7 mm/s
@@ -172,4 +175,5 @@ rotations only, and the gallery had no physics floor.
 - [Full-strength read-back hides the physics](./full-strength-readback-hides-the-physics.md) — same-trap: verify bodies over BRP, not the picture.
 - [PD damping has an explicit-integration bound](./pd-damping-explicit-integration-bound.md) — contrast: the PD's damping; joint damping is avian's implicit one.
 - [A fall test samples one chaotic landing](./a-fall-test-samples-one-chaotic-landing.md) — same-trap: why a fall test can fail on a change that doesn't touch falls.
+- [A falling body keeps its joints' passive tone](./a-falling-body-keeps-its-passive-joint-tone.md) — deeper: the tone a fall keeps besides damping, and why it acts between bodies.
 - [A pinned root's velocity is not its pace](./a-pinned-roots-velocity-is-not-its-pace.md) — deeper: the release launches the root at its target's pace, not its last physics step's velocity.

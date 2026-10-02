@@ -23,8 +23,7 @@ pub struct HumanoidPlugin;
 impl Plugin for HumanoidPlugin {
     fn build(&self, app: &mut App) {
         // The fingers curl the moment a rig binds, before anything reads it.
-        app.add_systems(Update, (bind_gltf_humanoids, super::hand::relax_hands).chain().in_set(HumanoidSet::Bind))
-            .add_systems(Update, super::hand::curl_hands.after(HumanoidSet::Bind));
+        app.add_systems(Update, (bind_gltf_humanoids, super::hand::relax_hands).chain().in_set(HumanoidSet::Bind));
     }
 }
 

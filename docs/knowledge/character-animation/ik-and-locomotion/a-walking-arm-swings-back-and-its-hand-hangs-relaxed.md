@@ -14,6 +14,7 @@ code:
   - src/character/anim/gait.rs
   - src/character/anim/hand.rs
   - src/character/anim/humanoid.rs
+  - src/character/anim/ragdoll_plugin.rs
 sources:
   - "Murray, Sepic & Barnard (1967), Patterns of sagittal rotation of the upper limbs in walking, Phys Ther 47(4):272-284, https://academic.oup.com/ptj/article/47/4/272/4638307 — 30 men, free speed 154 cm/s"
   - "Lee, Mo, Hwang, Wang & Jung, Relaxed hand postures, J. Ergonomics 44 spl. 436, https://www.jstage.jst.go.jp/article/jergo/44spl/0/44spl_0_436/_pdf — 15 men, Vicon, Table 3"
@@ -28,7 +29,9 @@ aliases:
   - RelaxedHands
   - finger curl
   - relax_hands
-  - curl_hands
+  - bend_finger_clear
+  - palm_faces_ground
+  - finger_bent
 ---
 
 # A walking arm swings back from the shoulder and forward from the elbow, and its hand hangs curled
@@ -83,10 +86,33 @@ swings mostly backward.
   - The thumb bends across the palm, toward the little finger, not toward
     the palm. Its bind already points 0.45 out of the palm. Bent toward the
     palm like a finger, it stuck out sideways into the thigh.
-- **A hand on the floor lies flat.** Curled, a fallen body's fingertips
-  went 45 mm into the floor while lying. `curl_hands` straightens the
-  fingers over 0.3 s while `Ragdoll::is_falling`, and curls them again once
-  the character stands.
+- **On the floor, each finger gives way on its own** (`bend_finger_clear`
+  in `ragdoll_plugin.rs`, drawn only). A falling hand stays relaxed. Curled
+  and left alone, its fingertips went 45 mm into the floor.
+  - **First fix, a board.** Straightening the whole hand while
+    `Ragdoll::is_falling` turned it into a plate (the user's
+    objection).
+  - **Bend, not a pose.** A finger's bend runs 0 (flat) through 1
+    (relaxed) to `MOST_CURL` 1.8 (`finger_bent`). In contact, the finger
+    bends from where it is as little as keeps its real tip above the
+    ground.
+  - **Which way.** Its palm toward the ground (cosine over 0.2,
+    `palm_faces_ground`), it straightens, as under a pressed palm. Facing
+    away, it curls further, as when the knuckles land. In between, the hand
+    keeps its last choice.
+  - **Two pops removed:**
+    - Choosing each frame the side with the smaller bend flipped a finger
+      from 86° curled to 8° in one frame.
+    - Keeping the side it came from left a fist under the get-up's flat
+      palm, and the wrist turned 60° in one frame to clear it.
+  - **Rate limits.** A finger bends at most `BEND_RATE` 12 bends/s and
+    eases back to relaxed at 4/s.
+  - **Flat thumb.** A flat hand's thumb is turned into the palm's plane
+    (`flat`). The bind's thumb points out of the palm, and on a flat palm
+    it went 76–83 mm into the floor.
+- **The wrist clears the real fingertips** where the rig has them. The
+  get-up's estimated fingertip (Winter's hand length along the forearm) is
+  34 mm short of this rig's middle finger, and does not model the thumb.
 
 ## Consequences
 
@@ -100,17 +126,26 @@ swings mostly backward.
   the upper arm trails, and the thumb lies along the index finger.
 - The hand still swings further forward than back, by the elbow
   (`a_walking_arm_swings_further_forward_than_back` passes unchanged).
-- **Already there, not caused by this change:** during the get-up's
-  push-up, the fingertips dip 84–90 mm under the floor for a moment, on the
-  old build too (flat fingers). The get-up places a virtual fingertip
-  (`HAND_PER_FOREARM`), not the rig's own finger joints.
+- **Floor**, three falls with get-ups, BRP:
+  - **Fingertip depth:** no fingertip goes below the floor. Before, they
+    reached 84–90 mm in the push-up, with flat fingers as well.
+  - **Fingers within the hand's frame:** at most 38–47 mm per sample.
+  - **Finger bends:** relaxed (42–56° knuckle line to tip) in the air,
+    64–100° on landed knuckles, 16–30° under the push-up's palm.
+
+  Seen with the mesh: lying, the fingers rest curled; in the push-up, they
+  lie straight along the floor.
+- The whole hand turned up to 87–163° in a sample during a fall and rise,
+  on the build before any hand work as well (`f997487`). The causes were
+  the drawn floor corrections, solved afresh each frame. Fixed: see
+  [a drawn floor correction is held between frames](../ragdoll-and-physics/a-drawn-floor-correction-is-held-between-frames.md).
 
 ## Revisit when
 
 - A hand grips or carries something: the curl becomes a per-hand target,
   not a constant.
-- The get-up should keep real fingertips out of the floor: it must place
-  the rig's own finger joints.
+- A hand's own body slapping the floor (up to 45° a frame) is smoothed:
+  the fingers' side choice follows the palm, so it would steady with it.
 - Arm swing should change with age or a load: Murray's SDs are 6–11°, and
   the swing grows at a fast pace (shoulder −31° back, elbow 15–55°).
 

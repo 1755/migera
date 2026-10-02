@@ -128,12 +128,16 @@ end, when every body is set onto its bone and the root is pinned again.
   Only feet that **move** between the two keys are tucked
   (`Ragdoll::rise_moving`, toe moving over 5 cm; all of them off the
   lying body). Tucking planted feet folded them up from squatting to
-  standing, and the lift jumped 15 mm when the tuck let go. Hands tuck
-  the same way, the elbow only bending further: lying with arms flat at
-  its sides, a body sitting up swung a hand through the floor and was
-  hoisted 82 mm. Last, each wrist bends its fingertips up to the ground
-  (`turn_up_clear`): between two flat palms a turning hand dipped them
-  38 mm in. Falling, the same turn keeps drawn toes and fingers out of
+  standing, and the lift jumped 15 mm when the tuck let go.
+  - **Hands lift at the shoulder** (`hold_clear`, `Ragdoll::arm_lift`).
+    Lying with its arms flat at its sides, a body sitting up swung a hand
+    through the floor and was hoisted 82 mm. Folding the elbow instead
+    popped the forearm 80-115° in a frame.
+  - **Wrists turn the fingertips up to the ground.** Between two flat palms
+    a turning hand dipped them 38 mm in.
+  - **Held between frames.** Every one of these corrections starts from
+    last frame's (see
+    [a drawn floor correction is held between frames](./a-drawn-floor-correction-is-held-between-frames.md)). Falling, the same turn keeps drawn toes and fingers out of
   the floor (see
   [a falling body is hinged and fleshed](./a-falling-body-is-hinged-and-fleshed.md)).
 - **The re-pin also undoes the fall's joints and contacts:** the knees'
@@ -203,9 +207,10 @@ end, when every body is set onto its bone and the root is pinned again.
 ## Related
 
 - [A fall hands the body to physics](./a-fall-hands-the-body-to-physics.md) — prerequisite: the fall, its rest signal and why the entity follows.
-- [A falling body has hinged knees and elbows and solid flesh](./a-falling-body-is-hinged-and-fleshed.md) — context: the lying pose a rise starts from, and why hands tuck too.
+- [A falling body has hinged knees and elbows and solid flesh](./a-falling-body-is-hinged-and-fleshed.md) — context: the lying pose a rise starts from, and why hands need clearing too.
+- [A drawn floor correction is held between frames](./a-drawn-floor-correction-is-held-between-frames.md) — deeper: why the tucks, arm lift and wrist turn start from last frame's, and the pops they replaced.
 - [A pose delta names a world axis](../rig-and-retargeting/a-pose-delta-names-a-world-axis.md) — prerequisite: why angles about `left` add down a chain.
 - [A pose delta's world is the character's frame](../rig-and-retargeting/a-pose-deltas-world-is-the-characters-frame.md) — deeper: why the rise's turn broke the bodies, and the rule that fixed it.
 - [Foot locks need the body's travel](../ik-and-locomotion/foot-locks-need-the-bodys-travel.md) — same-trap: an entity moved behind the locks' back.
 - [Ragdoll body and anchor frames](./ragdoll-body-and-anchor-frames.md) — prerequisite: a body's rotation is its bone's, which is what lets it be set back on its bone.
-- [A walking arm swings back, and its hand hangs curled](../ik-and-locomotion/a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md) — context: the rig's fingers curl when standing and straighten while down; the rise's virtual fingertip leaves the real ones 84–90 mm under the floor for a moment.
+- [A walking arm swings back, and its hand hangs curled](../ik-and-locomotion/a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md) — context: the rig's fingers curl, and on the floor each bends to keep its real tip out (straight under the push-up's palm); the wrist clears the real fingertips, which the rise's estimated one left 84–90 mm under the floor.

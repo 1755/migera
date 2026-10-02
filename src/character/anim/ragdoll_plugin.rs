@@ -382,6 +382,9 @@ fn rise_fallen_ragdolls(
                 commands.entity(joint).remove::<JointDamping>();
             }
         }
+        for &body in &ours {
+            commands.entity(body).remove::<super::passive::PassiveJoint>();
+        }
         // The hinges a fall made go; the ball joints the pose controller
         // works with come back (`Hinge`).
         for &bone in Bone::ALL.iter() {
@@ -414,6 +417,8 @@ fn release_falling_roots(
     joints: Query<(Entity, &SphericalJoint), Without<LimitOnly>>,
     collision_layers: Query<&CollisionLayers>,
     live: TransformHelper,
+    transforms: Query<&Transform>,
+    masses: Query<&ComputedMass>,
 ) {
     for (mut ragdoll, skeleton) in &mut characters {
         let Some(fall) = ragdoll.fall else { continue };
@@ -421,6 +426,18 @@ fn release_falling_roots(
             continue;
         }
         let ours: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, body)| *body).collect();
+        // Each joint keeps its passive tone, toward where a relaxed body's
+        // joints settle (`passive`).
+        let rig = rig_geometry(skeleton, &transforms, &live);
+        let relaxed = joint_targets(&super::getup::relaxed(&rig), &rig);
+        let mass: f32 = ours.iter().filter_map(|&body| masses.get(body).ok()).map(|mass| mass.value()).sum::<f32>() * ragdoll.passive_tone;
+        for &bone in Bone::ALL.iter().filter(|_| ragdoll.passive_tone > 0.0) {
+            let (Some(body), Some(parent_bone)) = (ragdoll.bodies[bone], nearest_simulated_ancestor(bone, &ragdoll)) else { continue };
+            let Some(parent) = ragdoll.bodies[parent_bone] else { continue };
+            let Some(passive) = super::passive::passive_joint(bone, parent, relaxed[bone], relaxed[parent_bone], mass) else { continue };
+            // Knees and elbows are hinges while falling (below).
+            commands.entity(body).insert(super::passive::PassiveJoint { hinge: ragdoll.hinges[bone].map(|hinge| hinge.axis), ..passive });
+        }
         // The pinned root leaves at the animation's pace, not its last
         // physics step's velocity: that is twice the pace or zero whenever a
         // frame runs two steps. The limbs, driven by their joints, already
@@ -796,7 +813,9 @@ fn add_physics_step_systems(app: &mut App) {
     // Joint drives act every substep, on the solver's own body state.
     app.add_systems(
         avian3d::dynamics::solver::schedule::SubstepSchedule,
-        super::joint_drive::apply_joint_drives.before(avian3d::dynamics::integrator::IntegrationSystems::Velocity),
+        (super::joint_drive::apply_joint_drives, super::passive::apply_passive_joints)
+            .chain()
+            .before(avian3d::dynamics::integrator::IntegrationSystems::Velocity),
     );
 }
 
@@ -1030,6 +1049,16 @@ fn read_back_simulated_pose(
     }
 }
 
+/// A ragdolled character as `write_simulated_pose` draws it, its fingers
+/// too where the rig has them.
+type DrawnRig = (
+    Entity,
+    &'static HumanoidSkeleton,
+    &'static mut Ragdoll,
+    Option<&'static super::plugin::AnimGround>,
+    Option<&'static mut super::hand::RelaxedHands>,
+);
+
 /// Re-writes the skeleton from the blended pose.
 ///
 /// A near-copy of `plugin::write_poses`, deliberately not shared: that one
@@ -1050,14 +1079,22 @@ fn read_back_simulated_pose(
 /// follows the character (a camera, a controller) follows the fall. The
 /// entity is taken to be top-level: its translation is a world position.
 fn write_simulated_pose(
-    rigs: Query<(Entity, &HumanoidSkeleton, &Ragdoll, Option<&super::plugin::AnimGround>)>,
+    time: Res<Time>,
+    mut rigs: Query<DrawnRig>,
     bodies: Query<(&Position, &Rotation)>,
     parents: Query<&ChildOf>,
     mut transforms: ParamSet<(Query<&mut Transform>, TransformHelper)>,
 ) {
-    for (character, skeleton, ragdoll, ground_probe) in &rigs {
+    let ease = super::hand::RELAX_RATE * time.delta_secs();
+    for (character, skeleton, mut ragdoll, ground_probe, mut hands) in &mut rigs {
         let Some(displayed) = &ragdoll.displayed else { continue };
         super::retarget::write_pose_to_skeleton(skeleton, displayed, &mut transforms.p0());
+        // Every finger eases back toward relaxed; down, those that meet the
+        // floor bend from there (`bend_finger_clear`, below).
+        for finger in hands.iter_mut().flat_map(|hands| hands.fingers.iter_mut().flatten()) {
+            finger.bend += (1.0 - finger.bend).clamp(-ease, ease);
+            set_finger(finger, finger.bend, &mut transforms);
+        }
 
         // Standing on its own feet, the hips are drawn on the hips body, as
         // falling: blended in from the animation's over `SWITCH_SECONDS` as
@@ -1118,6 +1155,10 @@ fn write_simulated_pose(
         // slope, a rising calf went 47 mm into the hillside.
         let Ok(height) = transforms.p0().get(character).map(|entity| entity.translation.y) else { continue };
         let ground = |at: Vec3| ground_probe.and_then(|probe| probe.0.sample(at)).map_or(height, |hit| hit.height);
+        if rising.is_none() && (ragdoll.tucks != [0.0; 2] || ragdoll.arm_lift != [Quat::IDENTITY; 2]) {
+            ragdoll.tucks = [0.0; 2];
+            ragdoll.arm_lift = [Quat::IDENTITY; 2];
+        }
         if rising.is_some() {
             // A leg whose toe would pass under the floor tucks its foot
             // first: the knee flexes about its hinge just enough, as a leg
@@ -1125,18 +1166,42 @@ fn write_simulated_pose(
             // shin sweeping down through the floor from hands and knees to a
             // half-kneel hoisted the whole body 209 mm.
             //
-            // So does an arm whose hand would: the elbow bends further, never
-            // back past straight. Lying with its arms flat beside it, a body
-            // sitting up swung a hand down through the floor on its way to
-            // being propped behind, and the lift hoisted it 82 mm.
-            for (moving, (bones, either_way)) in ragdoll.rise_moving.into_iter().zip([
-                ([Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase], true),
-                ([Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase], true),
-                ([Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand, Bone::LeftHand], false),
-                ([Bone::RightArm, Bone::RightForeArm, Bone::RightHand, Bone::RightHand], false),
-            ]) {
-                if moving {
-                    tuck_foot(skeleton, bones, &ground, either_way, ragdoll.hinges[bones[1]].as_ref(), &mut transforms);
+            // An arm whose hand would lifts it at the shoulder instead
+            // (`hold_clear`, held from frame to frame). Lying with its arms
+            // flat beside it, a body sitting up swung a hand down through the
+            // floor on its way to being propped behind, and the lift hoisted
+            // it 82 mm. Folding the elbow, as a leg folds its knee, was the
+            // first answer: a nearly straight arm sweeping into the floor
+            // needed nearly 2 rad of it, taken in a frame (live, the forearm
+            // turned 80-115°), and taken gradually it left the hand under the
+            // floor to hoist the hips 99 mm. A few degrees at the shoulder
+            // lift the same hand.
+            let mut tucks = ragdoll.tucks;
+            for (limb, (moving, bones)) in ragdoll.rise_moving.into_iter().take(2).zip([
+                [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase],
+                [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase],
+            ]).enumerate() {
+                tucks[limb] = if moving {
+                    let held = (tucks[limb], f32::INFINITY, TUCK_RATE * time.delta_secs());
+                    tuck_foot(skeleton, bones, &ground, true, ragdoll.hinges[bones[1]].as_ref(), held, &mut transforms)
+                } else {
+                    0.0
+                };
+            }
+            if ragdoll.tucks != tucks {
+                ragdoll.tucks = tucks;
+            }
+            for (side, (shoulder, hand)) in [(Bone::LeftArm, Bone::LeftHand), (Bone::RightArm, Bone::RightHand)].into_iter().enumerate() {
+                let lifted = if ragdoll.rise_moving[2 + side] {
+                    let held = (ragdoll.arm_lift[side], ARM_LIFT_DROP_RATE * time.delta_secs(), ARM_LIFT_MOST);
+                    hold_clear(skeleton, shoulder, &ground, &mut transforms, held, |skeleton, transforms| {
+                        transforms.p1().compute_global_transform(skeleton.entity(hand)).ok().map(|g| g.translation())
+                    })
+                } else {
+                    Quat::IDENTITY
+                };
+                if ragdoll.arm_lift[side] != lifted {
+                    ragdoll.arm_lift[side] = lifted;
                 }
             }
             let lift = RISE_CLEARANCE_BONES
@@ -1170,39 +1235,93 @@ fn write_simulated_pose(
                 tip_world(skeleton, toe, |b| transforms.p1().compute_global_transform(skeleton.entity(b)).ok())
             });
         }
-        for hand in [Bone::LeftHand, Bone::RightHand] {
-            turn_up_clear(skeleton, hand, &ground, &mut transforms, std::f32::consts::FRAC_PI_2, |skeleton, transforms| {
-                tip_world(skeleton, hand, |b| transforms.p1().compute_global_transform(skeleton.entity(b)).ok())
+        // Each finger that would go into the floor gives way on its own,
+        // straighter or more curled, whichever is the smaller bend; the
+        // wrist below turns only for what the fingers could not clear.
+        if let Some(hands) = hands.as_deref_mut() {
+            for (side, hand) in [Bone::LeftHand, Bone::RightHand].into_iter().enumerate() {
+                if let Ok(world) = transforms.p1().compute_global_transform(skeleton.entity(hand)) {
+                    hands.straighten[side] = super::hand::palm_faces_ground(world.rotation() * hands.palms[side], hands.straighten[side]);
+                }
+                let toward = if hands.straighten[side] { 0.0 } else { super::hand::MOST_CURL };
+                for finger in &mut hands.fingers[side] {
+                    bend_finger_clear(finger, toward, super::hand::BEND_RATE * time.delta_secs(), &ground, &mut transforms);
+                }
+            }
+        }
+        // A hand clears its real fingertips where the rig has them: the
+        // estimated one (Winter's hand length along the forearm) is 34 mm
+        // short of this rig's middle finger and blind to the thumb, and the
+        // real tips went 84-90 mm into the floor in the get-up's push-up.
+        //
+        // The wrist's turn is held from frame to frame (`hold_clear`).
+        let dt = time.delta_secs();
+        for (side, hand) in [Bone::LeftHand, Bone::RightHand].into_iter().enumerate() {
+            let fingers = hands.as_deref().map_or(&[][..], |hands| &hands.fingers[side][..]);
+            let held = (ragdoll.wrist_lift[side], WRIST_DROP_RATE * dt, std::f32::consts::FRAC_PI_2);
+            let drawn = hold_clear(skeleton, hand, &ground, &mut transforms, held, |skeleton, transforms| {
+                if fingers.is_empty() {
+                    return tip_world(skeleton, hand, |b| transforms.p1().compute_global_transform(skeleton.entity(b)).ok());
+                }
+                fingers
+                    .iter()
+                    .filter_map(|finger| transforms.p1().compute_global_transform(finger.tip).ok().map(|g| g.translation()))
+                    .min_by(|a, b| (a.y - ground(*a)).total_cmp(&(b.y - ground(*b))))
             });
+            if ragdoll.wrist_lift[side] != drawn {
+                ragdoll.wrist_lift[side] = drawn;
+            }
         }
     }
 }
+
+/// The fastest a drawn wrist lets its turn go once its fingertips are
+/// clear, rad/s. Turning up is as far as clearing them takes: limited to
+/// 6 rad/s, the fingertips of a falling hand were drawn 25 mm under the
+/// floor.
+const WRIST_DROP_RATE: f32 = 3.0;
+
+/// The fastest a rising leg's drawn knee lets a fold go, rad/s (6° a frame
+/// at 60 Hz). Folding further is taken at once: limited to 15 rad/s, a foot
+/// left under the floor hoisted the side rise's hips 99 mm.
+const TUCK_RATE: f32 = 6.0;
+
+/// The fastest a rising arm's shoulder lets its lift go, rad/s.
+const ARM_LIFT_DROP_RATE: f32 = 3.0;
+
+/// The most a rising arm's shoulder turns up to keep its hand out of the
+/// ground, radians (about 70°).
+const ARM_LIFT_MOST: f32 = 1.2;
+
 /// Flexes `knee` about its own hinge (thigh × shin) until `toe` is at or
 /// above the ground under it (`ground`, world height at a world point), as
-/// little as it takes, up to 2 rad; see `write_simulated_pose`. An arm
-/// too: `[upper arm, forearm, hand, hand]`.
+/// little as it takes, up to 2 rad; see `write_simulated_pose`. Arms lift
+/// at the shoulder instead (`hold_clear`).
 ///
 /// `either_way`: turn whichever way lifts the tip. Otherwise only further
-/// into the bend the joint already has, as an elbow must: the other way
-/// is past straight.
+/// into the bend the joint already has.
+///
+/// `(was, deepen, step)`: the fold drawn last frame (signed), and how far
+/// it may go further and back this one. The result is the fold drawn.
 fn tuck_foot(
     skeleton: &HumanoidSkeleton,
     [upper, knee, foot, toe]: [Bone; 4],
     ground: &impl Fn(Vec3) -> f32,
     either_way: bool,
     anatomical: Option<&super::ragdoll::Hinge>,
+    (was, deepen, step): (f32, f32, f32),
     transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>,
-) {
+) -> f32 {
     let at = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, bone: Bone| {
         transforms.p1().compute_global_transform(skeleton.entity(bone)).ok()
     };
     let (Some(hip), Some(bend), Some(ankle), Some(tip)) =
         (at(transforms, upper), at(transforms, knee), at(transforms, foot), at(transforms, toe))
     else {
-        return;
+        return 0.0;
     };
-    if tip.translation().y >= ground(tip.translation()) {
-        return;
+    if was == 0.0 && tip.translation().y >= ground(tip.translation()) {
+        return 0.0;
     }
     // The joint's own hinge where the ragdoll knows it (`Hinge`, fixed in
     // the upper segment, positive flexing): that is the way to fold. From
@@ -1214,10 +1333,10 @@ fn tuck_foot(
         None => ((bend.translation() - hip.translation()).cross(ankle.translation() - bend.translation()), either_way),
     };
     if hinge.length_squared() < 1.0e-10 {
-        return;
+        return 0.0;
     }
     let axis = bend.rotation().inverse() * hinge.normalize();
-    let Ok(start) = transforms.p0().get(skeleton.entity(knee)).map(|transform| transform.rotation) else { return };
+    let Ok(start) = transforms.p0().get(skeleton.entity(knee)).map(|transform| transform.rotation) else { return 0.0 };
     // How far the tip is above the ground under it, the joint turned by
     // `angle`.
     let height = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, angle: f32| {
@@ -1227,20 +1346,85 @@ fn tuck_foot(
         at(transforms, toe).map_or(f32::MAX, |tip| tip.translation().y - ground(tip.translation()))
     };
     // Flexing is the way that lifts the toe. About `hinge`, a positive turn
-    // bends the joint further.
-    let sign = if !either_way || height(transforms, 0.1) >= height(transforms, -0.1) { 1.0 } else { -1.0 };
-    let (mut low, mut high) = (0.0, 2.0);
-    if height(transforms, sign * high) < 0.0 {
-        // Out of reach of a fold: left as it was, for the lift. (Folded as
-        // far as it goes instead, a face-down rise lifted a hand 78 mm.)
-        height(transforms, 0.0);
+    // bends the joint further. A fold under way keeps its way.
+    let sign = if was != 0.0 {
+        was.signum()
+    } else if !either_way || height(transforms, 0.1) >= height(transforms, -0.1) {
+        1.0
+    } else {
+        -1.0
+    };
+    let needed = if height(transforms, 0.0) >= 0.0 {
+        0.0
+    } else if height(transforms, sign * 2.0) < 0.0 {
+        // Out of reach of a fold: let go, for the lift. (Folded as far as it
+        // goes instead, a face-down rise lifted a hand 78 mm.)
+        0.0
+    } else {
+        let (mut low, mut high) = (0.0, 2.0);
+        for _ in 0..16 {
+            let middle = 0.5 * (low + high);
+            if height(transforms, sign * middle) < 0.0 { low = middle } else { high = middle }
+        }
+        sign * high
+    };
+    // At most `deepen` further a frame, and `step` back. Worked out afresh,
+    // a fold that went out of reach let go at once: a rising wrist leapt
+    // 11 cm and the hand turned 26°, when arms folded their elbows this way.
+    let deeper = needed.abs() >= was.abs() && needed * was >= 0.0;
+    let angle = was + (needed - was).clamp(-if deeper { deepen } else { step }, if deeper { deepen } else { step });
+    height(transforms, angle);
+    angle
+}
+
+/// Draws `finger` at `bend` (0 flat, 1 relaxed, more curled further).
+fn set_finger(finger: &super::hand::FingerJoints, bend: f32, transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>) {
+    for ((entity, _, _), rotation) in finger.joints.iter().zip(super::hand::finger_bent(finger, bend)) {
+        if let Ok(mut transform) = transforms.p0().get_mut(*entity) {
+            transform.rotation = rotation;
+        }
+    }
+}
+
+/// Bends `finger` from where it is drawn (`finger.bend`) toward `toward`
+/// as little as keeps its tip out of the ground (`ground`, world height at
+/// a world point): toward 0 (straighter) as under a pressed palm, toward
+/// [`super::hand::MOST_CURL`] as when the knuckles land; the hand picks
+/// ([`super::hand::palm_faces_ground`]). If even `toward` does not clear,
+/// the finger is bent that far and the wrist turn does the rest. It moves
+/// at most `most` (a bend) from where it was.
+fn bend_finger_clear(
+    finger: &mut super::hand::FingerJoints,
+    toward: f32,
+    most: f32,
+    ground: &impl Fn(Vec3) -> f32,
+    transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>,
+) {
+    let from = finger.bend;
+    let joints = *finger;
+    let height = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, bend: f32| {
+        set_finger(&joints, bend, transforms);
+        transforms.p1().compute_global_transform(joints.tip).map_or(f32::MAX, |tip| tip.translation().y - ground(tip.translation()))
+    };
+    if height(transforms, from) >= 0.0 {
         return;
     }
-    for _ in 0..16 {
-        let middle = 0.5 * (low + high);
-        if height(transforms, sign * middle) < 0.0 { low = middle } else { high = middle }
-    }
-    height(transforms, sign * high);
+    // From `from` toward `end`, the nearest bend that clears; `end` if none.
+    let nearest = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, end: f32| {
+        if height(transforms, end) < 0.0 {
+            return (end, false);
+        }
+        let (mut low, mut high) = (from, end);
+        for _ in 0..12 {
+            let middle = 0.5 * (low + high);
+            if height(transforms, middle) < 0.0 { low = middle } else { high = middle }
+        }
+        (high, true)
+    };
+    let (bend, _) = nearest(transforms, toward);
+    let bend = from + (bend - from).clamp(-most, most);
+    finger.bend = bend;
+    set_finger(finger, bend, transforms);
 }
 
 /// Where the tip of a limb's end is, from the drawn skeleton (`global`, a
@@ -1307,6 +1491,80 @@ fn turn_up_clear(
         if turned(transforms, middle) < 0.0 { low = middle } else { high = middle }
     }
     turned(transforms, high);
+}
+
+/// [`turn_up_clear`] held from frame to frame, for a drawn wrist (its
+/// fingertips) and a rising arm's shoulder (its hand): `held` is last
+/// frame's turn, in `bone`'s own frame, and the new one is returned.
+///
+/// Worked out afresh each frame, the wrist's turn leapt. Over a hand striking the
+/// floor it snapped on and off (68-70° in a frame against a body turning
+/// 15-19°), and its axis, the level line across a hand hanging straight
+/// down, flipped (the same lift then swung the hand 78°). Held as an angle
+/// and an axis, a change of axis carried the angle over and turned a rising
+/// hand 134°. So the turn is one rotation that changes as little as it can:
+/// first eased back toward none by at most `drop` radians, as far as the
+/// point stays clear; then, if the point is still under the ground, turned
+/// further up about the level line as drawn now, just far enough, up to
+/// `most`.
+fn hold_clear(
+    skeleton: &HumanoidSkeleton,
+    bone: Bone,
+    ground: &impl Fn(Vec3) -> f32,
+    transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>,
+    (held, drop, most): (Quat, f32, f32),
+    point: impl Fn(&HumanoidSkeleton, &mut ParamSet<(Query<&mut Transform>, TransformHelper)>) -> Option<Vec3>,
+) -> Quat {
+    let clearance = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>| {
+        point(skeleton, transforms).map_or(f32::MAX, |at| at.y - ground(at))
+    };
+    let Ok(start) = transforms.p0().get(skeleton.entity(bone)).map(|transform| transform.rotation) else { return Quat::IDENTITY };
+    let drawn = |transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>, turn: Quat| {
+        if let Ok(mut transform) = transforms.p0().get_mut(skeleton.entity(bone)) {
+            transform.rotation = start * turn;
+        }
+        clearance(transforms)
+    };
+    // Eased back: the most that keeps the point clear, of `drop`.
+    let held = if held.w < 0.0 { -held } else { held };
+    let angle = held.angle_between(Quat::IDENTITY);
+    let eased = |t: f32| held.slerp(Quat::IDENTITY, t);
+    let reach = if angle > 1.0e-6 { (drop / angle).min(1.0) } else { 1.0 };
+    let mut turn = if drawn(transforms, eased(reach)) >= 0.0 {
+        eased(reach)
+    } else if drawn(transforms, held) >= 0.0 {
+        let (mut low, mut high) = (0.0, reach);
+        for _ in 0..12 {
+            let middle = 0.5 * (low + high);
+            if drawn(transforms, eased(middle)) >= 0.0 { low = middle } else { high = middle }
+        }
+        eased(low)
+    } else {
+        held
+    };
+    // Still under: up about the level line, just far enough.
+    if drawn(transforms, turn) < 0.0
+        && let (Ok(joint), Some(at)) = (transforms.p1().compute_global_transform(skeleton.entity(bone)), point(skeleton, transforms))
+    {
+        let level = (at - joint.translation()).cross(Vec3::Y);
+        if level.length_squared() > 1.0e-10 {
+            let axis = joint.rotation().inverse() * level.normalize();
+            let up = |angle: f32| turn * Quat::from_axis_angle(axis, angle);
+            let lifted = if drawn(transforms, up(most)) < 0.0 {
+                up(most)
+            } else {
+                let (mut low, mut high) = (0.0, most);
+                for _ in 0..16 {
+                    let middle = 0.5 * (low + high);
+                    if drawn(transforms, up(middle)) < 0.0 { low = middle } else { high = middle }
+                }
+                up(high)
+            };
+            turn = lifted;
+        }
+    }
+    drawn(transforms, turn);
+    turn.normalize()
 }
 
 /// The joints a rise keeps above the ground: the body's ends, and the
@@ -4766,6 +5024,8 @@ mod tests {
         elbow_off: f32,
         overlap: f32,
         overlap_pair: Option<(Bone, Bone)>,
+        /// The deepest such overlap on the last frame, at rest.
+        rest_overlap: f32,
         rest_height: f32,
         /// The thighs against the pelvis, degrees: forward (flexion,
         /// positive) and back (extension, negative) in its sagittal plane,
@@ -4895,6 +5155,7 @@ mod tests {
                     Some((bone, position + rotation * a, position + rotation * b, radius))
                 })
                 .collect();
+            shape.rest_overlap = f32::MIN;
             for (i, &(a, p1, q1, r1)) in capsules.iter().enumerate() {
                 for &(b, p2, q2, r2) in &capsules[i + 1..] {
                     if adjacent(a, b) {
@@ -4904,6 +5165,7 @@ mod tests {
                     if depth > shape.overlap {
                         (shape.overlap, shape.overlap_pair) = (depth, Some((a, b)));
                     }
+                    shape.rest_overlap = shape.rest_overlap.max(depth);
                 }
             }
         }
@@ -4977,7 +5239,9 @@ mod tests {
             // Out to the side, AAOS's 45, and across under the body, its 30
             // (`anatomical_side_cones`): 52 out with the hip's one cone.
             assert!(s.hip_abduction < 46.0, "{name}: a hip opened {:.1} degrees out to the side", s.hip_abduction);
-            assert!(s.hip_adduction < 31.0, "{name}: a thigh crossed {:.1} degrees under the body", s.hip_adduction);
+            // The top leg dropping across onto its stop goes a degree past
+            // (stiff, not rigid), as the elbows do.
+            assert!(s.hip_adduction < 32.0, "{name}: a thigh crossed {:.1} degrees under the body", s.hip_adduction);
             // Behind the back: kept 45° from back-and-up
             // (`anatomical_side_cones`); 42.2 falling back without it.
             assert!(s.arm_behind > 44.0, "{name}: an arm came {:.1} degrees from pointing back and up", s.arm_behind);
@@ -5002,7 +5266,15 @@ mod tests {
                 s.elbow_bend.1,
                 s.elbow_off
             );
-            assert!(s.overlap < 0.02, "{name}: {:?} sank {:.0} mm into each other", s.overlap_pair, s.overlap * 1e3);
+            // Passing through each other, parts overlapped 101-180 mm. A
+            // light hand striking a thigh dips into it at impact, as feet
+            // and hands dip into the floor (avian's soft contacts): up to
+            // 24 mm since the joints keep their passive tone. At rest a hand
+            // lying on a thigh, weighed on by its arm and pulled by its
+            // shoulder's passive tone, sinks 8 mm into it (soft contacts
+            // carry a steady load a little way in).
+            assert!(s.overlap < 0.03, "{name}: {:?} sank {:.0} mm into each other", s.overlap_pair, s.overlap * 1e3);
+            assert!(s.rest_overlap < 0.01, "{name}: two parts rest {:.0} mm into each other", s.rest_overlap * 1e3);
             // On the floor, not through it.
             assert!(s.rest_height > 0.05 && s.rest_height < 0.3, "{name}: the hips lie at {:.2} m", s.rest_height);
         }
@@ -5016,10 +5288,10 @@ mod tests {
         for (name, launch) in [("forward", Vec3::NEG_Z), ("back", Vec3::Z), ("left", Vec3::NEG_X), ("right", Vec3::X)] {
             let s = measure_fall(launch * 1.5, 4.0);
             println!(
-                "FALL {name:7}: knee bend {:6.1}..{:6.1} off {:5.1} | elbow bend {:6.1}..{:6.1} off {:5.1} | hip {:6.1}..{:6.1} abd {:5.1} add {:5.1} | overlap {:5.1} mm {:?} | hips {:.2} m",
+                "FALL {name:7}: knee bend {:6.1}..{:6.1} off {:5.1} | elbow bend {:6.1}..{:6.1} off {:5.1} | hip {:6.1}..{:6.1} abd {:5.1} add {:5.1} | overlap {:5.1} mm {:?}, at rest {:5.1} | hips {:.2} m",
                 s.knee_bend.0, s.knee_bend.1, s.knee_off, s.elbow_bend.0, s.elbow_bend.1, s.elbow_off,
                 s.hip_sagittal.0, s.hip_sagittal.1, s.hip_abduction, s.hip_adduction,
-                s.overlap * 1e3, s.overlap_pair, s.rest_height
+                s.overlap * 1e3, s.overlap_pair, s.rest_overlap * 1e3, s.rest_height
             );
         }
     }
@@ -5610,6 +5882,88 @@ mod tests {
     type Heights = (Option<(usize, f32)>, [f32; 7]);
 
     #[test]
+    fn a_drawn_hand_turns_no_faster_than_its_body() {
+        // Live, a hand turned up to 163° between two samples of a fall and
+        // rise. Three causes, each a drawing correction worked out afresh
+        // each frame:
+        // - the wrist's turn up to clear the fingertips, which snapped on
+        //   and off: 68-70° in a frame against a body turning 15-19°;
+        // - its axis, the level line across a hand hanging straight down,
+        //   which flipped: the same lift then swung the hand 78°;
+        // - the rise's elbow tuck, which let go at once when its fold went
+        //   out of reach: the wrist leapt 11 cm, the hand turned 26°.
+        //   Held as an angle and an axis instead, a change of axis carried
+        //   the angle over and a rising hand turned 134°.
+        // What is left is the hand's body itself, slapping the floor (up to
+        // 45° a frame, and as much about the wrist): a limp hand does flop
+        // that fast, and eight times the wrist's damping did not change it.
+        let diagonal = |x: f32| Vec3::new(x, 0.0, 1.0).normalize() * 1.5;
+        // A plain collapse too, as the gallery's `--fall-at-frame` falls.
+        for launch in [Vec3::ZERO, Vec3::Z * 1.5, Vec3::NEG_Z * 1.5, diagonal(1.0), diagonal(-1.0)] {
+            let mut app = physics_app();
+            app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+            app.add_systems(Update, publish_joint_targets);
+            app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+            let rig = crate::character::anim::gltf_rig::puppet_base();
+            let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+            let (character, ragdoll, _root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+            app.world_mut()
+                .entity_mut(character)
+                .insert((AnimPose::settled_on(&crate::character::anim::poses::rest()), Transform::default()));
+            step(&mut app, 10);
+            let skeleton = app.world().get::<HumanoidSkeleton>(character).unwrap().clone();
+            let hands = [Bone::LeftHand, Bone::RightHand];
+            // Drawn, then the body's.
+            let turns = |app: &App| {
+                hands.map(|hand| {
+                    let drawn = app.world().get::<GlobalTransform>(skeleton.entity(hand)).unwrap().rotation();
+                    let body = app.world().get::<Rotation>(ragdoll.bodies[hand].unwrap()).unwrap().0;
+                    (drawn, body)
+                })
+            };
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall_moving(FALL_TONE, FALL_DAMPING, launch);
+            let mut before: Option<[(Quat, Quat); 2]> = None;
+            let mut rising = false;
+            let (mut worst_fall, mut worst_rise) = (0.0f32, 0.0f32);
+            for _ in 0..1300 {
+                app.update();
+                let stored = app.world().get::<Ragdoll>(character).unwrap();
+                if !stored.is_falling() && rising {
+                    break;
+                }
+                if !rising && stored.fall.is_some_and(|f| f.at_rest) {
+                    app.world_mut().get_mut::<Ragdoll>(character).unwrap().get_up(0.0);
+                    rising = true;
+                    before = None;
+                    continue;
+                }
+                let now = turns(&app);
+                if let Some(was) = before {
+                    for k in 0..2 {
+                        let drawn = was[k].0.angle_between(now[k].0).to_degrees();
+                        let body = was[k].1.angle_between(now[k].1).to_degrees();
+                        if rising {
+                            // The bodies are still; only the drawing moves.
+                            worst_rise = worst_rise.max(drawn);
+                        } else {
+                            worst_fall = worst_fall.max(drawn - body);
+                        }
+                    }
+                }
+                before = Some(now);
+            }
+            // Measured: 6-23° faster falling (a fingertip striking the floor
+            // takes that much turn within a frame to stay out of it) and 4-8°
+            // a frame rising; before, 49-59° and 26-30°.
+            assert!(
+                worst_fall < 30.0,
+                "launched {launch}, a falling hand was drawn turning {worst_fall:.0}° a frame faster than its body"
+            );
+            assert!(worst_rise < 15.0, "launched {launch}, a rising hand turned {worst_rise:.0}° in a frame");
+        }
+    }
+
+    #[test]
     fn a_rise_moves_no_limb_far_above_where_its_keys_put_it() {
         // Between two keys, a knee, foot or hand may clear the floor, not
         // swing up past both of its ends. From hands and knees to a
@@ -5618,18 +5972,18 @@ mod tests {
         // ends; the leg now tucks its foot (`tuck_foot`). Face down and face
         // up, both routes: pushed forward and back (this rig faces +Z). A
         // sideways push lands either way; with a flat torso (`TorsoBlock`)
-        // the +X one that used to land face down rolled face up. Pushed
-        // forward and out at 1.5 m/s it comes to rest on a side, chest
-        // 41-59° from face down (`probe_how_falls_lie`; which pushes land
-        // there moves with anything that changes the fall), and rises by the
-        // side-sit.
+        // the +X one that used to land face down rolled face up. Since the
+        // joints keep their passive tone, a push straight out to the side at
+        // 1.5 m/s comes to rest on that side (chest 11-25° below level) and
+        // rises by the side-sit; forward and out lands face down. Which
+        // pushes land on a side moves with anything that changes the fall
+        // (`probe_how_falls_lie`).
         use crate::character::anim::getup::Lying;
-        let diagonal = |x: f32| Vec3::new(x, 0.0, 1.0).normalize() * 1.5;
         for (launch, expect) in [
             (Vec3::Z * 1.5, Lying::FaceDown),
             (Vec3::NEG_Z * 1.5, Lying::FaceUp),
-            (diagonal(1.0), Lying::Side { left_down: true }),
-            (diagonal(-1.0), Lying::Side { left_down: false }),
+            (Vec3::X * 1.5, Lying::Side { left_down: true }),
+            (Vec3::NEG_X * 1.5, Lying::Side { left_down: false }),
         ] {
             let mut app = physics_app();
             app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
@@ -5759,7 +6113,7 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_fall_damping() {
-        for damping in [0.0, 1.0, 3.0, 10.0] {
+        for (damping, tone) in [(3.0, 0.0), (3.0, 1.0), (1.0, 1.0)] {
             for carry in [Vec3::X, Vec3::NEG_Z, Vec3::NEG_X] {
                 let mut app = physics_app();
                 app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
@@ -5774,21 +6128,123 @@ mod tests {
                     app.world_mut().get_mut::<Transform>(root).unwrap().translation += carry * TIMESTEP;
                     app.update();
                 }
+                app.world_mut().get_mut::<Ragdoll>(character).unwrap().passive_tone = tone;
                 app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(0.0, damping);
                 let bodies: Vec<Entity> = ragdoll.bodies.iter().filter_map(|(_, b)| *b).collect();
                 let (mut peak, mut slept) = (0.0f32, None);
+                // The fastest any body spins against the body it hangs from,
+                // rad/s: a limb whipping about its joint.
+                let mut whip = 0.0f32;
                 for i in 1..=(8.0 / TIMESTEP) as usize {
                     app.update();
                     if i as f32 * TIMESTEP > 0.3 {
                         peak = bodies.iter().map(|&b| app.world().get::<LinearVelocity>(b).unwrap().0.length()).fold(peak, f32::max);
+                        let stored = app.world().get::<Ragdoll>(character).unwrap();
+                        for &bone in Bone::ALL.iter() {
+                            let (Some(body), Some(parent)) = (stored.bodies[bone], nearest_simulated_ancestor(bone, stored)) else { continue };
+                            let spin = |b: Entity| app.world().get::<AngularVelocity>(b).unwrap().0;
+                            whip = whip.max((spin(body) - spin(stored.bodies[parent].unwrap())).length());
+                        }
                     }
                     if slept.is_none() && bodies.iter().all(|&b| app.world().get::<Sleeping>(b).is_some()) {
                         slept = Some(i as f32 * TIMESTEP);
                     }
                 }
                 let hips = app.world().get::<Position>(ragdoll.bodies[Bone::Hips].unwrap()).unwrap().0;
-                println!("damping {damping:4.1} carry {carry}: peak limb {peak:.2} m/s, asleep at {slept:?} s, hips at {:.2} m", hips.y);
+                println!(
+                    "damping {damping:4.1} tone {tone:.1} carry {carry}: peak limb {peak:.2} m/s, joint spin {whip:.1} rad/s, asleep at {slept:?} s, hips at {:.2} m",
+                    hips.y
+                );
             }
+        }
+    }
+
+    // Which bodies still move each second of a collapse with avian's own
+    // sleeping off: how a body that never rests was traced to the shin's
+    // hinge and the ankle (`passive`).
+    #[test]
+    #[ignore]
+    fn probe_toned_rest() {
+        let mut app = physics_app();
+        app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+        app.add_systems(Update, publish_joint_targets);
+        app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+        let rig = crate::character::anim::gltf_rig::puppet_base();
+        let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+        let (character, ragdoll, root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+        app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+        step(&mut app, 10);
+        let _ = root;
+        app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+        step(&mut app, 2);
+        for body in ragdoll.bodies.iter().filter_map(|(_, body)| *body) {
+            app.world_mut().entity_mut(body).insert(SleepThreshold { linear: 0.0, angular: 0.0 });
+        }
+        for second in 1..=8 {
+            let fall = app.world().get::<Ragdoll>(character).unwrap().fall.unwrap();
+            println!("  still for {:.2} s, at rest {}", fall.still_for, fall.at_rest);
+            step(&mut app, (1.0 / TIMESTEP) as usize);
+            let mut moving: Vec<(f32, f32, &str)> = ragdoll
+                .bodies
+                .iter()
+                .filter_map(|(bone, body)| {
+                    let body = (*body)?;
+                    Some((
+                        app.world().get::<LinearVelocity>(body)?.0.length(),
+                        app.world().get::<AngularVelocity>(body)?.0.length(),
+                        bone.name(),
+                    ))
+                })
+                .collect();
+            moving.sort_by(|a, b| b.1.total_cmp(&a.1));
+            println!("{second} s: {:?}", &moving[..4]);
+        }
+    }
+
+    #[test]
+    fn passive_tone_slows_a_falling_limb_about_its_joint_and_still_rests() {
+        // The same carried falls with and without the joints' passive tone:
+        // limbs whipped about their joints at 52-137 rad/s without it, a
+        // puppet's swing to its stops; with it, 27-62. And every fall still
+        // comes to rest, the tone weaker than gravity.
+        let fall = |carry: Vec3, tone: f32| {
+            let mut app = physics_app();
+            app.insert_resource(Gravity(Vec3::NEG_Y * 9.81)).insert_resource(SubstepCount(12));
+            app.add_systems(Update, publish_joint_targets);
+            app.world_mut().spawn((RigidBody::Static, Collider::half_space(Vec3::Y), Friction::new(1.0), Transform::default()));
+            let rig = crate::character::anim::gltf_rig::puppet_base();
+            let config = RagdollSpawnConfig { feet: Some(sole_blocks(&rig)), ..Default::default() };
+            let (character, ragdoll, root, _) = spawn_real_rig_ragdoll_with(&mut app, &config, Vec3::Y * 0.01);
+            app.world_mut().entity_mut(character).insert(AnimPose::settled_on(&crate::character::anim::poses::rest()));
+            step(&mut app, 10);
+            for _ in 0..(0.25 / TIMESTEP) as usize {
+                app.world_mut().get_mut::<Transform>(root).unwrap().translation += carry * TIMESTEP;
+                app.update();
+            }
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().passive_tone = tone;
+            app.world_mut().get_mut::<Ragdoll>(character).unwrap().fall(FALL_TONE, FALL_DAMPING);
+            let (mut whip, mut rested) = (0.0f32, None);
+            for i in 1..=(8.0 / TIMESTEP) as usize {
+                app.update();
+                let stored = app.world().get::<Ragdoll>(character).unwrap();
+                if i as f32 * TIMESTEP > 0.3 {
+                    for &bone in Bone::ALL.iter() {
+                        let (Some(body), Some(parent)) = (ragdoll.bodies[bone], nearest_simulated_ancestor(bone, stored)) else { continue };
+                        let spin = |b: Entity| app.world().get::<AngularVelocity>(b).unwrap().0;
+                        whip = whip.max((spin(body) - spin(ragdoll.bodies[parent].unwrap())).length());
+                    }
+                }
+                if rested.is_none() && stored.fall.is_some_and(|f| f.at_rest) {
+                    rested = Some(i as f32 * TIMESTEP);
+                }
+            }
+            (whip, rested)
+        };
+        for carry in [Vec3::X, Vec3::NEG_Z, Vec3::NEG_X] {
+            let (limp, _) = fall(carry, 0.0);
+            let (toned, rested) = fall(carry, 1.0);
+            assert!(toned < 0.75 * limp, "carried {carry}: joints spun {toned:.0} rad/s with tone, {limp:.0} without");
+            assert!(rested.is_some(), "carried {carry}: the toned body never came to rest");
         }
     }
 
