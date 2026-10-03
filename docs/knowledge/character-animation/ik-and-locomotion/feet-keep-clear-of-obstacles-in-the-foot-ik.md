@@ -1,6 +1,6 @@
 ---
 title: Feet keep clear of obstacles in the foot IK, as a capsule against a probe
-description: "AnimObstacles (a FootObstacles probe, like AnimGround) moves each foot's toe target, and a planted foot's lock, so the heel-to-tip line keeps 8 cm from obstacles. Done in the IK stage, not on the walker's pose (12 cm there, for spring lag); as a line, not points. Read before changing obstacles.rs or foot avoidance."
+description: "AnimObstacles (a probe, like AnimGround; boxes or avian colliders marked FootObstacle) moves each foot's toe target and planted lock so its heel-to-tip line keeps 8 cm from obstacles. In the IK stage, not on the walker's pose (12 cm there); as a line, not points. Read before changing foot avoidance."
 type: decision
 status: current
 tags:
@@ -11,6 +11,8 @@ updated: 2026-10-03
 verified: 2026-10-03
 code:
   - src/character/anim/obstacles.rs
+  - src/character/anim/physics_obstacles.rs
+  - examples/physics_character_playground.rs
   - src/character/anim/plugin.rs
   - src/character/anim/footlock.rs
   - examples/character_gallery.rs
@@ -22,6 +24,9 @@ aliases:
   - FootObstacles
   - Footprints
   - Footprint
+  - PhysicsObstacles
+  - FootObstacle
+  - sample_physics_obstacles
   - foot_line
   - FOOT_CLEARANCE
   - shift_anchor
@@ -64,6 +69,18 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
   - Several boxes' moves are combined each way along each axis, so two on
     either side of a foot cancel rather than one throwing it into the
     other.
+- **From the physics world** (`physics_obstacles`): put
+  `PhysicsObstacles` on a character and `FootObstacle` on colliders.
+  - Each frame before the IK, `sample_physics_obstacles` asks avian's
+    broad phase (`aabb_intersections_with_aabb`) for marked colliders
+    within 0.5 m of the feet.
+  - It keeps those reaching foot height (1–25 cm above the ground the body
+    stands on: not a table top).
+  - Each becomes a `Footprint`: an upright box collider exactly (turned
+    about the vertical), anything else by its bounds.
+  - **Opt-in by marker,** since what to avoid can't be read off a shape: a
+    ramp is taller than a step yet walked up, and a stair is ground the
+    foot stands on (`physics_ground`).
 - **`FOOT_CLEARANCE` 8 cm** is the foot's half width (4.5 cm), the ~2 cm
   the drawn foot falls short of the IK's toe target (its heel turns as the
   leg solve places the ankle), and a centimetre to spare.
@@ -102,6 +119,12 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
   - the drawn foot ≥ 6.2 cm from the footprint;
   - seated hips 0–1 mm from the seat's middle;
   - feet 0 mm of slide sitting, rising and standing after.
+- **Live, physics:** the playground's dining table (four 6 cm legs) and
+  chairs (3.5 cm legs) are static colliders marked `FootObstacle`. A
+  walker sits at the table (`--sit-at-table N`), turning between a chair
+  and the table, A/B on the same input (`--foot-obstacles off`):
+  - without the obstacles, a foot 5.7–7.0 cm into a table leg;
+  - with them, every foot 2.2–2.5 cm clear of every leg.
 - **Tests:** the moves (out, round a corner for a point and for a foot, a
   post under the arch, between two posts), and the IK holding a planted
   foot off a post with the other foot unmoved.
@@ -110,9 +133,12 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
 
 ## Revisit when
 
-- **A physics world should be the source:** a `FootObstacles` built on
-  avian's spatial queries, filtered to foot height (above the floor, below
-  a seat), would cover any collider.
+- **The body walks through furniture:** the chair approach routes round
+  its own chair only, and walking to a seat at the table it walked through
+  the table (its pelvis inside the table's footprint for ~6 s) before
+  reaching its spot. Route planning needs the same physics obstacles.
+- **Tilted or round furniture** matters: anything but an upright box is
+  kept out by its bounds, wider than it is.
 - **The heel shortfall is fixed** (the leg solve reaching the ankle the
   pose wants): the clearance can drop toward the foot's half width.
 - **Obstacles that move**, or a foot that must step over something: this

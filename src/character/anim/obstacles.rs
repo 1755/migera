@@ -50,6 +50,14 @@ pub trait FootObstacles: Send + Sync + 'static {
 #[derive(Component)]
 pub struct AnimObstacles(pub Box<dyn FootObstacles>);
 
+impl Default for AnimObstacles {
+    /// None yet: filled in each frame by whatever owns it
+    /// (`physics_obstacles`).
+    fn default() -> Self {
+        Self(Box::new(Footprints::default()))
+    }
+}
+
 /// A box standing on the floor, seen from above: its middle, the way its
 /// depth runs, and its size (width across, depth along).
 #[derive(Debug, Clone, Copy, PartialEq)]

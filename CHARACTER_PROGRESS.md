@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Foot obstacles from the physics world
+
+- **`physics_obstacles.rs`:**
+  - `PhysicsObstaclesPlugin` and `PhysicsObstacles` on a character;
+    colliders marked `FootObstacle` are avoided (opt-in: a ramp or a
+    stair is walkable ground, not an obstacle).
+  - Each frame before the IK, avian's broad phase finds marked colliders
+    within 0.5 m of the feet and at foot height (1–25 cm over the ground
+    the body stands on). Each becomes a footprint in the character's
+    `AnimObstacles`: an upright box exactly, anything else by its bounds.
+- **Playground:**
+  - a dining table with four legs and four chairs, each piece its own
+    marked collider;
+  - `--sit-at-table N` sends the test walker to sit on chair N;
+  - `--foot-obstacles off` for an A/B, and `--step-seconds S` for
+    offscreen runs.
+- **Live A/B, same input,** walking to sit at the table: with the
+  obstacles off a foot went 5.7–7.0 cm into a table leg; on, every foot
+  2.2–2.5 cm clear of every leg.
+- **Found, not fixed:** the walk to a chair routes round that chair only.
+  At the table the body walked through the table (~6 s inside its
+  footprint) before reaching its spot. That is the route-planning step.
+- **Tests:** the footprint of a turned box and of a ball. 1129 passed.
+  Clippy: 0 warnings.
+
 ### Foot obstacles move into the foot IK, as a general probe
 
 - **`obstacles.rs`:**

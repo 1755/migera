@@ -71,12 +71,14 @@ use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 
 use migera::character::anim::asset::AnimAssetPlugin;
 use migera::character::anim::physics_ground::{PhysicsGround, PhysicsGroundPlugin};
+use migera::character::anim::physics_obstacles::{FootObstacle, PhysicsObstacles, PhysicsObstaclesPlugin};
 use migera::character::anim::plugin::AnimFootIk;
 use migera::character::anim::ragdoll_plugin::sole_blocks;
 use migera::character::anim::{
     despawn_ragdoll, spawn_gltf_humanoid, spawn_ragdoll, AnimPlugin, AnimRagdollPlugin, HumanoidPlugin, Ragdoll, RagdollSpawnConfig,
     Steer, Walker, WalkerPlugin, WalkerSet, WalkerState,
 };
+use migera::character::anim::{approach, sitting};
 use migera::character::{Bone, HumanoidSkeleton};
 
 /// Half the room's side, metres.
@@ -160,6 +162,10 @@ struct Config {
     /// Walkers head for goals (`--goals off`: they walk straight and only
     /// bounce, as before).
     goals: bool,
+    /// `--sit-at-table N`: the first character walks to the dining table's
+    /// chair N (0-3) and sits on it, its feet kept out of the chair's and
+    /// the table's legs by the physics world (`physics_obstacles`).
+    sit_at_table: Option<usize>,
     /// `--plank H`: a test of feet on props. No props; one H m plank lying
     /// across the first character's path, which starts facing it.
     plank: Option<f32>,
@@ -168,6 +174,12 @@ struct Config {
     /// seconds, printed (p50, p99), and exit.
     bench: Option<f32>,
     flat_ground: bool,
+    /// `--foot-obstacles off`: the feet ignore the furniture, for an A/B.
+    foot_obstacles: bool,
+    /// `--step-seconds S`: every frame advances the clock exactly S, for
+    /// runs on a software renderer (motion as at full speed, slower to
+    /// watch). Never for timings.
+    step_seconds: Option<f64>,
     shot: Option<(String, u32)>,
     camera: Vec3,
     /// What the camera starts looking at (`--look X,Y,Z`).
@@ -198,10 +210,13 @@ impl Config {
             gizmos: false,
             avoid: true,
             goals: true,
+            sit_at_table: None,
             plank: None,
             trace_feet: false,
             bench: None,
             flat_ground: false,
+            foot_obstacles: true,
+            step_seconds: None,
             shot: None,
             camera: Vec3::new(0.0, 9.0, 22.0),
             look: Vec3::new(0.0, 1.0, 0.0),
@@ -221,10 +236,13 @@ impl Config {
                 "--gizmos" => config.gizmos = value() != "off",
                 "--avoid" => config.avoid = value() != "off",
                 "--goals" => config.goals = value() != "off",
+                "--sit-at-table" => config.sit_at_table = value().parse().ok(),
                 "--plank" => config.plank = value().parse().ok(),
                 "--trace-feet" => config.trace_feet = true,
                 "--bench" => config.bench = value().parse().ok(),
                 "--ground" => config.flat_ground = value() == "flat",
+                "--foot-obstacles" => config.foot_obstacles = value() != "off",
+                "--step-seconds" => config.step_seconds = value().parse().ok(),
                 "--physics" => {
                     config.physics = match value().as_str() {
                         "ragdoll" => PhysicsMode::Ragdoll,
@@ -346,7 +364,11 @@ const AVOID_TURN: f32 = 0.6;
 fn main() {
     let assets = std::env::current_dir().expect("cwd").join("assets").to_string_lossy().into_owned();
     let config = Config::from_args();
-    App::new()
+    let mut app = App::new();
+    if let Some(seconds) = config.step_seconds {
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(seconds)));
+    }
+    app
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -369,7 +391,7 @@ fn main() {
         // ragdoll's resting contacts jittered and it crept across the floor.
         .add_plugins(PhysicsPlugins::default())
         .insert_resource(SubstepCount(12))
-        .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, PhysicsGroundPlugin, FreeCameraPlugin))
+        .add_plugins((AnimPlugin, AnimAssetPlugin, HumanoidPlugin, WalkerPlugin, AnimRagdollPlugin, PhysicsGroundPlugin, PhysicsObstaclesPlugin, FreeCameraPlugin))
         .insert_resource(config)
         .init_resource::<SteerCost>()
         .add_systems(Startup, (spawn_room, spawn_props, spawn_characters, spawn_camera_and_light, spawn_hud))
@@ -399,6 +421,8 @@ struct Solid {
     centre: Vec3,
     rotation: Quat,
     color: Color,
+    /// Feet keep out of it (`FootObstacle`): furniture, not terrain.
+    furniture: bool,
 }
 
 enum Shape {
@@ -412,7 +436,13 @@ enum Shape {
 impl Solid {
     /// An upright box standing on the floor, its footprint centred on `x`, `z`.
     fn standing(size: Vec3, x: f32, z: f32, color: Color) -> Self {
-        Self { shape: Shape::Cuboid(size), centre: Vec3::new(x, size.y * 0.5, z), rotation: Quat::IDENTITY, color }
+        Self { shape: Shape::Cuboid(size), centre: Vec3::new(x, size.y * 0.5, z), rotation: Quat::IDENTITY, color, furniture: false }
+    }
+
+    /// A box of furniture, `size`, its middle at `centre` relative to a piece
+    /// at `at` turned `turn` about the vertical.
+    fn furniture(size: Vec3, centre: Vec3, at: Vec3, turn: Quat, color: Color) -> Self {
+        Self { shape: Shape::Cuboid(size), centre: at + turn * centre, rotation: turn, color, furniture: true }
     }
 
     fn collider_and_mesh(&self) -> (Collider, Mesh) {
@@ -435,7 +465,7 @@ fn layout() -> (Vec<Solid>, Vec<Rect>) {
     let mut solids = Vec::new();
     let mut footprints = Vec::new();
     // The floor, its top at y = 0, where the walkers' flat ground is.
-    solids.push(Solid { shape: Shape::Cuboid(Vec3::new(side, 0.2, side)), centre: Vec3::new(0.0, -0.1, 0.0), rotation: Quat::IDENTITY, color: Color::srgb(0.45, 0.47, 0.45) });
+    solids.push(Solid { shape: Shape::Cuboid(Vec3::new(side, 0.2, side)), centre: Vec3::new(0.0, -0.1, 0.0), rotation: Quat::IDENTITY, color: Color::srgb(0.45, 0.47, 0.45), furniture: false });
     let wall = Color::srgb(0.62, 0.58, 0.52);
     let long = side + WALL_THICKNESS * 2.0;
     let out = HALF_ROOM + WALL_THICKNESS * 0.5;
@@ -459,6 +489,7 @@ fn layout() -> (Vec<Solid>, Vec<Rect>) {
             centre: Vec3::new(x, 0.0, platform_front + run),
             rotation: Quat::from_rotation_y(PI * 0.5),
             color,
+            furniture: false,
         });
         footprints.push(Rect::new(x - RAMP_WIDTH * 0.5, PLATFORM_BACK, x + RAMP_WIDTH * 0.5, platform_front + run));
     }
@@ -482,14 +513,69 @@ fn layout() -> (Vec<Solid>, Vec<Rect>) {
         solids.push(Solid::standing(Vec3::new(FENCE_WIDTH, height, FENCE_THICKNESS), x, FENCE_Z, fence));
         footprints.push(Rect::new(x - FENCE_WIDTH * 0.5, FENCE_Z - FENCE_THICKNESS * 0.5, x + FENCE_WIDTH * 0.5, FENCE_Z + FENCE_THICKNESS * 0.5));
     }
+
+    // A dining table and four chairs, every leg its own collider, so feet
+    // keep out of the legs themselves (`FootObstacle`) rather than a block.
+    let wood = Color::srgb(0.45, 0.30, 0.18);
+    let table = TABLE_AT;
+    let (length, width, height, leg) = (1.2, TABLE_WIDTH, 0.75, 0.06);
+    solids.push(Solid::furniture(Vec3::new(length, 0.04, width), Vec3::new(0.0, height - 0.02, 0.0), table, Quat::IDENTITY, wood));
+    for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let centre = Vec3::new(x * (length * 0.5 - 0.05), (height - 0.04) * 0.5, z * (width * 0.5 - 0.05));
+        solids.push(Solid::furniture(Vec3::new(leg, height - 0.04, leg), centre, table, Quat::IDENTITY, wood));
+    }
+    for (at, turn) in dining_chairs() {
+        for piece in chair_pieces() {
+            solids.push(Solid::furniture(piece.0, piece.1, at, turn, wood));
+        }
+    }
+    footprints.push(Rect::new(table.x - 1.3, table.z - 1.6, table.x + 1.3, table.z + 1.6));
     (solids, footprints)
+}
+
+/// Where the dining table stands, and its depth across.
+const TABLE_AT: Vec3 = Vec3::new(-3.0, 0.0, 3.0);
+const TABLE_WIDTH: f32 = 0.8;
+
+/// The chairs' middles and turns: two along each long side of the table,
+/// facing it (local -Z toward it), pulled out to sit on: tucked in 0.35 m
+/// from its edge, the spot to stand on to sit was inside the table.
+fn dining_chairs() -> Vec<(Vec3, Quat)> {
+    [(-0.3, 1.0), (0.3, 1.0), (-0.3, -1.0), (0.3, -1.0)]
+        .into_iter()
+        .map(|(x, side): (f32, f32)| {
+            let at = TABLE_AT + Vec3::new(x, 0.0, side * (TABLE_WIDTH * 0.5 + 0.65));
+            (at, Quat::from_rotation_y(if side > 0.0 { 0.0 } else { PI }))
+        })
+        .collect()
+}
+
+/// Chair `index` of [`dining_chairs`] as the walker sits on it: where its
+/// seated hips go (0.08 behind the seat's middle, as the gallery's chair),
+/// facing away from its backrest.
+fn dining_chair(index: usize) -> approach::Chair {
+    let (at, turn) = dining_chairs()[index % 4];
+    let forward = turn * Vec3::NEG_Z;
+    approach::Chair::standard(at - forward * 0.08, forward)
+}
+
+/// A standard chair's boxes (size, middle), facing local -Z: a 0.46 by 0.44
+/// seat 0.45 high, a backrest, four 3.5 cm legs (the gallery's chair).
+fn chair_pieces() -> Vec<(Vec3, Vec3)> {
+    let (depth, width, thick, height) = (0.44, 0.46, 0.04, 0.45);
+    let mut pieces = vec![(Vec3::new(width, thick, depth), Vec3::new(0.0, height - thick * 0.5, 0.0))];
+    pieces.push((Vec3::new(width, 0.42, thick), Vec3::new(0.0, height + 0.25, depth * 0.5)));
+    for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        pieces.push((Vec3::new(0.035, height - thick, 0.035), Vec3::new(x * (width * 0.5 - 0.03), (height - thick) * 0.5, z * (depth * 0.5 - 0.03))));
+    }
+    pieces
 }
 
 /// The room and its terrain, static, drawn and solid.
 fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     for solid in layout().0 {
         let (collider, mesh) = solid.collider_and_mesh();
-        commands.spawn((
+        let mut entity = commands.spawn((
             RigidBody::Static,
             collider,
             Friction::new(1.0),
@@ -500,6 +586,9 @@ fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
             MeshMaterial3d(materials.add(solid.color)),
             Transform::from_translation(solid.centre).with_rotation(solid.rotation),
         ));
+        if solid.furniture {
+            entity.insert(FootObstacle);
+        }
     }
 }
 
@@ -570,12 +659,27 @@ fn spawn_characters(mut commands: Commands, asset_server: Res<AssetServer>, conf
         // (`--ground flat`: the floor alone, for the bench).
         if !config.flat_ground {
             commands.entity(root).insert(PhysicsGround::default());
+            // And kept out of the furniture's legs.
+            if config.foot_obstacles {
+                commands.entity(root).insert(PhysicsObstacles::default());
+            }
         }
         // A character set up for a test (`--start`, `--plank`) keeps its
         // heading.
-        let under_test = i == 0 && (config.start.is_some() || config.plank.is_some());
+        let under_test = i == 0 && (config.start.is_some() || config.plank.is_some() || config.sit_at_table.is_some());
         if config.goals && !under_test {
             commands.entity(root).insert(Seeker::default());
+        }
+        // To the table, to sit: its own approach steers it (`approach`).
+        if i == 0
+            && let Some(index) = config.sit_at_table
+        {
+            commands.entity(root).insert(Walker {
+                speed: config.speed,
+                sit: Some(sitting::Sitting::Chair(sitting::ChairPose::Upright)),
+                chair: Some(dining_chair(index)),
+                ..default()
+            });
         }
     }
 }
@@ -740,6 +844,11 @@ fn turn_from_terrain(
     let rng = rng.get_or_insert_with(|| fastrand::Rng::with_seed(config.seed ^ 0xb0b));
     let terrain = SpatialQueryFilter::from_mask(TERRAIN_LAYER);
     for (mut walker, mut bouncer, state, transform) in &mut walkers {
+        // Going to sit, its approach steers it, round the chair and up to
+        // the table.
+        if walker.sit.is_some() {
+            continue;
+        }
         let yaw = state.facing.yaw;
         if let Some(target) = bouncer.turning_to {
             if angle_between(yaw, target) < 0.05 {

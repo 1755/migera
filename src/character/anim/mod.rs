@@ -56,6 +56,7 @@ pub mod foot;
 pub mod footlock;
 pub mod ground;
 pub mod obstacles;
+pub mod physics_obstacles;
 pub mod facing;
 pub mod gait;
 pub mod getup;
