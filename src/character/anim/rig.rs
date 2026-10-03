@@ -576,6 +576,48 @@ pub fn accumulate_world_rotations(pose: &LocalPose, rig: &RigGeometry) -> BoneSe
     accumulated
 }
 
+/// The pose delta that puts `bone` at `world`, given its parent's world
+/// rotation — the exact inverse of [`accumulate_world_rotations`]'
+/// composition:
+///
+/// ```text
+///   world = parent_world * bind_local * (B⁻¹ * delta * B)
+///   delta = B * ((parent_world * bind_local)⁻¹ * world) * B⁻¹
+/// ```
+///
+/// where `B` is the bone's accumulated bind rotation
+/// ([`accumulate_bind_rotations`]): a pose delta names a WORLD axis, and
+/// `B` is what converts it into the bone's frame.
+pub fn delta_from_world(bone: Bone, parent_world: Quat, world: Quat, rig: &RigGeometry, accumulated_bind: &BoneSet<Quat>) -> Quat {
+    let local = (parent_world * rig.bind_rotations[bone]).inverse() * world;
+    let bind = accumulated_bind[bone];
+    bind * local * bind.inverse()
+}
+
+/// `from` blended `t` of the way to `to` per bone in the WORLD, then turned
+/// back into local rotations: each segment takes the shortest way from
+/// where it is to where `to` has it. The root translation is blended
+/// linearly.
+///
+/// Blended locally instead, a limb rides its parents' swing as well as its
+/// own: getting up, sitting up flung an arm out sideways, palm up, on its
+/// way to the floor.
+pub fn blend_in_world(from: &LocalPose, to: &LocalPose, t: f32, rig: &RigGeometry) -> LocalPose {
+    use super::math::quat_ext::neighborhood;
+    let bind = accumulate_bind_rotations(rig);
+    let (a, b) = (accumulate_world_rotations(from, rig), accumulate_world_rotations(to, rig));
+    let mut world = BoneSet::splat(Quat::IDENTITY);
+    let mut out = *from;
+    for &bone in Bone::ALL.iter() {
+        world[bone] = a[bone].slerp(neighborhood(a[bone], b[bone]), t).normalize();
+        let parent_world = bone.parent().map_or(rig.root_rotation, |parent| world[parent]);
+        let local = delta_from_world(bone, parent_world, world[bone], rig, &bind);
+        out.rotations[bone] = neighborhood(from.rotations[bone], local).normalize();
+    }
+    out.root_translation = from.root_translation.lerp(to.root_translation, t);
+    out
+}
+
 /// One bone's world rotation from its parent's — THE composition, the only
 /// copy of it. [`accumulate_world_rotations`] applies it to every bone and
 /// [`offset_from`] to one chain; two copies of this drifted apart once (see

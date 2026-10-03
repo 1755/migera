@@ -25,7 +25,7 @@ use super::plugin::{AnimArmIk, AnimFootIk, AnimGround, AnimPose, AnimSet, Landin
 use super::rig::{LocalPose, RigGeometry};
 use super::stance::{stance_on, stance_on_rig, DEFAULT_KNEE_FLEX};
 use super::walk_balance::{self, WalkBalance};
-use super::{balance, facing, locomotion, lookat, poses, transition};
+use super::{approach, balance, facing, locomotion, lookat, poses, sitting, transition};
 use super::{AnimPhaseLayer, AnimSprings, AnimTarget, AnimTargetAsset, Ragdoll, RagdollSet, FALL_DAMPING, FALL_TONE};
 use crate::character::{Bone, HumanoidSkeleton};
 
@@ -98,6 +98,15 @@ pub struct Walker {
     pub fall_damping: f32,
     /// How long a fallen walker lies still before getting up, seconds.
     pub getup_delay: f32,
+    /// Sit down this way (`sitting`), or stand up again (`None`). A walking
+    /// character stops first; a seated one asked to sit another way stands
+    /// up first.
+    pub sit: Option<sitting::Sitting>,
+    /// The seat height of the chair it sits on where it stands, metres.
+    pub chair_height: f32,
+    /// A chair to sit on, sitting a chair's way: it walks there and turns
+    /// round first (`approach`). `None` sits where it stands.
+    pub chair: Option<approach::Chair>,
 }
 
 impl Default for Walker {
@@ -112,8 +121,129 @@ impl Default for Walker {
             fall_now: false,
             fall_damping: FALL_DAMPING,
             getup_delay: 1.0,
+            sit: None,
+            chair_height: sitting::CHAIR_HEIGHT,
+            chair: None,
         }
     }
+}
+
+/// Whether a walker stands, sits, or is moving between the two.
+#[derive(Debug, Clone, Default)]
+pub enum Posture {
+    #[default]
+    Standing,
+    /// Going through `keys` from `from`, `elapsed` seconds in, sitting `how`:
+    /// down (`down`) ends seated; up ends with a last blend into the
+    /// standing pose over `stand_seconds`.
+    Moving { from: LocalPose, keys: Vec<sitting::SitKey>, elapsed: f32, how: sitting::Sitting, down: bool, stand_seconds: f32 },
+    /// Sitting `how`, in `pose`.
+    Seated { how: sitting::Sitting, pose: LocalPose },
+}
+
+impl Posture {
+    /// Whether it stands (not seated, nor on its way).
+    pub fn is_standing(&self) -> bool {
+        matches!(self, Posture::Standing)
+    }
+
+    /// Whether it sits, or is sitting down or standing up, on a chair.
+    pub fn on_chair(&self) -> bool {
+        match self {
+            Posture::Standing => false,
+            Posture::Seated { how, .. } | Posture::Moving { how, .. } => how.on_chair(),
+        }
+    }
+
+    /// Advances it by `dt` toward what `wanted` asks, and returns the pose
+    /// to draw if not standing, with which feet stay planted. `stood` is the
+    /// standing pose (where standing up ends); `ready` whether a walker
+    /// standing may start sitting (stopped).
+    pub fn advance(
+        &mut self,
+        wanted: Option<sitting::Sitting>,
+        chair: sitting::Seat,
+        stood: &LocalPose,
+        rig: &RigGeometry,
+        ready: bool,
+        dt: f32,
+    ) -> Option<(LocalPose, [bool; 2])> {
+        // Start a move if asked to.
+        match (&*self, wanted) {
+            // The keys refined once, as the move starts (`sitting::refined`).
+            (Posture::Standing, Some(how)) if ready => {
+                let keys = sitting::refined(stood, sitting::sitting_down(how, rig, stood, chair), rig);
+                *self = Posture::Moving { from: *stood, keys, elapsed: 0.0, how, down: true, stand_seconds: 0.0 };
+            }
+            (Posture::Seated { how, pose }, wanted) if wanted != Some(*how) => {
+                // Up, the last move is into the standing pose.
+                let mut keys = sitting::standing_up(*how, rig, stood, chair);
+                keys.push(sitting::SitKey { pose: *stood, seconds: sitting::stand_seconds(*how) });
+                let keys = sitting::refined(pose, keys, rig);
+                *self = Posture::Moving { from: *pose, keys, elapsed: 0.0, how: *how, down: false, stand_seconds: 0.0 };
+            }
+            _ => {}
+        }
+        match self {
+            Posture::Standing => None,
+            Posture::Seated { pose, .. } => Some((*pose, feet_down(pose, pose, rig))),
+            Posture::Moving { from, keys, elapsed, how, down, .. } => {
+                *elapsed += dt;
+                let mut left = *elapsed;
+                let mut previous = *from;
+                for (pose, seconds) in keys.iter().map(|key| (key.pose, key.seconds)) {
+                    if left < seconds {
+                        let t = (left / seconds).clamp(0.0, 1.0);
+                        let eased = t * t * (3.0 - 2.0 * t);
+                        let planted = feet_down(&previous, &pose, rig);
+                        let mut blended = super::rig::blend_in_world(&previous, &pose, eased, rig);
+                        // The root carried so the planted feet stay exactly
+                        // where both keys have them: the rotations swing
+                        // while the root moves straight, and between two keys
+                        // with the feet in one place they slid up to 82 mm
+                        // standing up from a chair, and dipped 27 mm into
+                        // the floor sitting down.
+                        // Each held where the two keys have it, between them
+                        // as the blend goes: held where the first key had it,
+                        // a foot "planted" within 3 cm ended its segment up to
+                        // 3 cm off the next key, and the body jumped there.
+                        let at = super::rig::forward_kinematics_on(&blended, rig);
+                        let (was, will) = (super::rig::forward_kinematics_on(&previous, rig), super::rig::forward_kinematics_on(&pose, rig));
+                        let feet = [Bone::LeftFoot, Bone::RightFoot];
+                        let held: Vec<Vec3> = feet
+                            .iter()
+                            .zip(planted)
+                            .filter(|(_, down)| *down)
+                            .map(|(&foot, _)| was[foot].lerp(will[foot], eased) - at[foot])
+                            .collect();
+                        if !held.is_empty() {
+                            blended.root_translation += held.iter().sum::<Vec3>() / held.len() as f32;
+                        }
+                        return Some((sitting::clear_floor(blended, rig), planted));
+                    }
+                    left -= seconds;
+                    previous = pose;
+                }
+                // Through every key.
+                let last = previous;
+                *self = if *down { Posture::Seated { how: *how, pose: last } } else { Posture::Standing };
+                match self {
+                    Posture::Standing => None,
+                    _ => Some((last, feet_down(&last, &last, rig))),
+                }
+            }
+        }
+    }
+}
+
+/// Which feet (left, right) stay planted from `from` to `to`: those on the
+/// floor in both that move less than 3 cm between them.
+fn feet_down(from: &LocalPose, to: &LocalPose, rig: &RigGeometry) -> [bool; 2] {
+    let (a, b) = (super::rig::forward_kinematics_on(from, rig), super::rig::forward_kinematics_on(to, rig));
+    [Bone::LeftFoot, Bone::RightFoot].map(|foot| {
+        let low = |pose: &LocalPose| super::getup::contact_height(pose, rig, super::getup::Contact::Foot(foot)) < 0.03;
+        a[foot].distance(b[foot]) < 0.03 && low(from) && low(to)
+    })
 }
 
 impl Walker {
@@ -141,6 +271,16 @@ pub struct WalkerState {
     pub transition: transition::Transition,
     pub look: lookat::LookAt,
     pub stride: Stride,
+    /// Standing, sitting, or on the way between ([`Walker::sit`]).
+    pub posture: Posture,
+    /// The walk to [`Walker::chair`], and the chair with the spot it walks
+    /// to.
+    pub approach: approach::Approach,
+    pub seat: Option<(approach::Chair, Vec3)>,
+    pub walked: Walked,
+    /// How far past its spot, away from the chair, the walk stopped: the
+    /// seat's [`sitting::Seat::back`], held from sitting down to standing.
+    pub sit_back: f32,
     /// The stride the current gait really takes, keyed by its speed and
     /// whether the real rig has bound: measuring it costs a cycle of
     /// root-motion samples, so it is redone only when either changes.
@@ -156,7 +296,68 @@ impl WalkerState {
             transition: Default::default(),
             look: lookat::LookAt::forward(),
             stride: Default::default(),
+            posture: Posture::Standing,
+            approach: approach::Approach::Idle,
+            seat: None,
+            walked: Walked::default(),
+            sit_back: 0.0,
             measured: None,
+        }
+    }
+}
+
+/// The last whole step a walk took at one speed, measured from footfall to
+/// footfall: what its next step at that speed will cover. The stride the
+/// gait computes is a straight walk's; on the tight circle a walk turns
+/// round on before a chair, the body moved ~82 % of it, and a stop timed by
+/// it fell 15 cm short. A decayed average over recent frames was no
+/// better: the sprung legs lag a change of speed, and just after slowing it
+/// read 120 %.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Walked {
+    /// The distance moved since the last footfall, and at what speed, if
+    /// that speed held.
+    since: f32,
+    speed: f32,
+    steady: bool,
+    cycle: f32,
+    position: Vec3,
+    /// The last step measured: its length and speed.
+    step: Option<(f32, f32)>,
+}
+
+impl Walked {
+    /// Adds the frame from the last: the root now at `position`, the clock
+    /// at `cycle` (a footfall each half), the legs stepping at `speed`.
+    fn update(&mut self, position: Vec3, cycle: f32, speed: f32) {
+        let flat = |v: Vec3| Vec2::new(v.x, v.z);
+        let moved = flat(position - self.position).length();
+        // A jump (a teleport) is not walking.
+        if moved < 0.5 {
+            self.since += moved;
+        }
+        if speed != self.speed {
+            self.steady = false;
+        }
+        let footfall = |cycle: f32| (cycle * 2.0).floor();
+        if speed <= 0.0 {
+            self.step = None;
+        } else if footfall(cycle) != footfall(self.cycle) {
+            if self.steady {
+                self.step = Some((self.since, speed));
+            }
+            (self.since, self.speed, self.steady) = (0.0, speed, true);
+        }
+        self.cycle = cycle;
+        self.position = position;
+    }
+
+    /// The stride a walk at `speed` covers: two of the last steps measured,
+    /// grown or shrunk with the speed as the gait's are; else `geometric`.
+    fn stride(&self, speed: f32, geometric: f32) -> f32 {
+        match self.step {
+            Some((length, at)) if at > 0.0 && speed > 0.0 => 2.0 * length * (speed / at).powf(0.65),
+            _ => geometric,
         }
     }
 }
@@ -261,6 +462,66 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // is in fractions of THIS rig's leg.
         let gait_rig = foot_ik.rig.clone().unwrap_or_default();
 
+        // Asked to sit on a chair elsewhere: walk to it and turn round first
+        // (`approach`), overriding the speed and steering asked for. Its spot
+        // is solved once per chair.
+        let fallen = ragdoll.is_some_and(Ragdoll::is_falling);
+        let (mut wanted_speed, mut steer, mut arrived, mut look_at) = (walker.speed, walker.steer, true, walker.look_at);
+        match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
+            (Some(how), Some(chair), Some(rig)) if how.on_chair() && state.posture.is_standing() && !fallen => {
+                // Headings are the walking direction's, the rig's own
+                // forward turned by the facing.
+                let ahead = approach::heading_of(rig.forward());
+                let facing_yaw = approach::heading_of(chair.forward) - ahead;
+                if state.seat.is_none_or(|(was, _)| was != chair) {
+                    let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
+                    let spot = approach::stand_spot(&chair, rig, &stood, Quat::from_rotation_y(facing_yaw));
+                    state.seat = Some((chair, spot));
+                    state.approach = approach::Approach::Idle;
+                }
+                let spot = state.seat.map_or(Vec3::ZERO, |(_, spot)| spot);
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                // Where its stop can land: the gait clock and the stride its
+                // current speed measured last frame.
+                let walking = state.transition.weight > 0.0;
+                let speed_now = if walking { state.transition.stride_speed } else { 0.0 };
+                state.walked.update(state.locomotion.position, cycle_of(&phase), speed_now);
+                let gait = approach::Gait {
+                    cycle: cycle_of(&phase),
+                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, distance)| distance)),
+                    speed: speed_now,
+                    stopped: !walking && state.transition.is_at_rest(),
+                };
+                let order = state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, facing_yaw + ahead, speed);
+                match order {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        // The sitting starts this frame. Its seat goes as
+                        // much further back as the walk stopped past its
+                        // spot; across, it sits that far off the middle.
+                        let off = state.locomotion.position - spot;
+                        state.sit_back = off.dot(chair.forward.normalize_or_zero()).clamp(-sitting::SEAT_BACK_RANGE, sitting::SEAT_BACK_RANGE);
+                        info!("walker: at the chair, {:.0} mm off its spot, {:+.0} mm along", Vec2::new(off.x, off.z).length() * 1e3, state.sit_back * 1e3);
+                        steer = Steer::Straight;
+                    }
+                }
+                // It looks at the chair on the way, until it turns round.
+                if matches!(state.approach, approach::Approach::Walking { on_arc: false, .. }) && look_at.is_none() {
+                    look_at = Some(chair.seat + Vec3::Y * chair.height);
+                }
+            }
+            _ if state.posture.is_standing() => {
+                state.approach = approach::Approach::Idle;
+                state.seat = None;
+            }
+            _ => {}
+        }
+
         // The transition first: it decides the speed the legs step at, which
         // through a stop's last step is the walk's, not the zero asked for
         // (Winter §11.3.3). Standing, it is told how the idle carries its
@@ -293,7 +554,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Fallen or getting up, it asks for no speed, and starts walking
         // again from a stand once up: walking on, the gait's root motion
         // carried the rising body forward 1.7-2.9 m, sliding.
-        let asked = if ragdoll.is_some_and(Ragdoll::is_falling) { 0.0 } else { walker.speed + walk_balance.surge };
+        // Seated, sitting down or asked to, it asks no speed either: it stops
+        // first, and stands up before it walks again.
+        // Walking to a chair, it walks.
+        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived);
+        let asked = if still { 0.0 } else { wanted_speed + walk_balance.surge };
         let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
         let speed = state.transition.stride_speed;
 
@@ -363,7 +628,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // sway runs only at rest, eased back in after a stop (switched on
         // at once it ticked the pelvis 6 mm sideways in a frame).
         let mut wanted = PhaseLayer::between(&PhaseLayer::standing_idle(), &PhaseLayer::locomotion(), weight);
-        if !state.transition.is_at_rest() {
+        // Sitting, no standing weight shift: it breathes.
+        if !state.transition.is_at_rest() || !state.posture.is_standing() {
             wanted.sway = None;
         } else if let Some(sway) = wanted.sway.as_mut() {
             const SETTLE_SECONDS: f32 = 1.5;
@@ -451,10 +717,41 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         {
             target.pose = rendered(cycle);
         }
+        // Sitting, sitting down or standing up: the posture's pose instead
+        // (`sitting`), its legs as solved on its own contacts, untouched by
+        // the leg IK. It starts only once stopped.
+        let mut legs_free = false;
+        if let Some(rig) = foot_ik.rig.clone() {
+            let ready = weight <= 0.0 && state.transition.is_at_rest() && arrived;
+            // The seat as the walk to it left it (`sit_seat`), else one
+            // where it stands.
+            let seat = match walker.chair {
+                Some(chair) => sitting::Seat { height: chair.height, back: state.sit_back },
+                None => sitting::Seat::at(walker.chair_height),
+            };
+            if let Some((pose, planted)) = state.posture.advance(walker.sit, seat, &stood, &rig, ready, time.delta_secs()) {
+                target.pose = pose;
+                foot_ik.planted = planted;
+                foot_ik.landing = None;
+                // With both feet down the locks hold them against the
+                // springs' lag (on a chair 21-24 mm without them; a squat's
+                // toes 29 mm into the floor) and the legs stay in their
+                // planes. Seated on the floor, free: the leg IK keeps each
+                // knee in its leg's plane, and a cross-legged knee is not.
+                // Kneeling, the feet stand on tucked toes, which the foot IK
+                // (built for a flat foot) drove 47 mm into the floor.
+                let floor_seated = matches!(state.posture, Posture::Seated { how, .. } if !how.on_chair());
+                let kneeling = matches!(state.posture, Posture::Seated { how, .. } | Posture::Moving { how, .. } if how == sitting::Sitting::Floor(sitting::FloorPose::Kneeling));
+                legs_free = !(planted[0] && planted[1]) || floor_seated || kneeling;
+            }
+        }
+        if foot_ik.legs_free != legs_free {
+            foot_ik.legs_free = legs_free;
+        }
 
         // The look, composed after the gait, independent of it.
         // Retargeted in place, so the look eases from where it is.
-        state.look.target = walker.look_at;
+        state.look.target = look_at;
         if let Some(direction) = state.look.advance(
             lookat::head_position(&target.pose, &RigGeometry::default()) + root.translation,
             state.facing.rotation(),
@@ -469,7 +766,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // the real rig) it sent the hand to the wrong side of the body.
         arm_ik.left = walker.reach;
 
-        match walker.steer {
+        match steer {
             Steer::Straight => {}
             // A steady circle: always a quarter turn ahead.
             Steer::Circle(rate) if rate != 0.0 => {

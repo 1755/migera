@@ -41,6 +41,76 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walking to a chair, turning round, and sitting on it
+
+- **`approach.rs`:** given `Walker::chair`, the walker walks a Dubins path
+  to the spot in front of the chair.
+  - Straight, then round a 0.25 m circle at 0.5 m/s: a 180° turn in
+    ~1.6 s and ~2.5 steps (Robinson 2018: 1.5 s median).
+  - It looks at the chair on the way, and walks out first when too close
+    to turn onto the spot.
+- **The stop is paced.** A stop can only end a footfall plus a last step
+  on (half strides, 0.39 m apart); stopped at the nearest, it stood up to
+  0.29 m off.
+  - Over the last 1.5 m the speed is set so a footfall's stop lands on
+    the spot (Lee, Lishman & Thomson 1982).
+  - The stride is measured from whole steps walked (`walker::Walked`):
+    the gait's straight-walk stride was 5–18 % off on the circle.
+- **`sitting::Seat::back`:** the shins swing to put the hips on the seat
+  however far (up to ±12 cm) the walk stopped short or past.
+- **Gallery:**
+  - `--chair X,Z,HEADING` (default `-1.5,-1.5,180`; `here` sits in place);
+  - `--step-seconds S`: a fixed clock step, for offscreen runs on a
+    software renderer.
+- **Tests:**
+  - a point walk that stops like the transition lands within 4 cm, from
+    five starts at four stride phases (it fails with the pacing off);
+  - a seat moved back or forward keeps the feet and the seat height.
+- **Live, three placements:**
+  - stopped 28–103 mm off the spot;
+  - seated hips on the seat in depth, 26–43 mm off its middle across;
+  - feet slid ≤ 4 mm while sitting, nothing under the floor.
+- **Known:** after the rise, the right foot settles 11 mm sideways.
+- **Gap:** no routing round the chair from behind.
+- See [the note](./docs/knowledge/character-animation/ik-and-locomotion/walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md).
+- `cargo test --release --lib`: 1117 passed. Clippy: 0 warnings.
+
+### Sitting on a chair and on the floor, and standing up
+
+- **`sitting.rs`:** each pose solved on its contacts:
+  - chair (0.45 m): upright, reclined, legs crossed, leaning forward;
+  - floor: cross-legged, propped, hugging the knees, side-sit, kneeling.
+- **`Walker::sit`:** sits or stands through keys (`walker::Posture`).
+  - **Chair rise:** timed to Schenkman's phases and the measured 1.9 s
+    (28/18/54 %), feet where the character stood.
+  - **Floor:** down by the get-up's squat and propped sit, kneeling by a
+    half-kneel and a tall kneel.
+  - **Gallery:** `--sit NAME --sit-at S --stand-at S`, Sit/Stand buttons,
+    and a chair spawned under the seated hips.
+- **Shared:** `rig::blend_in_world` (from the get-up's rise) and
+  `AnimFootIk::legs_free`.
+- **Fixed on the way:**
+  - The leg IK flattened cross-legged knees (now free when the legs
+    leave their planes).
+  - Blends swept feet 253–348 mm through the floor. Now static keys laid
+    and refined so feet go straight, plus a smooth lift.
+  - Per-frame foot turns and leg solves popped (5.9 m/s, 35 cm, 260 mm).
+    Removed.
+  - Sprung toes trailed 47 mm under (the sprung pose is now lifted).
+  - Rigid tucked toes went 71 mm under (bent onto the floor now).
+  - A root jumped up to 3 cm between keys (held feet now move with the
+    blend).
+- **Tests:** contacts and floor on both rigs, the chair's feet and seat,
+  the knee angle, the 1.9 s rise, and every cycle at 60 Hz (≤ 6 mm under,
+  < 60 mm a frame).
+- **Live, every cycle:**
+  - lowest point ≥ 0 (chair ≥ +15 mm);
+  - fastest joint 1.1 m/s on the chair, ≤ 3.4 m/s on the floor (the arm
+    swung forward to rise);
+  - chair feet 0 mm off where it stood.
+- See [the note](./docs/knowledge/character-animation/ik-and-locomotion/sitting-down-and-standing-up-go-through-solved-keys.md).
+- `cargo test --release --lib`: 1111 passed. Clippy: 0 warnings.
+
 ### A falling body keeps its passive joint tone
 
 - **The fall was a puppet's:** no tone and uniform damping only, so limbs

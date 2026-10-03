@@ -45,6 +45,7 @@
 //! deltas needs exactly that, unchanged.
 
 pub mod anthropometry;
+pub mod approach;
 pub mod armik;
 pub mod asset;
 pub mod balance;
@@ -84,6 +85,7 @@ pub mod ragdoll_plugin;
 pub mod reference;
 pub mod retarget;
 pub mod rig;
+pub mod sitting;
 pub mod stance;
 pub mod transition;
 pub mod walk;

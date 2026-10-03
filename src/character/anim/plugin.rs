@@ -160,6 +160,11 @@ pub struct AnimFootIk {
     /// Added to the animated toe before the lock and the ground see it, so
     /// a displaced foot locks, grounds and releases where it really is.
     pub displaced: [Vec3; 2],
+    /// Leave the legs as the pose has them: no foot locks, leg IK or pelvis
+    /// drop. For a pose solved on its own contacts (`sitting`): the leg IK
+    /// keeps each knee in its leg's plane, so a cross-legged pose's knees,
+    /// turned 55° out, came back pointing straight ahead.
+    pub legs_free: bool,
 }
 
 /// A foot being set down onto a spot. See [`AnimFootIk::landing`].
@@ -715,6 +720,24 @@ fn solve_foot_ik(
 
         let mut solved = pose.pose();
         let pelvis_config = foot_ik.pelvis;
+
+        // Legs posed as authored, untouched (`AnimFootIk::legs_free`); the
+        // locks let go, so a stand begins with them afresh.
+        if foot_ik.legs_free {
+            foot_ik.left = Default::default();
+            foot_ik.right = Default::default();
+            foot_ik.pelvis_drop = 0.0;
+            // The sprung pose lifted clear of the floor: the posed one is
+            // (`sitting::clear_floor`), but a foot turning fast near the
+            // floor trails it, and kneeling down a toe tip went 47 mm under.
+            let under = -super::sitting::lowest_point(&solved, &rig);
+            if under > 0.0 {
+                solved.root_translation.y += under;
+            }
+            foot_ik.corrected = Some(solved);
+            foot_ik.rig = Some(rig);
+            continue;
+        }
 
         // Where the ANIMATION puts each toe, sampled once before any IK
         // runs. Both the ground query and the lock read from this.

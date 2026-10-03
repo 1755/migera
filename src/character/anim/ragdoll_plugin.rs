@@ -1018,19 +1018,10 @@ fn read_back_simulated_pose(
             let lying = displayed;
             let from = if segment == 0 { lying } else { keys[segment - 1].pose };
             let to = keys.get(segment).map_or(animated, |key| key.pose);
-            let (a, b) = (super::rig::accumulate_world_rotations(&from, &rig), super::rig::accumulate_world_rotations(&to, &rig));
-            let mut world = BoneSet::splat(Quat::IDENTITY);
-            for &bone in Bone::ALL.iter() {
-                world[bone] = a[bone].slerp(neighborhood(a[bone], b[bone]), t).normalize();
-                let parent_world = bone.parent().map_or(rig.root_rotation, |parent| world[parent]);
-                let local = delta_from_world(bone, parent_world, world[bone], &rig, &accumulated_bind);
-                displayed.rotations[bone] = neighborhood(from.rotations[bone], local).normalize();
+            displayed = super::rig::blend_in_world(&from, &to, t, &rig);
+            if segment == 0 {
+                displayed.root_translation = to.root_translation;
             }
-            displayed.root_translation = if segment == 0 {
-                to.root_translation
-            } else {
-                from.root_translation.lerp(to.root_translation, t)
-            };
             // Which feet and hands move from one pose to the other: only
             // those may be tucked (`tuck_foot`). A planted foot stays
             // planted, the body lifted over it if the blend dips it: tucked,
@@ -1599,27 +1590,7 @@ fn joint_targets(pose: &LocalPose, rig: &RigGeometry) -> BoneSet<Quat> {
     super::rig::accumulate_world_rotations(pose, rig)
 }
 
-/// The pose delta that puts `bone` at `world`, given its parent's world
-/// rotation — the exact inverse of [`joint_targets`]' composition.
-///
-/// ```text
-///   world = parent_world * bind_local * (B⁻¹ * delta * B)
-///   delta = B * ((parent_world * bind_local)⁻¹ * world) * B⁻¹
-/// ```
-///
-/// where `B` is the bone's accumulated bind rotation: a pose delta names a
-/// WORLD axis, and `B` is what converts it into the bone's frame.
-fn delta_from_world(
-    bone: Bone,
-    parent_world: Quat,
-    world: Quat,
-    rig: &RigGeometry,
-    accumulated_bind: &BoneSet<Quat>,
-) -> Quat {
-    let local = (parent_world * rig.bind_rotations[bone]).inverse() * world;
-    let bind = accumulated_bind[bone];
-    bind * local * bind.inverse()
-}
+use super::rig::delta_from_world;
 
 /// Reads a skeleton's real geometry, the same way the IK stage does — but
 /// rooted in the WORLD as the character stands this frame.

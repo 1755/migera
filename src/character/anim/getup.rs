@@ -104,7 +104,7 @@ pub fn keys(lying: Lying, rig: &RigGeometry) -> Vec<GetUpKey> {
 }
 
 /// `pose` moved along the rig's forward until `bone` is level with `at`.
-fn placed(mut pose: LocalPose, rig: &RigGeometry, bone: Bone, at: bevy::math::Vec3) -> LocalPose {
+pub(crate) fn placed(mut pose: LocalPose, rig: &RigGeometry, bone: Bone, at: bevy::math::Vec3) -> LocalPose {
     let forward = rig.forward();
     let off = (forward_kinematics_on(&pose, rig)[bone] - at).dot(forward);
     pose.root_translation -= forward * off;
@@ -114,9 +114,9 @@ fn placed(mut pose: LocalPose, rig: &RigGeometry, bone: Bone, at: bevy::math::Ve
 /// How far a contact's joint sits above the floor when it bears weight,
 /// metres. Choices, from the flesh around each joint: a knee on the floor,
 /// a palm under the wrist, the seat under the hip joint.
-const KNEE_CLEARANCE: f32 = 0.05;
-const HAND_CLEARANCE: f32 = 0.03;
-const SEAT_CLEARANCE: f32 = 0.10;
+pub(crate) const KNEE_CLEARANCE: f32 = 0.05;
+pub(crate) const HAND_CLEARANCE: f32 = 0.03;
+pub(crate) const SEAT_CLEARANCE: f32 = 0.10;
 
 /// A joint that touches the floor in a key.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,19 +208,19 @@ pub fn contact_height(pose: &LocalPose, rig: &RigGeometry, contact: Contact) -> 
 }
 
 /// Sets `pose` down so its lowest contact touches the floor.
-fn set_down(pose: &mut LocalPose, rig: &RigGeometry, contacts: &[Contact]) {
+pub(crate) fn set_down(pose: &mut LocalPose, rig: &RigGeometry, contacts: &[Contact]) {
     let lowest = contacts.iter().map(|&c| contact_height(pose, rig, c)).fold(f32::MAX, f32::min);
     pose.root_translation.y -= lowest;
 }
 
 /// A rotation about the rig's `left` by `degrees`.
-fn about_left(rig: &RigGeometry, degrees: f32) -> Quat {
+pub(crate) fn about_left(rig: &RigGeometry, degrees: f32) -> Quat {
     Quat::from_axis_angle(rig.left(), degrees.to_radians())
 }
 
 /// The product of the deltas from the root down to `bone`: the world turn
 /// everything below it rides.
-fn carried(pose: &LocalPose, bone: Bone) -> Quat {
+pub(crate) fn carried(pose: &LocalPose, bone: Bone) -> Quat {
     let mut chain = Vec::new();
     let mut walker = Some(bone);
     while let Some(current) = walker {
@@ -233,7 +233,7 @@ fn carried(pose: &LocalPose, bone: Bone) -> Quat {
 /// Points both arms: each hangs straight down, then swings forward by
 /// `forward_degrees` (negative: back), in the WORLD, whatever the trunk
 /// above it has done. Elbows straight.
-fn hang_arms(pose: &mut LocalPose, rig: &RigGeometry, forward_degrees: f32) {
+pub(crate) fn hang_arms(pose: &mut LocalPose, rig: &RigGeometry, forward_degrees: f32) {
     let forward = rig.forward();
     for (arm, down) in [(Bone::LeftArm, -1.0), (Bone::RightArm, 1.0)] {
         // Down from the T-pose: the left arm (along +left) turns about
@@ -248,7 +248,7 @@ fn hang_arms(pose: &mut LocalPose, rig: &RigGeometry, forward_degrees: f32) {
 /// world, whatever its parents have done (`carried`). `rest` is the rig's
 /// joints in its rest pose. For segments no sagittal angle describes: a
 /// leg folded to the side.
-fn aim(pose: &mut LocalPose, rest: &super::rig::BoneSet<Vec3>, bone: Bone, child: Bone, direction: Vec3) {
+pub(crate) fn aim(pose: &mut LocalPose, rest: &super::rig::BoneSet<Vec3>, bone: Bone, child: Bone, direction: Vec3) {
     let from = (rest[child] - rest[bone]).normalize();
     let world = Quat::from_rotation_arc(from, direction.normalize());
     let above = bone.parent().map_or(Quat::IDENTITY, |parent| carried(pose, parent));
@@ -294,7 +294,7 @@ fn rest_palm(rig: &RigGeometry, hand: Bone) -> Vec3 {
 /// turn about the arm's own line (pronation or supination) is shared
 /// between the shoulder and the forearm, and the hand only bends back
 /// (extends) from there. The wrist joint does not move.
-fn palm_flat(pose: &mut LocalPose, rig: &RigGeometry, hand: Bone, fingers: Vec3) {
+pub(crate) fn palm_flat(pose: &mut LocalPose, rig: &RigGeometry, hand: Bone, fingers: Vec3) {
     let forearm = hand.parent().expect("a hand hangs from its forearm");
     let arm = forearm.parent().expect("a forearm hangs from its arm");
     let fingers = Vec3::new(fingers.x, 0.0, fingers.z).normalize();    let at =forward_kinematics_on(pose, rig);
@@ -321,24 +321,24 @@ fn palm_flat(pose: &mut LocalPose, rig: &RigGeometry, hand: Bone, fingers: Vec3)
 }
 
 /// `a` turned toward `b` by `degrees` (both unit and at right angles).
-fn toward(a: Vec3, b: Vec3, degrees: f32) -> Vec3 {
+pub(crate) fn toward(a: Vec3, b: Vec3, degrees: f32) -> Vec3 {
     let r = degrees.to_radians();
     a * r.cos() + b * r.sin()
 }
 
 /// A sagittal leg: hip, knee and ankle angles about `left`, degrees.
-fn leg(pose: &mut LocalPose, rig: &RigGeometry, [hip, knee, ankle]: [Bone; 3], angles: [f32; 3]) {
+pub(crate) fn leg(pose: &mut LocalPose, rig: &RigGeometry, [hip, knee, ankle]: [Bone; 3], angles: [f32; 3]) {
     pose.set_rotation(hip, about_left(rig, angles[0]));
     pose.set_rotation(knee, about_left(rig, angles[1]));
     pose.set_rotation(ankle, about_left(rig, angles[2]));
 }
 
-const LEFT_LEG: [Bone; 3] = [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot];
-const RIGHT_LEG: [Bone; 3] = [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot];
+pub(crate) const LEFT_LEG: [Bone; 3] = [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot];
+pub(crate) const RIGHT_LEG: [Bone; 3] = [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot];
 
 /// The value in `range` where `f` crosses zero, by bisection; `f` must
 /// change sign across the range, else the nearer end.
-fn solve(range: (f32, f32), f: impl Fn(f32) -> f32) -> f32 {
+pub(crate) fn solve(range: (f32, f32), f: impl Fn(f32) -> f32) -> f32 {
     let (mut low, mut high) = range;
     let (f_low, f_high) = (f(low), f(high));
     if f_low.signum() == f_high.signum() {

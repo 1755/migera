@@ -33,6 +33,7 @@ use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
 use migera::character::anim::plugin::{AnimFootIk, AnimGround};
 use migera::character::anim::walker;
+use migera::character::anim::{approach, sitting};
 use avian3d::prelude::PhysicsPlugins;
 use migera::character::anim::{
     spawn_gltf_humanoid, spawn_ragdoll, AnimPlugin, AnimRagdollPlugin, AnimSprings, AnimTarget, HumanoidPlugin,
@@ -613,6 +614,7 @@ fn controls_panel(
     mut gizmos_cfg: ResMut<DebugGizmos>,
     mut camera_cfg: ResMut<CameraConfig>,
     mut idle_cfg: ResMut<AnimIdleConfig>,
+    mut sit: ResMut<SitConfig>,
     mut characters: Query<(&mut AnimTarget, &mut AnimSprings)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -672,6 +674,21 @@ fn controls_panel(
                     if ui.button(label).clicked() {
                         target.pose = pose();
                     }
+                }
+            });
+
+            // Sitting down, and standing up again: each button sits that
+            // way (standing up first if seated another way).
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Sit:");
+                for how in sitting::Sitting::ALL {
+                    if ui.button(how.name()).clicked() {
+                        sit.choice = Some(how);
+                        sit.live = Some(true);
+                    }
+                }
+                if ui.button("Stand").clicked() {
+                    sit.live = Some(false);
                 }
             });
 
@@ -1065,17 +1082,161 @@ fn follow_speed_schedule(time: Res<Time>, schedule: Res<SpeedSchedule>, mut idle
 /// ask: the speed and turn (`--anim-speed`, the slider, the speed
 /// schedule, `--anim-turn`), the look and reach, and the pushes due. The
 /// walk itself is `character::anim::walker`'s.
-fn steer_the_walker(time: Res<Time>, idle: Res<AnimIdleConfig>, mut pushes: ResMut<PushSchedule>, mut walkers: Query<&mut Walker>) {
+fn steer_the_walker(
+    time: Res<Time>,
+    idle: Res<AnimIdleConfig>,
+    mut pushes: ResMut<PushSchedule>,
+    sit: Res<SitConfig>,
+    mut walkers: Query<&mut Walker>,
+) {
     let due = pushes.due(time.elapsed_secs());
+    let sitting = sit.wanted(time.elapsed_secs());
     for mut walker in &mut walkers {
         walker.speed = idle.speed;
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
+        walker.sit = sitting;
+        walker.chair_height = sitting::CHAIR_HEIGHT;
+        walker.chair = sit.chair;
         for &push in &due {
             walker.push(push);
         }
     }
+}
+
+/// Sitting: `--sit chair:upright|chair:reclined|chair:crossed|chair:forward|
+/// floor:cross_legged|floor:propped|floor:hug|floor:side|floor:kneeling`
+/// sits down `--sit-at SECONDS` in (default 1) and stands up again at
+/// `--stand-at SECONDS`, if given. The panel's Sit buttons do it live.
+///
+/// A chair's way, it walks to the chair at `--chair X,Z,HEADING` (the floor
+/// point under the seated hips, and the way a seated person faces, degrees
+/// about +Y from -Z; default `-1.5,-1.5,180`, facing the camera) and turns
+/// round to sit on it. `--chair here` sits where it stands instead, the
+/// chair put under it.
+#[derive(Resource, Debug, Clone)]
+struct SitConfig {
+    /// The way of sitting the schedule or the panel last chose.
+    choice: Option<sitting::Sitting>,
+    sit_at: f32,
+    stand_at: Option<f32>,
+    /// Set by the panel: sit `choice` now (`Some(true)`), stand (`Some(false)`),
+    /// or follow the schedule (`None`).
+    live: Option<bool>,
+    /// The chair to walk to; `None` sits where it stands.
+    chair: Option<approach::Chair>,
+}
+
+impl SitConfig {
+    fn from_args() -> Self {
+        let chair = |x: f32, z: f32, heading: f32| approach::Chair {
+            seat: Vec3::new(x, 0.0, z),
+            forward: approach::direction_of(heading.to_radians()),
+            height: sitting::CHAIR_HEIGHT,
+        };
+        let mut config = Self { choice: None, sit_at: 1.0, stand_at: None, live: None, chair: Some(chair(-1.5, -1.5, 180.0)) };
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--sit" => config.choice = args.next().and_then(|name| sitting::Sitting::by_name(&name)),
+                "--sit-at" => config.sit_at = args.next().and_then(|v| v.parse().ok()).unwrap_or(config.sit_at),
+                "--stand-at" => config.stand_at = args.next().and_then(|v| v.parse().ok()),
+                "--chair" => {
+                    let value = args.next().unwrap_or_default();
+                    let numbers: Vec<f32> = value.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    config.chair = match numbers[..] {
+                        [x, z, heading] => Some(chair(x, z, heading)),
+                        _ => None,
+                    };
+                }
+                _ => {}
+            }
+        }
+        config
+    }
+
+    /// How the walker should sit at `elapsed` seconds, if at all.
+    fn wanted(&self, elapsed: f32) -> Option<sitting::Sitting> {
+        let sitting = match self.live {
+            Some(sit) => sit,
+            None => elapsed >= self.sit_at && self.stand_at.is_none_or(|stand| elapsed < stand),
+        };
+        self.choice.filter(|_| sitting)
+    }
+}
+
+/// `--step-seconds S`: every frame advances the clock exactly `S` seconds,
+/// however long it took. For runs on a software renderer (an offscreen
+/// display draws ~9 frames a second), whose motion is then the same as at
+/// full speed, only slower to watch. Never for timing measurements.
+fn step_fixed_seconds(mut commands: Commands) {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--step-seconds"
+            && let Some(seconds) = args.next().and_then(|v| v.parse::<f64>().ok())
+        {
+            commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(seconds)));
+        }
+    }
+}
+
+/// The chair the gallery's character sits on: spawned under where its
+/// seated hips land (`sitting::seat_offset`), in front of which it stands,
+/// once its rig has bound and a chair pose is chosen.
+#[derive(Component)]
+struct GalleryChair;
+
+fn place_chair(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    sit: Res<SitConfig>,
+    chairs: Query<(), With<GalleryChair>>,
+    characters: Query<(&Walker, &AnimFootIk, &HumanoidSkeleton)>,
+    globals: Query<&GlobalTransform>,
+) {
+    if !chairs.is_empty() || !sit.choice.is_some_and(sitting::Sitting::on_chair) {
+        return;
+    }
+    let (seat, yaw, height) = match sit.chair {
+        // Where it was asked for; the character walks to it.
+        Some(chair) => (chair.seat, Quat::from_rotation_y(approach::heading_of(chair.forward)), chair.height),
+        // Under where the character's seated hips will land.
+        None => {
+            let Ok((walker, foot_ik, skeleton)) = characters.single() else { return };
+            let Some(rig) = &foot_ik.rig else { return };
+            let base = anim_poses::by_name(&walker.pose).unwrap_or_else(anim_poses::relaxed_stand);
+            let stood = migera::character::anim::stance::stance_on_rig(&base, migera::character::anim::stance::DEFAULT_KNEE_FLEX, rig);
+            let (offset, height) = sitting::seat_offset(rig, &stood, sitting::CHAIR_HEIGHT);
+            let at = |bone: Bone| globals.get(skeleton.entity(bone)).ok().map(GlobalTransform::translation);
+            let (Some(hips), Some(foot), Some(toe)) = (at(Bone::Hips), at(Bone::LeftFoot), at(Bone::LeftToeBase)) else { return };
+            // The character's facing in the world, heel to toe.
+            let forward = Vec3::new(toe.x - foot.x, 0.0, toe.z - foot.z).normalize_or_zero();
+            if forward == Vec3::ZERO {
+                return;
+            }
+            let left = Vec3::Y.cross(forward);
+            (Vec3::new(hips.x, 0.0, hips.z) + forward * offset.x + left * offset.y, Quat::from_rotation_arc(Vec3::NEG_Z, forward), height)
+        }
+    };
+    let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.45, 0.30, 0.18), perceptual_roughness: 0.7, ..default() });
+    let mut part = |size: Vec3, centre: Vec3| (Mesh3d(meshes.add(Cuboid::from_size(size))), MeshMaterial3d(wood.clone()), Transform::from_translation(centre));
+    let (depth, width, thick) = (0.44, 0.46, 0.04);
+    // The backrest just behind the buttocks (the hips joint ~0.14 m in front
+    // of them), the seat reaching forward under the thighs.
+    let centre = Vec3::new(0.0, height - thick * 0.5, 0.14 - depth * 0.5);
+    commands
+        .spawn((GalleryChair, Transform::from_translation(seat).with_rotation(yaw), Visibility::default()))
+        .with_children(|chair| {
+            chair.spawn(part(Vec3::new(width, thick, depth), centre));
+            let back = centre.z + depth * 0.5;
+            chair.spawn(part(Vec3::new(width, 0.42, thick), Vec3::new(0.0, height + 0.25, back)));
+            for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let leg = Vec3::new(x * (width * 0.5 - 0.03), (height - thick) * 0.5, centre.z + z * (depth * 0.5 - 0.03));
+                chair.spawn(part(Vec3::new(0.035, height - thick, 0.035), leg));
+            }
+        });
 }
 
 /// `--ragdoll on|off` (default `off`) plus its live strength dial.
@@ -1726,7 +1887,10 @@ fn main() {
             Update,
             (draw_skeleton_debug_gizmos, update_skeleton_hud, log_debug_stats),
         )
-        .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive));
+        .insert_resource(SitConfig::from_args())
+        .add_systems(Startup, step_fixed_seconds)
+        .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
+        .add_systems(Update, place_chair.after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:
