@@ -524,6 +524,8 @@ type IkRig = (
     // or a rise up a slope since would offset every ground sample.
     Option<&'static Transform>,
     Has<ChildOf>,
+    // What the feet keep clear of, if anything.
+    Option<&'static super::obstacles::AnimObstacles>,
 );
 
 /// The geometry of the rig `skeleton` drives, in metres, as the renderer
@@ -582,7 +584,7 @@ fn solve_foot_ik(
     let dt = time.delta_secs();
     let fallback = AnimGround::default();
 
-    for (pose, mut foot_ik, ground, skeleton, arm_ik, root, placed, parented) in &mut rigs {
+    for (pose, mut foot_ik, ground, skeleton, arm_ik, root, placed, parented, obstacles) in &mut rigs {
         let ground = ground.unwrap_or(&fallback);
         // Where the pose's frame is in the world, for sampling the ground:
         // its origin at the character's, turned as the character is (what
@@ -610,6 +612,16 @@ fn solve_foot_ik(
                 height: hit.height - origin.y,
                 normal: turn.inverse() * hit.normal,
             })
+        };
+        // The move (the pose's frame, horizontal) that keeps a foot, its toe
+        // joint at `toe` pointing `along` with its ankle `ankle_back` behind,
+        // clear of the obstacles: asked in the world, as the ground is.
+        let frame = turn;
+        let keep_clear = |toe: Vec3, along: Vec3, ankle_back: f32| {
+            let Some(obstacles) = obstacles else { return Vec3::ZERO };
+            let (heel, tip) = super::obstacles::foot_line(toe, along, ankle_back);
+            let out = frame.inverse() * obstacles.0.clear(origin + frame * heel, origin + frame * tip, super::obstacles::FOOT_CLEARANCE);
+            Vec3::new(out.x, 0.0, out.z)
         };
 
 
@@ -811,6 +823,20 @@ fn solve_foot_ik(
                 _ => &mut foot_ik.right,
             };
             let mut target = lock.update_planted(animated, surface, &lock_config, dt, turn, planted);
+
+            // Kept clear of what the feet must not stand in or swing through
+            // (`obstacles`), about the target the leg is solved to: worked out
+            // on the walker's pose instead, the sprung leg trailed it 4-7 cm
+            // and the clearance had to be 12 cm. A planted foot's lock goes
+            // with it: a turn pivots a planted foot about the body, and in
+            // front of a chair that carried one into the chair's leg.
+            let toe_from_ankle = animated_toes[chain.toe] - animated_toes[chain.ankle];
+            let flat = Vec3::new(toe_from_ankle.x, 0.0, toe_from_ankle.z);
+            let out = keep_clear(target, flat.normalize_or_zero(), flat.length());
+            if out != Vec3::ZERO {
+                target += out;
+                lock.shift_anchor(out);
+            }
 
             // Never let the sole sink below the surface, even mid-release.
             target.y = target.y.max(surface);
@@ -1912,6 +1938,30 @@ mod tests {
                  right y={right}",
             );
         }
+    }
+
+    #[test]
+    fn a_planted_foot_is_held_clear_of_an_obstacle_and_the_other_left_alone() {
+        // A table leg (4 cm square) put 4 cm in front of where the left toe
+        // stands, under the foot: the foot IK moves that foot off it until
+        // the toe keeps FOOT_CLEARANCE from it, the planted lock with it, and
+        // leaves the right foot where it was.
+        use crate::character::anim::obstacles::{AnimObstacles, Footprint, Footprints, FOOT_CLEARANCE};
+        let (mut app, rig) = app_with_grounded_rig(FlatGround::default());
+        step(&mut app, 120);
+        let (left, right) = toe_positions(&app, rig);
+        let leg = Footprint { middle: Vec3::new(left.x, 0.0, left.z + 0.06), forward: Vec3::Z, size: Vec2::splat(0.04) };
+        app.world_mut().entity_mut(rig).insert(AnimObstacles(Box::new(Footprints(vec![leg]))));
+        step(&mut app, 60);
+        let (moved_left, moved_right) = toe_positions(&app, rig);
+        let local = leg.local(moved_left);
+        let gap = (local.abs() - leg.size * 0.5).max(Vec2::ZERO).length();
+        assert!(gap > FOOT_CLEARANCE - 0.005, "the left toe is {gap:.3} m from the leg");
+        assert!(app.world().get::<AnimFootIk>(rig).unwrap().left.is_locked(), "the left foot let go");
+        assert!(moved_right.distance(right) < 1.0e-3, "the right foot moved {:.4} m", moved_right.distance(right));
+        // Held there: no creeping once clear.
+        step(&mut app, 30);
+        assert!(toe_positions(&app, rig).0.distance(moved_left) < 1.0e-3, "the left foot crept");
     }
 
     #[test]

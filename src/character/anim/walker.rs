@@ -263,16 +263,6 @@ pub const RUN_ABOVE: f32 = 2.2;
 /// times the legs' 0.015 s spring half-life, for the extension to settle.
 const STOOD_HOLD: f32 = 0.3;
 
-/// A foot as it keeps clear of a chair, metres: its heel behind the ankle
-/// joint, its tip beyond the toe joint (puppet_base's foot, ~0.25 m long),
-/// and how far its middle keeps out: half its ~0.09 m width, and the
-/// 4-7 cm a fast-swinging sprung leg trails the pose this is worked out on.
-/// Kept 5 cm out of the pose a swinging foot still passed 4 cm into the
-/// chair's leg; 9 cm, 2 cm.
-const HEEL_BEHIND_ANKLE: f32 = 0.06;
-const TIP_BEYOND_TOE: f32 = 0.05;
-const FOOT_CLEARANCE: f32 = 0.12;
-
 /// A walker's own state: where it is and faces (root motion's to write),
 /// how far into walking it is, and what its last frame rendered.
 #[derive(Component)]
@@ -298,9 +288,6 @@ pub struct WalkerState {
     pub sit_offset: Vec2,
     /// Seconds both feet stay planted after standing up ([`STOOD_HOLD`]).
     pub stood_hold: f32,
-    /// Whether the feet are being moved clear of a chair
-    /// ([`approach::Chair::foot_clear`]), to undo once.
-    pub feet_cleared: bool,
     /// The stride the current gait really takes, keyed by its speed and
     /// whether the real rig has bound: measuring it costs a cycle of
     /// root-motion samples, so it is redone only when either changes.
@@ -322,7 +309,6 @@ impl WalkerState {
             walked: Walked::default(),
             sit_offset: Vec2::ZERO,
             stood_hold: 0.0,
-            feet_cleared: false,
             measured: None,
         }
     }
@@ -799,43 +785,6 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             foot_ik.legs_free = legs_free;
         }
 
-        // Walking to a chair, each foot is kept clear of it
-        // (`Chair::foot_clear`): through the turn in front of the seat a
-        // heel went 14 cm under its front and every placement put a foot
-        // ~5 cm into a front leg. A swinging foot is moved where it will
-        // land (`AnimFootIk::displaced`); a planted one, which the turn
-        // pivots about the body, is moved where it is held: alone, the
-        // swinging feet landed clear and the planted ones still swung 4 cm
-        // into the leg. A pushed walk's balance owns the feet first.
-        let approaching = state.posture.is_standing()
-            && matches!(state.approach, approach::Approach::Walking { .. } | approach::Approach::Stopping { .. } | approach::Approach::Leaving);
-        if walk_balance.is_settled(0.0) {
-            match (approaching, state.seat, foot_ik.rig.clone()) {
-                (true, Some((chair, _)), Some(rig)) => {
-                    let at = super::rig::forward_kinematics_on(&target.pose, &rig);
-                    let turn = state.facing.rotation();
-                    let world = |p: Vec3| state.locomotion.position + turn * p;
-                    // A foot's outline from its toe joint, the way it points.
-                    let outline = |toe: Vec3, along: Vec3, ankle_back: f32| {
-                        [toe - along * (ankle_back + HEEL_BEHIND_ANKLE), toe - along * ankle_back, toe, toe + along * TIP_BEYOND_TOE]
-                    };
-                    for (slot, (ankle, toe)) in [(Bone::LeftFoot, Bone::LeftToeBase), (Bone::RightFoot, Bone::RightToeBase)].into_iter().enumerate() {
-                        let (ankle, toe) = (world(at[ankle]), world(at[toe]));
-                        let flat = Vec3::new(toe.x - ankle.x, 0.0, toe.z - ankle.z);
-                        let (along, ankle_back) = (flat.normalize_or_zero(), flat.length());
-                        foot_ik.displaced[slot] = turn.inverse() * chair.foot_clear(&outline(toe, along, ankle_back), FOOT_CLEARANCE);
-                        let lock = if slot == 0 { &mut foot_ik.left } else { &mut foot_ik.right };
-                        if let Some(anchor) = lock.anchor() {
-                            let held = outline(world(anchor), along, ankle_back);
-                            lock.shift_anchor(turn.inverse() * chair.foot_clear(&held, FOOT_CLEARANCE));
-                        }
-                    }
-                    state.feet_cleared = true;
-                }
-                _ if std::mem::take(&mut state.feet_cleared) => foot_ik.displaced = [Vec3::ZERO; 2],
-                _ => {}
-            }
-        }
 
         // The look, composed after the gait, independent of it.
         // Retargeted in place, so the look eases from where it is.

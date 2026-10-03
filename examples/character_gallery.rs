@@ -33,6 +33,7 @@ use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
 use migera::character::anim::plugin::{AnimFootIk, AnimGround};
 use migera::character::anim::walker;
+use migera::character::anim::obstacles::{AnimObstacles, Footprints};
 use migera::character::anim::{approach, sitting};
 use avian3d::prelude::PhysicsPlugins;
 use migera::character::anim::{
@@ -1190,10 +1191,12 @@ fn place_chair(
     mut materials: ResMut<Assets<StandardMaterial>>,
     sit: Res<SitConfig>,
     chairs: Query<(), With<GalleryChair>>,
-    characters: Query<(&Walker, &AnimFootIk, &HumanoidSkeleton)>,
+    characters: Query<(Entity, &Walker, &AnimFootIk, &HumanoidSkeleton)>,
     globals: Query<&GlobalTransform>,
 ) {
-    if !chairs.is_empty() || !sit.choice.is_some_and(sitting::Sitting::on_chair) {
+    // Once the character has bound, so it can be given the chair to keep
+    // its feet clear of.
+    if !chairs.is_empty() || !sit.choice.is_some_and(sitting::Sitting::on_chair) || characters.is_empty() {
         return;
     }
     let (seat, yaw, height) = match sit.chair {
@@ -1201,7 +1204,7 @@ fn place_chair(
         Some(chair) => (chair.seat, Quat::from_rotation_y(approach::heading_of(chair.forward)), chair.height),
         // Under where the character's seated hips will land.
         None => {
-            let Ok((walker, foot_ik, skeleton)) = characters.single() else { return };
+            let Ok((_, walker, foot_ik, skeleton)) = characters.single() else { return };
             let Some(rig) = &foot_ik.rig else { return };
             let base = anim_poses::by_name(&walker.pose).unwrap_or_else(anim_poses::relaxed_stand);
             let stood = migera::character::anim::stance::stance_on_rig(&base, migera::character::anim::stance::DEFAULT_KNEE_FLEX, rig);
@@ -1217,6 +1220,12 @@ fn place_chair(
             (Vec3::new(hips.x, 0.0, hips.z) + forward * offset.x + left * offset.y, Quat::from_rotation_arc(Vec3::NEG_Z, forward), height)
         }
     };
+    // The character's feet keep clear of it (a standard chair's footprint,
+    // its legs and the seat above them).
+    let footprint = approach::Chair::standard(seat, yaw * Vec3::NEG_Z).footprint();
+    for (entity, ..) in &characters {
+        commands.entity(entity).insert(AnimObstacles(Box::new(Footprints(vec![footprint]))));
+    }
     let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.45, 0.30, 0.18), perceptual_roughness: 0.7, ..default() });
     let mut part = |size: Vec3, centre: Vec3| (Mesh3d(meshes.add(Cuboid::from_size(size))), MeshMaterial3d(wood.clone()), Transform::from_translation(centre));
     let (depth, width, thick) = (0.44, 0.46, 0.04);

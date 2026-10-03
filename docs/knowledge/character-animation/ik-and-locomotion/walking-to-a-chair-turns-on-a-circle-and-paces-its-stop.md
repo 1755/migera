@@ -1,6 +1,6 @@
 ---
 title: Walking to a chair turns round on a small circle, paces its last steps to stop on the spot, and the seat makes up the rest
-description: "A walker given a chair goes round it, then a Dubins path (straight, a 0.25 m circle: Robinson's ~1.5 s 180° turn) ending 10 cm in front of its spot, its feet kept 12 cm off the chair. Stops come in half strides, so the last steps are paced; the seat moves to take the rest. Read before changing approach.rs."
+description: "A walker given a chair goes round it, then a Dubins path (straight, a 0.25 m circle: Robinson's ~1.5 s 180° turn) ending 10 cm in front of its spot, its feet kept off the chair by the foot IK. Stops come in half strides, so the last steps are paced; the seat moves to take the rest. Read before changing approach.rs."
 type: decision
 status: current
 tags:
@@ -80,13 +80,9 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   the seat's middle with the feet where they stopped:
   - `back` (±15 cm, along the chair) swings the shins forward or back;
   - `across` (±8 cm) slants them sideways.
-- **The feet keep clear of the chair** (`Chair::foot_clear`, in
-  `walker`). Each foot's outline (heel, ankle, toe, tip) is kept 12 cm
-  from the footprint.
-  - A swinging foot is moved where it will land (`AnimFootIk::displaced`).
-  - A planted foot is moved where it is held (`FootLock::shift_anchor`).
-  - Each point moves away from the nearest point of the footprint, and
-    the points' moves are combined per axis and direction.
+- **The feet keep clear of the chair** through the foot IK's obstacles:
+  the gallery gives its character `Chair::footprint` as an
+  `AnimObstacles` (see [feet keep clear of obstacles](./feet-keep-clear-of-obstacles-in-the-foot-ik.md)).
 
 ## Alternatives considered
 
@@ -131,17 +127,8 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   toes (see [the knee hinge note](./a-knee-hinge-must-be-square-to-the-line-to-the-target.md)).
 - **Feet in the chair's legs.** Through the turn, every placement put a
   foot ~5 cm into a front leg (measured against the gallery chair's posts
-  over BRP), and a heel 14 cm under the seat front. Each fix left part of
-  it:
-  - Moving only the swinging feet: the turn pivots a planted foot about
-    the body (`footlock`), and the planted ones still swung 4 cm into a
-    leg.
-  - Keeping the pose's feet 5 cm out: the sprung leg trails the pose by
-    4–7 cm when swinging fast, so 2–4 cm remained. Hence the 12 cm.
-  - Out by the nearest side: the move flipped 20 cm from front to side at
-    a corner's diagonal, the foot jerked across and its lock broke.
-  - Taking only the deepest point's move: it flipped as the deepest went
-    from heel to tip.
+  over BRP), and a heel 14 cm under the seat front. Its fix and traps are
+  in [feet keep clear of obstacles](./feet-keep-clear-of-obstacles-in-the-foot-ik.md).
 - **After the rise both feet stay planted 0.3 s** (`walker::STOOD_HOLD`).
   Let go at once, a foot still moving with the extending legs was released
   by its speed and slid 11–17 mm, from where the turning walk left it to
@@ -163,7 +150,7 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   - seated hips 0–5 mm from the seat's middle;
   - feet 0 mm of slide sitting and rising;
   - the body's middle never inside the footprint;
-  - the feet at least 2.2 cm from any chair leg (a 4.5 cm half-wide foot
+  - the feet at least 3.0 cm from any chair leg (a 4.5 cm half-wide foot
     against the 3.5 cm posts), none under the seat front.
 - **Seen** from behind at the turn's closest moment: the foot beside the
   chair, floor between it and the front leg.
@@ -172,14 +159,12 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
 
 - **The chair is one of several, or at a table:** the routing knows only
   this chair, and the turn needs ~0.5 m free beside the spot.
-- **Feet near other things** (a table's legs, a wall): `foot_clear`
-  knows one footprint, and the 12 cm clearance is tuned to the leg
-  springs' lag at the turning pace.
 - **Other seats** (a bench, a sofa): `Chair::standard` is one chair's size.
 
 ## Related
 
 - [Sitting down and standing up go through solved keys](./sitting-down-and-standing-up-go-through-solved-keys.md) — prerequisite: the chair poses this walks to, and `Seat`.
 - [A two-bone IK knee hinge must be square to the line to the target](./a-knee-hinge-must-be-square-to-the-line-to-the-target.md) — deeper: the leg IK bug the sideways seat shift exposed.
+- [Feet keep clear of obstacles in the foot IK](./feet-keep-clear-of-obstacles-in-the-foot-ik.md) — deeper: how the feet are kept out of the chair's legs through the turn.
 - [Fade a gait only through single support](./fade-a-gait-only-through-single-support.md) — context: why a stop ends a footfall plus a last step on, the quantum the pacing works round.
 - [Steer over terrain by the ground profile ahead](./steer-over-terrain-by-the-ground-profile-ahead.md) — context: the playground's steering, which this does not use.

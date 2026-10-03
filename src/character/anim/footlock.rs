@@ -177,11 +177,10 @@ impl FootLock {
         }
     }
 
-    /// Moves a pinned foot by `by` (the anchor's frame), as its owner keeps
-    /// it out of something it must not stand in: a turn pivots a planted
-    /// foot about the body, and in front of a chair that carried one into
-    /// the chair's leg (`walker`, `approach::Chair::foot_clear`). A free
-    /// foot is left alone.
+    /// Moves a pinned foot by `by` (the anchor's frame), as the foot IK
+    /// keeps it out of something it must not stand in (`obstacles`): a turn
+    /// pivots a planted foot about the body, and in front of a chair that
+    /// carried one into the chair's leg. A free foot is left alone.
     pub fn shift_anchor(&mut self, by: Vec3) {
         if self.state == LockState::Locked {
             self.anchor += by;

@@ -41,6 +41,29 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Foot obstacles move into the foot IK, as a general probe
+
+- **`obstacles.rs`:**
+  - `FootObstacles` (a capsule query: a foot's heel-to-tip line and a
+    clearance), set on a character as `AnimObstacles`, like `AnimGround`;
+  - `Footprints` (boxes on the floor) as the plain implementation;
+  - `Chair::footprint` gives a chair's.
+- **`solve_foot_ik`** moves each toe target, and a planted foot's lock,
+  by the probe's answer. The walker's chair-only code is gone; the gallery
+  gives its character the chair.
+- **Clearance 12 cm → 8 cm:** the foot's half width, the ~2 cm the drawn
+  heel falls short of the IK's target, and 1 cm spare. It no longer
+  covers spring lag, so it doesn't depend on walking speed. At 5 cm the
+  drawn foot still went 1.9 cm into a leg.
+- **Points → a line:** a post under the arch had heel and toe pushed
+  opposite ways and cancelling (the new IK test caught it). Crossing a box
+  now takes the smallest separating move.
+- **Live, four placements:** every foot 3.0–4.1 cm from every chair leg
+  (was 1.7–5.8 at 12 cm in the walker), the drawn foot ≥ 6.2 cm from the
+  footprint, seated hips 0–1 mm off, feet 0 mm of slide.
+- See [the note](./docs/knowledge/character-animation/ik-and-locomotion/feet-keep-clear-of-obstacles-in-the-foot-ik.md).
+- `cargo test --release --lib`: 1128 passed. Clippy: 0 warnings.
+
 ### Feet kept clear of the chair's legs through the turn
 
 - **Measured first:** each foot (heel to tip, 4.5 cm half-wide) against
