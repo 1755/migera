@@ -1130,11 +1130,8 @@ struct SitConfig {
 
 impl SitConfig {
     fn from_args() -> Self {
-        let chair = |x: f32, z: f32, heading: f32| approach::Chair {
-            seat: Vec3::new(x, 0.0, z),
-            forward: approach::direction_of(heading.to_radians()),
-            height: sitting::CHAIR_HEIGHT,
-        };
+        // The gallery's chair (`place_chair`) is a standard one.
+        let chair = |x: f32, z: f32, heading: f32| approach::Chair::standard(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()));
         let mut config = Self { choice: None, sit_at: 1.0, stand_at: None, live: None, chair: Some(chair(-1.5, -1.5, 180.0)) };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {

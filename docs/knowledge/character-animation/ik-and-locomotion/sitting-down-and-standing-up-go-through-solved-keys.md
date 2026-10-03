@@ -163,7 +163,7 @@ A walker sits by `Walker::sit = Some(Sitting)` and stands again with `None`.
 
 ## Related
 
-- [Walking to a chair turns on a circle and paces its stop](./walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md) — extends: given `Walker::chair` it walks there and turns round first; `Seat::back` moves the seat as far as that walk stopped off its spot.
+- [Walking to a chair turns on a circle and paces its stop](./walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md) — extends: given `Walker::chair` it walks there and turns round first; `Seat::back` and `Seat::across` move the seat as far as that walk stopped off its spot.
 - [Getting up goes through key poses](../ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md) — prerequisite: the keys, contacts, chaining and world-space blend the floor routes reuse.
 - [A drawn floor correction is held between frames](../ragdoll-and-physics/a-drawn-floor-correction-is-held-between-frames.md) — same-trap: stateless per-frame floor corrections that pop.
 - [Foot IK on uneven ground has two feedback loops](./foot-ik-feedback-loops.md) — context: the leg IK that `legs_free` turns off.

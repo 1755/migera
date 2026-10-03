@@ -259,6 +259,10 @@ impl Walker {
 /// would cost more than a run's flight.
 pub const RUN_ABOVE: f32 = 2.2;
 
+/// How long both feet stay planted after standing up, seconds: several
+/// times the legs' 0.015 s spring half-life, for the extension to settle.
+const STOOD_HOLD: f32 = 0.3;
+
 /// A walker's own state: where it is and faces (root motion's to write),
 /// how far into walking it is, and what its last frame rendered.
 #[derive(Component)]
@@ -278,9 +282,12 @@ pub struct WalkerState {
     pub approach: approach::Approach,
     pub seat: Option<(approach::Chair, Vec3)>,
     pub walked: Walked,
-    /// How far past its spot, away from the chair, the walk stopped: the
-    /// seat's [`sitting::Seat::back`], held from sitting down to standing.
-    pub sit_back: f32,
+    /// How far off its spot the walk to the chair stopped: the seat's
+    /// [`sitting::Seat::back`] and [`sitting::Seat::across`], held from
+    /// sitting down to standing.
+    pub sit_offset: Vec2,
+    /// Seconds both feet stay planted after standing up ([`STOOD_HOLD`]).
+    pub stood_hold: f32,
     /// The stride the current gait really takes, keyed by its speed and
     /// whether the real rig has bound: measuring it costs a cycle of
     /// root-motion samples, so it is redone only when either changes.
@@ -300,7 +307,8 @@ impl WalkerState {
             approach: approach::Approach::Idle,
             seat: None,
             walked: Walked::default(),
-            sit_back: 0.0,
+            sit_offset: Vec2::ZERO,
+            stood_hold: 0.0,
             measured: None,
         }
     }
@@ -492,7 +500,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     speed: speed_now,
                     stopped: !walking && state.transition.is_at_rest(),
                 };
-                let order = state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, facing_yaw + ahead, speed);
+                // The turn ends a little in front of the spot, clear of the
+                // chair; the seat makes that up.
+                let turn_to = spot + chair.forward.normalize_or_zero() * approach::TURN_AHEAD;
+                let order = state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, turn_to, facing_yaw + ahead, speed, Some(&chair));
                 match order {
                     approach::Order::Walk { speed, heading, rate } => {
                         (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
@@ -502,11 +513,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                     approach::Order::Arrived => {
                         // The sitting starts this frame. Its seat goes as
-                        // much further back as the walk stopped past its
-                        // spot; across, it sits that far off the middle.
+                        // much further back, and across, as the walk
+                        // stopped off its spot, so the hips land on the
+                        // seat's middle with the feet where they are.
                         let off = state.locomotion.position - spot;
-                        state.sit_back = off.dot(chair.forward.normalize_or_zero()).clamp(-sitting::SEAT_BACK_RANGE, sitting::SEAT_BACK_RANGE);
-                        info!("walker: at the chair, {:.0} mm off its spot, {:+.0} mm along", Vec2::new(off.x, off.z).length() * 1e3, state.sit_back * 1e3);
+                        let forward = chair.forward.normalize_or_zero();
+                        let left = Vec3::Y.cross(forward);
+                        state.sit_offset = Vec2::new(
+                            off.dot(forward).clamp(-sitting::SEAT_BACK_RANGE, sitting::SEAT_BACK_RANGE),
+                            (-off.dot(left)).clamp(-sitting::SEAT_ACROSS_RANGE, sitting::SEAT_ACROSS_RANGE),
+                        );
+                        info!(
+                            "walker: at the chair, {:.0} mm off its spot: seat {:+.0} mm back, {:+.0} mm across",
+                            Vec2::new(off.x, off.z).length() * 1e3,
+                            state.sit_offset.x * 1e3,
+                            state.sit_offset.y * 1e3
+                        );
                         steer = Steer::Straight;
                     }
                 }
@@ -726,10 +748,24 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             // The seat as the walk to it left it (`sit_seat`), else one
             // where it stands.
             let seat = match walker.chair {
-                Some(chair) => sitting::Seat { height: chair.height, back: state.sit_back },
+                Some(chair) => sitting::Seat { height: chair.height, back: state.sit_offset.x, across: state.sit_offset.y },
                 None => sitting::Seat::at(walker.chair_height),
             };
-            if let Some((pose, planted)) = state.posture.advance(walker.sit, seat, &stood, &rig, ready, time.delta_secs()) {
+            let rising = matches!(state.posture, Posture::Moving { down: false, .. });
+            let advanced = state.posture.advance(walker.sit, seat, &stood, &rig, ready, time.delta_secs());
+            // Stood up: both feet stay planted a moment more, until the
+            // sprung legs have finished extending. Let go at once, a foot
+            // still moving with them was released by its speed and slid to
+            // where the standing pose has it: 11-17 mm after a walk that
+            // ended turning, whose feet are not set as the stance's.
+            if rising && state.posture.is_standing() {
+                state.stood_hold = STOOD_HOLD;
+            }
+            if advanced.is_none() && state.stood_hold > 0.0 {
+                state.stood_hold -= time.delta_secs();
+                foot_ik.planted = [true; 2];
+            }
+            if let Some((pose, planted)) = advanced {
                 target.pose = pose;
                 foot_ik.planted = planted;
                 foot_ik.landing = None;

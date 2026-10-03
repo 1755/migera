@@ -296,7 +296,14 @@ pub fn solve_leg_grounded(
     // the current pose is the tempting alternative and the one that fails:
     // a near-straight leg has a nearly degenerate bend plane, so any cross
     // product picks an unstable axis exactly when the leg is most extended.
-    let hinge = config.knee_axis.normalize_or_zero();
+    //
+    // Its part along the line to the target is taken off, though: turned
+    // about an axis not square to that line, the two segments swing the
+    // ankle off it. A seated character's shins slanted 11° sideways put the
+    // ankle 20-25 mm from its target, and the foot, aimed from there at its
+    // planted toe, turned 9° about it.
+    let axis = config.knee_axis.normalize_or_zero();
+    let hinge = (axis - direction * direction.dot(axis)).normalize_or_zero();
     if hinge == Vec3::ZERO {
         return before[chain.toe];
     }
@@ -907,6 +914,32 @@ mod tests {
             "solving for the current position should not move the toe, but it went \
              {moved} m",
         );
+    }
+
+    #[test]
+    fn a_target_out_to_the_side_is_reached_without_turning_the_foot() {
+        // A leg reaching sideways (a wide stance, a seated shin slanted):
+        // the knee hinged on an axis not square to the line to the target
+        // swung the ankle off it, and the foot, aimed from there at the toe,
+        // turned about it, 9° on a seated character.
+        // On the real rig: the synthetic one's leg segments are a joint
+        // out, its shin a 0.07 m stub.
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
+        let base = crate::character::anim::stance::stance_on_rig(&crate::character::anim::poses::relaxed_stand(), crate::character::anim::stance::DEFAULT_KNEE_FLEX, &rig);
+        let before = forward_kinematics_on(&base, &rig);
+        let chain = LegChain::LEFT;
+        let foot = (before[chain.toe] - before[chain.ankle]).normalize();
+        // Raised too, so the knee bends: near straight, the soft extension
+        // clamp stops a leg short on purpose.
+        for offset in [rig.left() * 0.06 + Vec3::Y * 0.1, -rig.left() * 0.06 + Vec3::Y * 0.12 + rig.forward() * 0.04, rig.left() * 0.08 + Vec3::Y * 0.15] {
+            let target = before[chain.toe] + offset;
+            let mut pose = base;
+            let reached = solve_leg_on(&mut pose, chain, target, &LegIkConfig::default(), &rig);
+            let after = forward_kinematics_on(&pose, &rig);
+            assert!((reached - target).length() < 0.001, "offset {offset}: the toe missed by {:.1} mm", (reached - target).length() * 1e3);
+            let turned = (after[chain.toe] - after[chain.ankle]).normalize().dot(foot);
+            assert!(turned > 0.9999, "offset {offset}: the foot turned {:.1}°", turned.clamp(-1.0, 1.0).acos().to_degrees());
+        }
     }
 
     #[test]

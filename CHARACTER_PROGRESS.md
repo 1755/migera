@@ -41,6 +41,47 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Round the chair, onto its middle, and no foot slides
+
+- **Round the chair:** a straight to the turning circle that would cross
+  the chair heads for a corner 0.45 m out (`approach::round`). It never
+  goes back to a corner it has reached, and plans afresh once clear.
+  - `Chair::standard` gives the footprint; turns sharper than 0.8 rad are
+    walked at the turning pace.
+- **The turn ends 10 cm in front of the spot**, its dip off the chair.
+  - Before, the body passed 15 cm past the seat's front edge on every
+    approach. Now at most 7 cm (test), by the corner.
+  - Smaller circles (0.12, 0.18 m) and a pivot were tried live and lost:
+    18–22 cm off the spot, or the feet swinging as far.
+- **The pace** is set at most once a step, and the stop waits until the
+  legs walk at it. Re-pacing every frame made the speed hop 0.39–0.66 m/s
+  and stopped mid-turn 25 cm short.
+- **`sitting::Seat::across`** (±8 cm) slants the shins so the hips land
+  on the seat's middle. Chair poses are set on their feet's middle both
+  ways (`on_feet`); `back` range ±15 cm.
+- **Leg IK hinge fix** (`legik.rs`): the knee turned about the raw axis.
+  A sideways-leaning leg put the ankle off target, and the foot turned 9°
+  about its planted toe. See [the note](./docs/knowledge/character-animation/ik-and-locomotion/a-knee-hinge-must-be-square-to-the-line-to-the-target.md).
+- **Both feet stay planted 0.3 s after standing up** (`STOOD_HOLD`): the
+  rise's end slide went from 11–17 mm to 0 mm.
+- **Tests:**
+  - routing from behind and the gallery's chairs (each fails without the
+    routing);
+  - the turn's distance past the seat front;
+  - seats moved back and across;
+  - planted feet frame by frame on a moved seat;
+  - the leg IK reaching sideways (fails with the old hinge).
+- **Live, four placements** (one with the chair's back to the walker):
+  - stopped 53–125 mm off the spot;
+  - seated hips 0–5 mm from the seat's middle;
+  - feet 0 mm of slide sitting and rising;
+  - the body never inside the chair.
+  - Known: a heel passes up to 8 cm under the seat's front mid-turn, and
+    on the default chair touches its front leg for a moment.
+- `cargo test --release --lib`: 1122 passed. Clippy: 0 warnings.
+  - `physics::gpu::frame_test` failed once under the full parallel run,
+    and passed alone.
+
 ### Walking to a chair, turning round, and sitting on it
 
 - **`approach.rs`:** given `Walker::chair`, the walker walks a Dubins path

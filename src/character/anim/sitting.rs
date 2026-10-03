@@ -46,20 +46,26 @@ pub const CHAIR_HEIGHT: f32 = 0.45;
 /// metres. A walk to a chair stops a few centimetres off its spot; the
 /// shins swing forward or back to make that up (`approach`), as a person
 /// sits with their feet a little further out or tucked in.
+///
+/// Across the chair the same: [`Seat::across`], how much further left of the
+/// feet (the character's left), the hips go, the shins slanting sideways.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Seat {
     pub height: f32,
     pub back: f32,
+    pub across: f32,
 }
 
 /// The furthest a seat is moved back or forward, metres: a shin swung
-/// ±17° from upright.
-pub const SEAT_BACK_RANGE: f32 = 0.12;
+/// ±20° from upright.
+pub const SEAT_BACK_RANGE: f32 = 0.15;
+/// The furthest it is moved across, metres: the shins slanting ±11°.
+pub const SEAT_ACROSS_RANGE: f32 = 0.08;
 
 impl Seat {
     /// A seat `height` high, the feet where sitting upright has them.
     pub fn at(height: f32) -> Self {
-        Self { height, back: 0.0 }
+        Self { height, back: 0.0, across: 0.0 }
     }
 
     /// How much further forward, degrees, the shins swing to put the hips
@@ -261,10 +267,25 @@ fn seat_height(pose: &LocalPose, rig: &RigGeometry) -> f32 {
 /// the feet.
 fn on_chair(rig: &RigGeometry, pelvis: f32, lean: f32, head: f32, shin: f32, chair: Seat) -> LocalPose {
     let shin = shin + chair.shin(rig);
+    let rest = forward_kinematics_on(&LocalPose::REST, rig);
     let build = |thigh: f32| {
         let mut pose = LocalPose::REST;
         trunk(&mut pose, rig, pelvis, lean, head);
         legs(&mut pose, rig, pelvis, [thigh, shin, 0.0]);
+        // Across: both ankles moved the other way under the hips, the
+        // knees still forward, the feet kept flat and pointing as they were.
+        let across = chair.across.clamp(-SEAT_ACROSS_RANGE, SEAT_ACROSS_RANGE);
+        if across != 0.0 {
+            for [hip, knee, ankle, toe] in [
+                [Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot, Bone::LeftToeBase],
+                [Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot, Bone::RightToeBase],
+            ] {
+                let at = joints(&pose, rig);
+                let foot = at[toe] - at[ankle];
+                reach(&mut pose, rig, [hip, knee, ankle], at[ankle] - rig.left() * across, rig.forward());
+                aim(&mut pose, &rest, ankle, toe, foot);
+            }
+        }
         hang_arms(&mut pose, rig, 10.0);
         pose
     };
@@ -274,16 +295,37 @@ fn on_chair(rig: &RigGeometry, pelvis: f32, lean: f32, head: f32, shin: f32, cha
     pose
 }
 
+/// `pose` moved over the floor until `bone` is over `at`, both ways: a
+/// chair's seat across from the feet ([`Seat::across`]) placed along the
+/// forward only (`getup::placed`) sat on its feet's middle again.
+fn over(mut pose: LocalPose, rig: &RigGeometry, bone: Bone, at: Vec3) -> LocalPose {
+    let off = joints(&pose, rig)[bone] - at;
+    pose.root_translation -= Vec3::new(off.x, 0.0, off.z);
+    pose
+}
+
+/// `pose` moved over the floor until its feet's middle is `stood`'s.
+fn on_feet(pose: LocalPose, rig: &RigGeometry, stood: &LocalPose) -> LocalPose {
+    let middle = |pose: &LocalPose| {
+        let at = joints(pose, rig);
+        (at[Bone::LeftFoot] + at[Bone::RightFoot]) * 0.5
+    };
+    let target = middle(stood);
+    let now = middle(&pose);
+    let mut pose = pose;
+    pose.root_translation -= Vec3::new(now.x - target.x, 0.0, now.z - target.z);
+    pose
+}
+
 /// A seated pose on a chair `chair` high, placed: feet where `stood` has
 /// them, or for one whose legs move, its seat where the upright one's is.
 pub fn chair_pose(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: Seat) -> LocalPose {
-    let feet = joints(stood, rig)[Bone::LeftFoot];
     let upright = || {
         // A slight backward tilt of the pelvis, the trunk upright, the
         // shins a little forward of the knees.
         let mut pose = on_chair(rig, -8.0, 0.0, 0.0, -5.0, chair);
         hands_on_thighs(&mut pose, rig, 0.6);
-        placed(pose, rig, Bone::LeftFoot, feet)
+        on_feet(pose, rig, stood)
     };
     match how {
         ChairPose::Upright => upright(),
@@ -293,7 +335,7 @@ pub fn chair_pose(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: S
             let mut pose = on_chair(rig, -22.0, -18.0, 0.0, -30.0, chair);
             hands_on_thighs(&mut pose, rig, 0.35);
             let seat = joints(&upright(), rig)[Bone::Hips];
-            placed(pose, rig, Bone::Hips, seat)
+            over(pose, rig, Bone::Hips, seat)
         }
         ChairPose::LeaningForward => {
             // The trunk 35° forward, the head raised to look ahead, the
@@ -306,7 +348,7 @@ pub fn chair_pose(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: S
                 let target = between + forward * 0.12 + up * 0.02 + side * 0.03;
                 reach(&mut pose, rig, arm, target, -up + side * 0.5);
             }
-            placed(pose, rig, Bone::LeftFoot, feet)
+            on_feet(pose, rig, stood)
         }
         ChairPose::LegsCrossed => {
             // The right knee over the left, its shin hanging down across
@@ -330,7 +372,6 @@ pub fn chair_pose(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: S
 /// The keys from standing down onto a chair `chair` high, ending seated
 /// `how`. The feet stay where `stood` has them throughout.
 pub fn chair_down(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: Seat) -> Vec<SitKey> {
-    let feet = joints(stood, rig)[Bone::LeftFoot];
     // Half-way down: hips back, knees ~60°, the trunk leaning 35° to keep
     // the weight over the feet.
     let lowering = {
@@ -339,13 +380,13 @@ pub fn chair_down(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: S
         legs(&mut pose, rig, 15.0, [-45.0, 15.0, 0.0]);
         hang_arms(&mut pose, rig, 25.0);
         set_down(&mut pose, rig, &[Contact::Foot(Bone::LeftFoot), Contact::Foot(Bone::RightFoot)]);
-        placed(pose, rig, Bone::LeftFoot, feet)
+        on_feet(pose, rig, stood)
     };
     // Touching down, still leaning forward, the legs as they will sit.
     let touching = {
         let mut pose = on_chair(rig, 5.0, 30.0, 15.0, -5.0, chair);
         hands_on_thighs(&mut pose, rig, 0.7);
-        placed(pose, rig, Bone::LeftFoot, feet)
+        on_feet(pose, rig, stood)
     };
     let mut keys = vec![SitKey { pose: lowering, seconds: 0.9 }, SitKey { pose: touching, seconds: 0.6 }];
     let upright = chair_pose(ChairPose::Upright, rig, stood, chair);
@@ -366,7 +407,6 @@ pub fn chair_down(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: S
 /// leaning forward over the feet, then the seat left. 0.55 s and 0.35 s,
 /// with the extension's 1.0 s: Marsh's 28/18/54 % of 1.9 s.
 pub fn chair_up(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: Seat) -> Vec<SitKey> {
-    let feet = joints(stood, rig)[Bone::LeftFoot];
     let mut keys = Vec::new();
     // Uncrossed, or the legs drawn back under the seat, first.
     match how {
@@ -376,14 +416,14 @@ pub fn chair_up(how: ChairPose, rig: &RigGeometry, stood: &LocalPose, chair: Sea
     let leaning = {
         let mut pose = on_chair(rig, 12.0, 42.0, 20.0, -5.0, chair);
         hang_arms(&mut pose, rig, 35.0);
-        placed(pose, rig, Bone::LeftFoot, feet)
+        on_feet(pose, rig, stood)
     };
     // Seat-off: the hips 3 cm off the seat, the trunk at its furthest
     // forward, the knees ~75°.
     let seat_off = {
         let mut pose = on_chair(rig, 15.0, 45.0, 20.0, 5.0, Seat { height: chair.height + 0.03, ..chair });
         hang_arms(&mut pose, rig, 35.0);
-        placed(pose, rig, Bone::LeftFoot, feet)
+        on_feet(pose, rig, stood)
     };
     keys.push(SitKey { pose: leaning, seconds: 0.55 });
     keys.push(SitKey { pose: seat_off, seconds: 0.35 });
@@ -905,28 +945,34 @@ mod tests {
     }
 
     /// A standard chair, sat on from where the walk meant to stop.
-    const CHAIR: Seat = Seat { height: CHAIR_HEIGHT, back: 0.0 };
+    const CHAIR: Seat = Seat { height: CHAIR_HEIGHT, back: 0.0, across: 0.0 };
 
     #[test]
-    fn a_seat_further_back_or_forward_is_met_by_the_shins_with_the_feet_where_they_stood() {
+    fn a_seat_off_where_the_feet_stand_is_met_by_the_shins_with_the_feet_kept() {
         // A walk to a chair stops a few centimetres off its spot; the seat
-        // is that much further back or forward of the feet, and the hips
-        // must land on it, still on its height, the knees still bent about
-        // a right angle.
+        // is that much further back, forward or across from the feet, and
+        // the hips must land on it, at its height, the feet where they stood
+        // and still flat.
         for (name, rig) in rigs() {
             let stood = stood(&rig);
-            let feet = joints(&stood, &rig)[Bone::LeftFoot];
-            let at = |back: f32| joints(&chair_pose(ChairPose::Upright, &rig, &stood, Seat { back, ..CHAIR }), &rig);
-            let upright = at(0.0)[Bone::Hips];
-            for back in [-0.1, -0.05, 0.05, 0.1] {
-                let pose = chair_pose(ChairPose::Upright, &rig, &stood, Seat { back, ..CHAIR });
-                let joint = at(back);
-                let moved = (joint[Bone::Hips] - upright).dot(-rig.forward());
-                assert!((moved - back).abs() < 0.015, "{name} back {back}: the hips went {moved:.3} m back");
-                assert!((getup::contact_height(&pose, &rig, SEAT) - CHAIR_HEIGHT).abs() < 0.01, "{name} back {back}: off the seat's height");
-                let off = Vec2::new(joint[Bone::LeftFoot].x - feet.x, joint[Bone::LeftFoot].z - feet.z).length();
-                assert!(off < 0.005, "{name} back {back}: the foot moved {:.0} mm", off * 1e3);
-                assert!(lowest_point(&pose, &rig) > -0.005, "{name} back {back}: under the floor");
+            let standing = joints(&stood, &rig);
+            let upright = joints(&chair_pose(ChairPose::Upright, &rig, &stood, CHAIR), &rig)[Bone::Hips];
+            for (back, across) in [(-0.1, 0.0), (-0.05, 0.0), (0.05, 0.0), (0.1, 0.0), (0.0, -0.06), (0.0, 0.06), (0.08, 0.05), (-0.08, -0.05)] {
+                let seat = Seat { back, across, ..CHAIR };
+                let pose = chair_pose(ChairPose::Upright, &rig, &stood, seat);
+                let at = joints(&pose, &rig);
+                let moved = at[Bone::Hips] - upright;
+                assert!((moved.dot(-rig.forward()) - back).abs() < 0.015, "{name} {seat:?}: the hips went {:.3} m back", moved.dot(-rig.forward()));
+                assert!((moved.dot(rig.left()) - across).abs() < 0.01, "{name} {seat:?}: the hips went {:.3} m left", moved.dot(rig.left()));
+                assert!((getup::contact_height(&pose, &rig, SEAT) - CHAIR_HEIGHT).abs() < 0.01, "{name} {seat:?}: off the seat's height");
+                for (ankle, toe) in [(Bone::LeftFoot, Bone::LeftToeBase), (Bone::RightFoot, Bone::RightToeBase)] {
+                    let off = Vec2::new(at[ankle].x - standing[ankle].x, at[ankle].z - standing[ankle].z).length();
+                    assert!(off < 0.01, "{name} {seat:?}: the {ankle:?} moved {:.0} mm", off * 1e3);
+                    let foot = (at[toe] - at[ankle]).normalize();
+                    let was = (standing[toe] - standing[ankle]).normalize();
+                    assert!(foot.dot(was) > 0.995, "{name} {seat:?}: the {ankle:?} turned {:.1}°", foot.dot(was).clamp(-1.0, 1.0).acos().to_degrees());
+                }
+                assert!(lowest_point(&pose, &rig) > -0.005, "{name} {seat:?}: under the floor");
             }
         }
     }
@@ -981,24 +1027,28 @@ mod tests {
                 [at[Bone::LeftFoot], at[Bone::RightFoot]]
             };
             let standing = feet(&stood);
-            let seat = joints(&chair_pose(ChairPose::Upright, &rig, &stood, CHAIR), &rig)[Bone::Hips];
-            for how in [ChairPose::Upright, ChairPose::Reclined, ChairPose::LegsCrossed, ChairPose::LeaningForward] {
-                let keys = chair_down(how, &rig, &stood, CHAIR).into_iter().chain(chair_up(how, &rig, &stood, CHAIR));
-                for (i, key) in keys.enumerate() {
-                    let at = joints(&key.pose, &rig);
-                    // Reclined, the legs go out; crossed, the right foot lifts.
-                    let moves = [how == ChairPose::Reclined, how == ChairPose::Reclined || how == ChairPose::LegsCrossed];
-                    let is_seated = getup::contact_height(&key.pose, &rig, SEAT) < CHAIR_HEIGHT + 0.005;
-                    for (side, (now, then)) in feet(&key.pose).into_iter().zip(standing).enumerate() {
-                        if moves[side] && key.pose == chair_pose(how, &rig, &stood, CHAIR) {
-                            continue;
+            // And off where the walk meant to stop: the seat moved back and
+            // across, the feet still kept.
+            for chair in [CHAIR, Seat { back: -0.08, across: -0.04, ..CHAIR }, Seat { back: 0.06, across: 0.05, ..CHAIR }] {
+                let seat = joints(&chair_pose(ChairPose::Upright, &rig, &stood, chair), &rig)[Bone::Hips];
+                for how in [ChairPose::Upright, ChairPose::Reclined, ChairPose::LegsCrossed, ChairPose::LeaningForward] {
+                    let keys = chair_down(how, &rig, &stood, chair).into_iter().chain(chair_up(how, &rig, &stood, chair));
+                    for (i, key) in keys.enumerate() {
+                        let at = joints(&key.pose, &rig);
+                        // Reclined, the legs go out; crossed, the right foot lifts.
+                        let moves = [how == ChairPose::Reclined, how == ChairPose::Reclined || how == ChairPose::LegsCrossed];
+                        let is_seated = getup::contact_height(&key.pose, &rig, SEAT) < CHAIR_HEIGHT + 0.005;
+                        for (side, (now, then)) in feet(&key.pose).into_iter().zip(standing).enumerate() {
+                            if moves[side] && key.pose == chair_pose(how, &rig, &stood, chair) {
+                                continue;
+                            }
+                            let off = Vec2::new(now.x - then.x, now.z - then.z).length();
+                            assert!(off < 0.012, "{name} {chair:?} {how:?} key {i}: a foot {:.0} mm from where it stood", off * 1e3);
                         }
-                        let off = Vec2::new(now.x - then.x, now.z - then.z).length();
-                        assert!(off < 0.02, "{name} {how:?} key {i}: a foot {:.0} mm from where it stood", off * 1e3);
-                    }
-                    if is_seated {
-                        let off = Vec2::new(at[Bone::Hips].x - seat.x, at[Bone::Hips].z - seat.z).length();
-                        assert!(off < 0.03, "{name} {how:?} key {i}: seated {:.0} mm off the chair's seat", off * 1e3);
+                        if is_seated {
+                            let off = Vec2::new(at[Bone::Hips].x - seat.x, at[Bone::Hips].z - seat.z).length();
+                            assert!(off < 0.03, "{name} {chair:?} {how:?} key {i}: seated {:.0} mm off the chair's seat", off * 1e3);
+                        }
                     }
                 }
             }
@@ -1069,6 +1119,33 @@ mod tests {
                 assert!(lowest_seen > -0.006, "{name} {}: {:.0} mm under the floor", how.name(), -lowest_seen * 1e3);
                 assert!(jump.0 < 0.06, "{name} {}: {} moved {:.0} mm in a frame at {:.2} s", how.name(), jump.2.name(), jump.0 * 1e3, jump.1);
             }
+        }
+    }
+
+    #[test]
+    fn a_chair_sat_on_off_its_spot_keeps_the_planted_feet_still() {
+        // The walker's posture stepped at 60 Hz onto a seat moved back and
+        // across (a walk stopped off its spot): the feet planted through a
+        // move stay where they were, frame by frame.
+        use crate::character::anim::walker::Posture;
+        let rig = puppet_base_as_rendered();
+        let stood = stood(&rig);
+        let dt = 1.0 / 60.0;
+        for chair in [CHAIR, Seat { back: -0.08, across: -0.04, ..CHAIR }, Seat { back: 0.06, across: 0.05, ..CHAIR }] {
+            let mut posture = Posture::Standing;
+            let start = joints(&stood, &rig);
+            let mut worst = 0.0_f32;
+            for frame in 0..(8.0 / dt) as usize {
+                let wanted = (frame as f32 * dt < 4.0).then_some(Sitting::Chair(ChairPose::Upright));
+                let Some((pose, planted)) = posture.advance(wanted, chair, &stood, &rig, true, dt) else { continue };
+                let at = joints(&pose, &rig);
+                for (side, foot) in [Bone::LeftFoot, Bone::RightFoot].into_iter().enumerate() {
+                    if planted[side] {
+                        worst = worst.max(Vec2::new(at[foot].x - start[foot].x, at[foot].z - start[foot].z).length());
+                    }
+                }
+            }
+            assert!(worst < 0.005, "{chair:?}: a planted foot moved {:.1} mm", worst * 1e3);
         }
     }
 
