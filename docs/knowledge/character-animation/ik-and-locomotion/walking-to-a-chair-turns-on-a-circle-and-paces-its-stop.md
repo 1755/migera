@@ -1,6 +1,6 @@
 ---
 title: Walking to a chair turns round on a small circle, paces its last steps to stop on the spot, and the seat makes up the rest
-description: "A walker given a chair walks round it if needed, then a Dubins path (straight, a 0.25 m circle: Robinson's ~1.5 s 180° turn) ending 10 cm in front of its spot. Stops come in half strides, so the last steps are paced; the seat moves back and across to take the rest. Read before changing approach.rs."
+description: "A walker given a chair goes round it, then a Dubins path (straight, a 0.25 m circle: Robinson's ~1.5 s 180° turn) ending 10 cm in front of its spot, its feet kept 12 cm off the chair. Stops come in half strides, so the last steps are paced; the seat moves to take the rest. Read before changing approach.rs."
 type: decision
 status: current
 tags:
@@ -13,6 +13,7 @@ code:
   - src/character/anim/approach.rs
   - src/character/anim/walker.rs
   - src/character/anim/sitting.rs
+  - src/character/anim/footlock.rs
   - examples/character_gallery.rs
 sources:
   - "Robinson et al. (2018), The Timed 180° Turn Test for Assessing People with Hemiplegia from Chronic Stroke, BioMed Res Int, https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5820648/ — healthy adults turn 180° in a median 2.5 steps and 1.5 s"
@@ -79,6 +80,13 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   the seat's middle with the feet where they stopped:
   - `back` (±15 cm, along the chair) swings the shins forward or back;
   - `across` (±8 cm) slants them sideways.
+- **The feet keep clear of the chair** (`Chair::foot_clear`, in
+  `walker`). Each foot's outline (heel, ankle, toe, tip) is kept 12 cm
+  from the footprint.
+  - A swinging foot is moved where it will land (`AnimFootIk::displaced`).
+  - A planted foot is moved where it is held (`FootLock::shift_anchor`).
+  - Each point moves away from the nearest point of the footprint, and
+    the points' moves are combined per axis and direction.
 
 ## Alternatives considered
 
@@ -121,6 +129,19 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   set on their feet's middle both ways (`sitting::on_feet`).
 - **Slanted shins exposed a leg IK bug**: the feet turned 9° about their
   toes (see [the knee hinge note](./a-knee-hinge-must-be-square-to-the-line-to-the-target.md)).
+- **Feet in the chair's legs.** Through the turn, every placement put a
+  foot ~5 cm into a front leg (measured against the gallery chair's posts
+  over BRP), and a heel 14 cm under the seat front. Each fix left part of
+  it:
+  - Moving only the swinging feet: the turn pivots a planted foot about
+    the body (`footlock`), and the planted ones still swung 4 cm into a
+    leg.
+  - Keeping the pose's feet 5 cm out: the sprung leg trails the pose by
+    4–7 cm when swinging fast, so 2–4 cm remained. Hence the 12 cm.
+  - Out by the nearest side: the move flipped 20 cm from front to side at
+    a corner's diagonal, the foot jerked across and its lock broke.
+  - Taking only the deepest point's move: it flipped as the deepest went
+    from heel to tip.
 - **After the rise both feet stay planted 0.3 s** (`walker::STOOD_HOLD`).
   Let go at once, a foot still moving with the extending legs was released
   by its speed and slid 11–17 mm, from where the turning walk left it to
@@ -141,17 +162,19 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   - stopped 53–125 mm off the spot;
   - seated hips 0–5 mm from the seat's middle;
   - feet 0 mm of slide sitting and rising;
-  - the body's middle never inside the footprint.
-- **Known:** through the turn a foot passes up to 8 cm under the seat's
-  front. In one case (the default chair) the heel came to its front leg,
-  touching or clipping it by a centimetre or two for a moment.
+  - the body's middle never inside the footprint;
+  - the feet at least 2.2 cm from any chair leg (a 4.5 cm half-wide foot
+    against the 3.5 cm posts), none under the seat front.
+- **Seen** from behind at the turn's closest moment: the foot beside the
+  chair, floor between it and the front leg.
 
 ## Revisit when
 
 - **The chair is one of several, or at a table:** the routing knows only
   this chair, and the turn needs ~0.5 m free beside the spot.
-- **The heel at the chair's leg matters:** the walk should step past the
-  corner, or the chair's legs become obstacles for the feet.
+- **Feet near other things** (a table's legs, a wall): `foot_clear`
+  knows one footprint, and the 12 cm clearance is tuned to the leg
+  springs' lag at the turning pace.
 - **Other seats** (a bench, a sofa): `Chair::standard` is one chair's size.
 
 ## Related

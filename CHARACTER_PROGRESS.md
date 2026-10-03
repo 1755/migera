@@ -41,6 +41,37 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Feet kept clear of the chair's legs through the turn
+
+- **Measured first:** each foot (heel to tip, 4.5 cm half-wide) against
+  the gallery chair's real leg posts, over BRP. Every placement put a foot
+  ~5 cm into a front leg, and a heel 14 cm under the seat front.
+- **`Chair::foot_clear`:** keeps each foot's outline 12 cm off the
+  footprint.
+  - Swinging feet are moved where they will land (`AnimFootIk::displaced`).
+  - Planted ones are moved where they are held (new
+    `FootLock::shift_anchor`), since the turn pivots a planted foot about
+    the body.
+  - Each point moves away from the footprint's nearest point, combined
+    per axis.
+- **Four wrong turns on the way:**
+  - swinging feet only (planted ones still 4 cm in);
+  - a 5 cm margin (the sprung leg trails the pose 4–7 cm, so 2–4 cm
+    remained);
+  - out by the nearest side (a 20 cm flip at the corner's diagonal broke
+    the lock);
+  - the deepest point only (a flip from heel to tip).
+- **Live, four placements:**
+  - feet at least 2.2 cm from every leg, none under the seat front;
+  - seated hips 1 mm from the middle;
+  - feet slid 0 mm sitting, ≤ 2 mm rising;
+  - the walk's path unchanged.
+- **Seen** from behind at the old contact frame: the foot beside the
+  chair, floor between it and the leg.
+- **Tests:** the move out, its continuity round a corner for a point and
+  for a whole foot.
+- `cargo test --release --lib`: 1123 passed. Clippy: 0 warnings.
+
 ### Round the chair, onto its middle, and no foot slides
 
 - **Round the chair:** a straight to the turning circle that would cross

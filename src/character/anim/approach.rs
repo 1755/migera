@@ -85,6 +85,47 @@ impl Chair {
         Vec3::new(middle.x, 0.0, middle.z) + left * local.x + forward * local.y
     }
 
+    /// The smallest horizontal move (world) that takes the deepest of
+    /// `points` (a foot's heel, ankle, ball and tip) out to `margin` from
+    /// the chair's footprint; zero when all are clear. A point is moved
+    /// away from the nearest point of the footprint, so round its corners
+    /// radially, and the move is continuous as a point goes round the chair:
+    /// out by the nearest side, it flipped 20 cm from front to side at a
+    /// corner's diagonal, and the swinging foot it moved swept past the
+    /// chair's leg. A swinging foot shifted by it each frame lands beside
+    /// the chair rather than under its seat or against its legs.
+    ///
+    /// The points' moves are combined each way along each axis (the most
+    /// any point needs to go +x, and -x, and so on): taking only the
+    /// deepest point's, the move flipped as the deepest went from heel to
+    /// tip.
+    pub fn foot_clear(&self, points: &[Vec3], margin: f32) -> Vec3 {
+        let half = self.size * 0.5;
+        let (mut most, mut least) = (Vec2::ZERO, Vec2::ZERO);
+        for &point in points {
+            let at = self.local(point);
+            let nearest = at.clamp(-half, half);
+            let away = at - nearest;
+            let out = if away != Vec2::ZERO {
+                // Outside the footprint: out along the way it already is.
+                let distance = away.length();
+                if distance >= margin {
+                    continue;
+                }
+                away / distance * (margin - distance)
+            } else {
+                // Inside it (not reached by a foot kept clear): out by the
+                // nearest side.
+                let across = at.x.signum() * (half.x + margin) - at.x;
+                let along = at.y.signum() * (half.y + margin) - at.y;
+                if across.abs() < along.abs() { Vec2::new(across, 0.0) } else { Vec2::new(0.0, along) }
+            };
+            most = most.max(out);
+            least = least.min(out);
+        }
+        self.world(most + least) - self.world(Vec2::ZERO)
+    }
+
     /// Where along the walk from `from` to `to` (0 to 1) it first comes
     /// within `margin` of the chair, if it does.
     fn met(&self, from: Vec3, to: Vec3, margin: f32) -> Option<f32> {
@@ -663,6 +704,54 @@ mod tests {
                     assert!(behind_front < 0.07, "from {from}: {:.0} mm past the seat's front edge", behind_front * 1e3);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_foot_is_moved_just_out_of_the_chair_by_its_nearest_side() {
+        let chair = Chair::standard(Vec3::new(0.0, 0.0, -2.0), Vec3::Z);
+        let margin = 0.05;
+        // The footprint's front edge: 0.06 + 0.24 in front of the seat.
+        let front = -2.0 + 0.30;
+        // Clear: no move.
+        assert_eq!(chair.foot_clear(&[Vec3::new(0.0, 0.0, front + 0.06)], margin), Vec3::ZERO);
+        // A heel 3 cm under the seat's front, its toe out: out the front, to
+        // the margin.
+        let moved = chair.foot_clear(&[Vec3::new(0.1, 0.0, front - 0.03), Vec3::new(0.1, 0.0, front + 0.12)], margin);
+        assert!((moved - Vec3::new(0.0, 0.0, 0.08)).length() < 1.0e-5, "{moved}");
+        // Beside the chair, a little in: out the side.
+        let moved = chair.foot_clear(&[Vec3::new(0.26, 0.0, -2.0)], margin);
+        assert!((moved - Vec3::new(0.02, 0.0, 0.0)).length() < 1.0e-5, "{moved}");
+        // Continuous as a point crosses into the margin.
+        let at = |z: f32| chair.foot_clear(&[Vec3::new(0.0, 0.0, z)], margin).length();
+        assert!(at(front + margin + 0.001) == 0.0 && at(front + margin - 0.001) < 0.0011);
+        // And going round a front corner, 3 cm off it: the move turns
+        // with the point, never jumping (out by the nearest side it flipped
+        // from front to side across the diagonal).
+        let corner = Vec3::new(0.23, 0.0, front);
+        let mut previous: Option<Vec3> = None;
+        for step in 0..=90 {
+            let angle = (step as f32).to_radians();
+            let point = corner + Vec3::new(angle.sin(), 0.0, angle.cos()) * 0.03;
+            let moved = chair.foot_clear(&[point], margin);
+            assert!((moved.length() - 0.02).abs() < 1.0e-4, "{step}°: {moved}");
+            if let Some(previous) = previous {
+                assert!(moved.distance(previous) < 0.001, "{step}°: jumped {:.4} m", moved.distance(previous));
+            }
+            previous = Some(moved);
+        }
+        // A whole foot sliding round the corner, heel and tip each nearer a
+        // different side: still no jump.
+        let mut previous: Option<Vec3> = None;
+        for step in 0..=120 {
+            let x = 0.10 + step as f32 * 0.002;
+            let heel = Vec3::new(x, 0.0, front + 0.02);
+            let tip = Vec3::new(x + 0.12, 0.0, front + 0.10);
+            let moved = chair.foot_clear(&[heel, tip], margin);
+            if let Some(previous) = previous {
+                assert!(moved.distance(previous) < 0.005, "x {x:.3}: jumped {:.4} m", moved.distance(previous));
+            }
+            previous = Some(moved);
         }
     }
 
