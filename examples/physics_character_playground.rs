@@ -59,7 +59,11 @@
 //! character's ankles and heading every frame), `--start X,Z,YAW` (where
 //! the first character starts, and its heading in degrees, 0 along -Z: to
 //! walk it at one structure; that character then has no goals),
-//! `--goals off` (walk straight and bounce, no goals).
+//! `--goals off` (walk straight and bounce, no goals),
+//! `--sit-at-table N` (the first character walks to the dining table's
+//! chair N and sits), `--foot-obstacles off`, `--ground flat`,
+//! `--bench SECS` (frame times, then exit), `--step-seconds S` (a fixed
+//! step per frame, for offscreen runs).
 
 use std::f32::consts::PI;
 
@@ -71,7 +75,7 @@ use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 
 use migera::character::anim::asset::AnimAssetPlugin;
 use migera::character::anim::physics_ground::{PhysicsGround, PhysicsGroundPlugin};
-use migera::character::anim::physics_obstacles::{FootObstacle, PhysicsObstacles, PhysicsObstaclesPlugin};
+use migera::character::anim::physics_obstacles::{Obstacle, PhysicsObstacles, PhysicsObstaclesPlugin};
 use migera::character::anim::plugin::AnimFootIk;
 use migera::character::anim::ragdoll_plugin::sole_blocks;
 use migera::character::anim::{
@@ -421,7 +425,7 @@ struct Solid {
     centre: Vec3,
     rotation: Quat,
     color: Color,
-    /// Feet keep out of it (`FootObstacle`): furniture, not terrain.
+    /// Feet keep out of it (`Obstacle`): furniture, not terrain.
     furniture: bool,
 }
 
@@ -515,7 +519,7 @@ fn layout() -> (Vec<Solid>, Vec<Rect>) {
     }
 
     // A dining table and four chairs, every leg its own collider, so feet
-    // keep out of the legs themselves (`FootObstacle`) rather than a block.
+    // keep out of the legs themselves (`Obstacle`) rather than a block.
     let wood = Color::srgb(0.45, 0.30, 0.18);
     let table = TABLE_AT;
     let (length, width, height, leg) = (1.2, TABLE_WIDTH, 0.75, 0.06);
@@ -538,13 +542,15 @@ const TABLE_AT: Vec3 = Vec3::new(-3.0, 0.0, 3.0);
 const TABLE_WIDTH: f32 = 0.8;
 
 /// The chairs' middles and turns: two along each long side of the table,
-/// facing it (local -Z toward it), pulled out to sit on: tucked in 0.35 m
-/// from its edge, the spot to stand on to sit was inside the table.
+/// facing it (local -Z toward it), pulled out to sit on. Tucked in 0.35 m
+/// from its edge, the spot to stand on to sit was inside the table; at
+/// 0.65 m, where the turn onto it ends was 12 cm from the table, no room to
+/// come at it.
 fn dining_chairs() -> Vec<(Vec3, Quat)> {
     [(-0.3, 1.0), (0.3, 1.0), (-0.3, -1.0), (0.3, -1.0)]
         .into_iter()
         .map(|(x, side): (f32, f32)| {
-            let at = TABLE_AT + Vec3::new(x, 0.0, side * (TABLE_WIDTH * 0.5 + 0.65));
+            let at = TABLE_AT + Vec3::new(x, 0.0, side * (TABLE_WIDTH * 0.5 + 0.75));
             (at, Quat::from_rotation_y(if side > 0.0 { 0.0 } else { PI }))
         })
         .collect()
@@ -587,7 +593,7 @@ fn spawn_room(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
             Transform::from_translation(solid.centre).with_rotation(solid.rotation),
         ));
         if solid.furniture {
-            entity.insert(FootObstacle);
+            entity.insert(Obstacle);
         }
     }
 }

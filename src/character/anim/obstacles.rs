@@ -50,6 +50,12 @@ pub trait FootObstacles: Send + Sync + 'static {
 #[derive(Component)]
 pub struct AnimObstacles(pub Box<dyn FootObstacles>);
 
+/// What a walker's body walks round on its way somewhere (`approach`): a
+/// table, chairs, a wall's length, as boxes on the floor. Filled by its
+/// owner, or each frame from the physics world (`physics_obstacles`).
+#[derive(Component, Debug, Clone, Default)]
+pub struct RouteObstacles(pub Vec<Footprint>);
+
 impl Default for AnimObstacles {
     /// None yet: filled in each frame by whatever owns it
     /// (`physics_obstacles`).
@@ -84,6 +90,46 @@ impl Footprint {
     pub fn world_move(&self, local: Vec2) -> Vec3 {
         let (left, forward) = self.axes();
         left * local.x + forward * local.y
+    }
+
+    /// Its corners, each moved `by` out from it along both sides (on the
+    /// floor).
+    pub fn corners(&self, by: f32) -> [Vec3; 4] {
+        let half = self.size * 0.5 + Vec2::splat(by);
+        [Vec2::new(1.0, 1.0), Vec2::new(1.0, -1.0), Vec2::new(-1.0, -1.0), Vec2::new(-1.0, 1.0)]
+            .map(|corner| Vec3::new(self.middle.x, 0.0, self.middle.z) + self.world_move(corner * half))
+    }
+
+    /// Whether `other` lies within this box grown by `slack` (a chair's leg
+    /// within its seat, a backrest within the chair).
+    pub fn contains(&self, other: &Footprint, slack: f32) -> bool {
+        let half = self.size * 0.5 + Vec2::splat(slack);
+        other.corners(0.0).iter().all(|&corner| {
+            let at = self.local(corner);
+            at.x.abs() <= half.x && at.y.abs() <= half.y
+        })
+    }
+
+    /// Where along the walk from `from` to `to` (0 to 1) it first comes
+    /// within `margin` of the box, if it does.
+    pub fn met(&self, from: Vec3, to: Vec3, margin: f32) -> Option<f32> {
+        let half = self.size * 0.5 + Vec2::splat(margin);
+        let (a, b) = (self.local(from), self.local(to));
+        let d = b - a;
+        let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
+        for axis in 0..2 {
+            let (start, step, bound) = (a[axis], d[axis], half[axis]);
+            if step.abs() < 1.0e-9 {
+                if start.abs() > bound {
+                    return None;
+                }
+                continue;
+            }
+            let (t0, t1) = ((-bound - start) / step, (bound - start) / step);
+            enter = enter.max(t0.min(t1));
+            leave = leave.min(t0.max(t1));
+        }
+        (enter <= leave).then_some(enter)
     }
 
     /// The move (box frame) taking the line `heel`-`tip` out to

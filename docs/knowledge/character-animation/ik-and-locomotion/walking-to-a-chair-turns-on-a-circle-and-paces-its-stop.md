@@ -1,6 +1,6 @@
 ---
 title: Walking to a chair turns round on a small circle, paces its last steps to stop on the spot, and the seat makes up the rest
-description: "A walker given a chair goes round it, then a Dubins path (straight, a 0.25 m circle: Robinson's ~1.5 s 180° turn) ending 10 cm in front of its spot, its feet kept off the chair by the foot IK. Stops come in half strides, so the last steps are paced; the seat moves to take the rest. Read before changing approach.rs."
+description: "A walker given a chair routes round obstacles (a visibility graph; physics ones at body height), comes at its spot from an entry where needed, then a Dubins turn (0.25 m circle, Robinson's ~1.5 s 180°) ending 10 cm in front of it. The stop is paced; the seat takes the rest. Read before changing approach.rs."
 type: decision
 status: current
 tags:
@@ -14,6 +14,9 @@ code:
   - src/character/anim/walker.rs
   - src/character/anim/sitting.rs
   - src/character/anim/footlock.rs
+  - src/character/anim/obstacles.rs
+  - src/character/anim/physics_obstacles.rs
+  - examples/physics_character_playground.rs
   - examples/character_gallery.rs
 sources:
   - "Robinson et al. (2018), The Timed 180° Turn Test for Assessing People with Hemiplegia from Chronic Stroke, BioMed Res Int, https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5820648/ — healthy adults turn 180° in a median 2.5 steps and 1.5 s"
@@ -57,16 +60,30 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
     ending on the spot dips a radius behind it.
   - Turns sharper than 0.8 rad are walked at the turning pace.
   - It looks at the chair on the way, until it turns.
-- **Round the chair:** a straight that would come within 0.2 m of the
-  chair's footprint (`Chair::size`, `Chair::ahead`) heads for a corner
-  0.45 m out from it.
-  - It takes the corner giving the shortest way round, and never goes back
-    to a corner it has reached.
-  - Once clear, it plans afresh (the shorter circle from beside the chair
-    is not the one from behind it).
-  - It never stops while going round.
-- **Too close to turn onto the spot** (within both circles, or a straight
-  under 0.6 m that close): it walks out 1.2 m in front of the spot first.
+- **Round obstacles** (`route`): its own chair (`Chair::footprint`,
+  passed first) and any others (`obstacles::RouteObstacles`, from the
+  physics world by `physics_obstacles` at body height, a table top
+  included).
+  - **A visibility graph:** each obstacle's corners 0.45 m out (those not
+    within 0.2 m of another), linked where a straight keeps 0.2 m clear,
+    searched from the goal with Dijkstra, re-planned every frame.
+  - **Ways into the goal:** they may come within the margin over their last
+    0.2 m, and of its own chair keep out of the chair alone (the spot lies
+    within its margin by design).
+  - **The corner being walked to is kept** unless another way is 0.3 m
+    shorter. Once clear, it plans afresh. It never stops while going
+    round.
+  - **With no way round it waits;** never straight on.
+  - **Within 0.5 m of an obstacle it walks at the turning pace.**
+- **By an entry** (`entry`), when the turn has no room or is in the way:
+  1.2 m from where the turn ends, in front of it or to its left or right.
+  - It takes the nearest that is clear of every obstacle, has a clear way
+    in, and whose whole final approach (straight and turn, sampled) keeps
+    0.1 m from all but its own chair.
+  - The entry is re-checked every frame, as obstacles are found on the way.
+  - A walk from an entry is committed: not re-routed onto the tangent.
+  - A person comes at a chair from in front in the open, and along the
+    gap from one side at a table.
 - **The stop is paced.** A stop can end only in half-stride steps (a
   footfall, then a last step, `transition`): 0.39 m apart at the turning
   pace, up to 0.29 m off the spot.
@@ -120,6 +137,28 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   - A routing that gave up within its margin as "beside the chair" walked
     12 cm into the seat closing on a corner.
   - Skipping only the corner it was at, a slowed walk orbited a corner.
+  - Routed round its own chair only, at the playground's table it walked
+    through the table (~6 s inside its footprint).
+  - Corner by corner of one box, at a table with chairs pulled out, a
+    corner lay inside the next obstacle.
+  - With no way found it walked straight on: through its own chair, and
+    through the table. It now waits.
+  - At 1.2 m/s the turn onto a line past a chair's corner swung 0.6 m wide
+    and came within 8 cm (hence slow near furniture).
+- **Where to come from:**
+  - Walking out in front of the spot when too close went through the
+    table at a table.
+  - Back the way it came, it came the same way again, too close again:
+    a loop.
+  - An entry chosen before the far chairs were found lay 15 cm from one.
+    It was unreachable and the walk went straight on; now re-checked, and
+    the physics region covers the chair too.
+- **The spot is 0.51 m in front of the seated hips**, not 0.40: the
+  standing hips sit 0.11 behind the root. A model test assuming 0.40
+  passed a table the live walk could not reach.
+- **A chair at a table must be pulled out ~0.75 m** from the table's edge
+  to stand in front of. At 0.65 m the turn's end was 12 cm from the table,
+  with no entry to come from.
 - **A seat moved only along the forward axis lost its `across`**
   (`getup::placed` moves a pose along the forward only). Chair poses are now
   set on their feet's middle both ways (`sitting::on_feet`).
@@ -154,11 +193,26 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
     against the 3.5 cm posts), none under the seat front.
 - **Seen** from behind at the turn's closest moment: the foot beside the
   chair, floor between it and the front leg.
+- **At a table** (`approach::tests`): the playground's dining set, each of
+  four chairs from four sides of the room. Never into the table or another
+  chair, past its own chair's front by at most the turn, within 6 cm of
+  its spot.
+- **Live at the table** (playground `--sit-at-table N`, physics
+  obstacles), three chairs, one from behind:
+  - the body's middle 9–38 cm clear of the table throughout (before:
+    16–39 cm inside it);
+  - feet at least 2.3 cm from every leg;
+  - two sat with their hips 0 mm from the seat; one stopped 20 cm past
+    its spot, its hips 15 cm off.
 
 ## Revisit when
 
-- **The chair is one of several, or at a table:** the routing knows only
-  this chair, and the turn needs ~0.5 m free beside the spot.
+- **The stop in a tight place:** from an entry the final approach is short
+  and slow, and a stop can still land up to a quarter stride off. At the
+  table one walk stopped 20 cm past its spot, beyond what the seat takes
+  up (its hips 15 cm off the seat's middle).
+- **Moving obstacles, crowds:** the graph is re-planned every frame but
+  knows nothing of other walkers.
 - **Other seats** (a bench, a sofa): `Chair::standard` is one chair's size.
 
 ## Related

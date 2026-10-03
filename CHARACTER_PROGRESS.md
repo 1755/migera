@@ -41,6 +41,38 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walks to a chair route round tables and chairs
+
+- **`approach::route`:** a visibility graph over every obstacle's corners
+  (0.45 m out), straights kept 0.2 m clear, Dijkstra from the goal,
+  re-planned each frame.
+  - The corner being walked to is kept unless another way is 0.3 m
+    shorter.
+  - Its own chair is passed first, so a way into the spot (within the
+    chair's margin by design) keeps out of the chair alone.
+  - No way round: it waits, never straight on.
+  - Within 0.5 m of an obstacle it walks at the turning pace.
+- **`approach::entry`:** when the turn onto the spot has no room or is in
+  the way, the walk comes at it from 1.2 m in front, left or right of it.
+  It takes the nearest whose whole final approach is clear, re-checked
+  every frame. This replaces walking out in front of the spot, which at a
+  table went through the table.
+- **`obstacles::RouteObstacles`:** filled by `physics_obstacles` from
+  marked colliders around the character and its chair, at body height,
+  legs dropped within their seat or top. The marker is renamed
+  `FootObstacle` → `Obstacle`.
+- **Playground:** chairs pulled out 0.75 m from the table. At 0.65 m the
+  turn's end was 12 cm from the table, no room to stand in front.
+- **Tests:** each of the table's four chairs from four sides, never into
+  the table or another chair, within 6 cm of the spot.
+- **Live at the table,** three chairs, one from behind:
+  - the body's middle 9–38 cm clear of the table (was 16–39 cm inside);
+  - feet ≥ 2.3 cm from every leg;
+  - two sat with hips 0 mm off;
+  - one stopped 20 cm past its spot, hips 15 cm off (the stop's
+    quarter-stride limit in a short, slow final approach).
+- `cargo test --release --lib`: 1130 passed. Clippy: 0 warnings.
+
 ### Foot obstacles from the physics world
 
 - **`physics_obstacles.rs`:**

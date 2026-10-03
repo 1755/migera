@@ -1,5 +1,5 @@
-//! Foot obstacles from the physics world: chair and table legs, walls, any
-//! collider marked [`FootObstacle`].
+//! Obstacles from the physics world, for the feet and for the walk: chairs,
+//! tables and their legs, walls, any collider marked [`Obstacle`].
 //!
 //! The foot IK asks its `obstacles::AnimObstacles` from inside the IK, where
 //! there is no access to the physics world. So [`sample_physics_obstacles`]
@@ -9,21 +9,25 @@
 //! Each becomes a `obstacles::Footprint`: an upright box collider exactly
 //! (turned about the vertical), anything else by its bounding box.
 //!
+//! And for a walk to a chair (`approach`), `obstacles::RouteObstacles`:
+//! those around the character and its chair at body height (a table top
+//! too), each leg dropped where it lies within its seat or top.
+//!
 //! # Opt-in, by marker
 //!
 //! Which colliders a foot keeps out of cannot be read off their shape: a
 //! ramp is taller than a step yet walked up, a stair is a prop the foot
 //! stands on (`physics_ground`), and both would push a foot off them as
-//! obstacles. So only colliders marked [`FootObstacle`] count: furniture,
+//! obstacles. So only colliders marked [`Obstacle`] count: furniture,
 //! walls, posts.
 
 use avian3d::prelude::{Collider, ColliderAabb, SpatialQuery};
 use bevy::prelude::*;
 
-use super::obstacles::{AnimObstacles, Footprint, Footprints};
+use super::obstacles::{AnimObstacles, Footprint, Footprints, RouteObstacles};
 use super::physics_ground::PhysicsGround;
 use super::plugin::AnimSet;
-use super::{Ragdoll, WalkerSet};
+use super::{Ragdoll, Walker, WalkerSet};
 use crate::character::{Bone, HumanoidSkeleton};
 
 /// Gathers each [`PhysicsObstacles`] character's foot obstacles from the
@@ -36,13 +40,15 @@ impl Plugin for PhysicsObstaclesPlugin {
     }
 }
 
-/// A collider feet keep out of (`obstacles`).
+/// A collider feet keep out of (`obstacles`) and walks go round
+/// (`approach`).
 #[derive(Component, Debug, Clone, Copy, Default)]
-pub struct FootObstacle;
+pub struct Obstacle;
 
-/// Keep this character's feet out of the physics world's [`FootObstacle`]s.
+/// Keep this character's feet out of the physics world's [`Obstacle`]s,
+/// and its walks to a chair round them (`obstacles::RouteObstacles`).
 #[derive(Component, Debug, Clone)]
-#[require(AnimObstacles)]
+#[require(AnimObstacles, RouteObstacles)]
 pub struct PhysicsObstacles {
     /// How far round the feet to look, metres: a swinging foot moves a
     /// stride's worth between where it was and where it lands, but only
@@ -54,13 +60,19 @@ pub struct PhysicsObstacles {
     pub feet_height: (f32, f32),
     /// Colliders ignored besides the character's own ragdoll bodies.
     pub ignore: Vec<Entity>,
-    /// How many obstacles were found last frame.
+    /// How far round the character to look for what its walk goes round,
+    /// metres, and the heights over its ground the body fills (a table top
+    /// at 0.75 m is in the way of the body, not of the feet).
+    pub route_reach: f32,
+    pub body_height: (f32, f32),
+    /// How many obstacles were found last frame, for the feet and the walk.
     pub found: usize,
+    pub found_on_route: usize,
 }
 
 impl Default for PhysicsObstacles {
     fn default() -> Self {
-        Self { reach: 0.5, feet_height: (0.01, 0.25), ignore: Vec::new(), found: 0 }
+        Self { reach: 0.5, feet_height: (0.01, 0.25), ignore: Vec::new(), route_reach: 2.5, body_height: (0.01, 1.8), found: 0, found_on_route: 0 }
     }
 }
 
@@ -89,14 +101,16 @@ pub fn sample_physics_obstacles(
         &HumanoidSkeleton,
         &mut PhysicsObstacles,
         &mut AnimObstacles,
+        &mut RouteObstacles,
         &Transform,
         Option<&PhysicsGround>,
         Option<&Ragdoll>,
+        Option<&Walker>,
     )>,
-    obstacles: Query<(&Collider, &GlobalTransform, &ColliderAabb), With<FootObstacle>>,
+    obstacles: Query<(&Collider, &GlobalTransform, &ColliderAabb), With<Obstacle>>,
     world_transforms: Query<&GlobalTransform>,
 ) {
-    for (skeleton, mut config, mut found, root, ground, ragdoll) in &mut characters {
+    for (skeleton, mut config, mut found, mut on_route, root, ground, ragdoll, walker) in &mut characters {
         let mut ignore = config.ignore.clone();
         if let Some(ragdoll) = ragdoll {
             ignore.extend(ragdoll.bodies.iter().filter_map(|(_, body)| *body));
@@ -124,6 +138,36 @@ pub fn sample_physics_obstacles(
             .collect();
         config.found = footprints.len();
         found.0 = Box::new(Footprints(footprints));
+
+        // What the walk goes round: around the character and the chair it
+        // walks to, at body height. Around the character alone, the far
+        // chairs at a table were found only on the way, after the walk had
+        // chosen where to come at its own chair from.
+        let (low, high) = (floor + config.body_height.0, floor + config.body_height.1);
+        let at = root.translation;
+        let to = walker.and_then(|walker| walker.chair).map_or(at, |chair| chair.seat);
+        let region = ColliderAabb {
+            min: Vec3::new(at.x.min(to.x) - config.route_reach, low, at.z.min(to.z) - config.route_reach),
+            max: Vec3::new(at.x.max(to.x) + config.route_reach, high, at.z.max(to.z) + config.route_reach),
+        };
+        let route: Vec<Footprint> = spatial
+            .aabb_intersections_with_aabb(region)
+            .into_iter()
+            .filter(|entity| !ignore.contains(entity))
+            .filter_map(|entity| obstacles.get(entity).ok())
+            .filter(|(_, _, aabb)| aabb.min.y < high && aabb.max.y > low)
+            .map(|(collider, transform, aabb)| footprint_of(collider, transform, aabb))
+            .collect();
+        // Each piece is a collider: the legs lie within their seat or top,
+        // and only add corners to the walk's graph.
+        let route: Vec<Footprint> = route
+            .iter()
+            .enumerate()
+            .filter(|&(i, piece)| !route.iter().enumerate().any(|(j, other)| j != i && other.size.x * other.size.y > piece.size.x * piece.size.y && other.contains(piece, 0.01)))
+            .map(|(_, piece)| *piece)
+            .collect();
+        config.found_on_route = route.len();
+        on_route.0 = route;
     }
 }
 

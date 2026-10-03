@@ -1,6 +1,6 @@
 ---
 title: Feet keep clear of obstacles in the foot IK, as a capsule against a probe
-description: "AnimObstacles (a probe, like AnimGround; boxes or avian colliders marked FootObstacle) moves each foot's toe target and planted lock so its heel-to-tip line keeps 8 cm from obstacles. In the IK stage, not on the walker's pose (12 cm there); as a line, not points. Read before changing foot avoidance."
+description: "AnimObstacles (a probe, like AnimGround; boxes or avian colliders marked Obstacle) moves each foot's toe target and planted lock so its heel-to-tip line keeps 8 cm from obstacles. In the IK stage, not on the walker's pose (12 cm there); as a line, not points. Read before changing foot avoidance."
 type: decision
 status: current
 tags:
@@ -25,6 +25,7 @@ aliases:
   - Footprints
   - Footprint
   - PhysicsObstacles
+  - Obstacle
   - FootObstacle
   - sample_physics_obstacles
   - foot_line
@@ -70,7 +71,7 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
     either side of a foot cancel rather than one throwing it into the
     other.
 - **From the physics world** (`physics_obstacles`): put
-  `PhysicsObstacles` on a character and `FootObstacle` on colliders.
+  `PhysicsObstacles` on a character and `Obstacle` on colliders.
   - Each frame before the IK, `sample_physics_obstacles` asks avian's
     broad phase (`aabb_intersections_with_aabb`) for marked colliders
     within 0.5 m of the feet.
@@ -120,7 +121,7 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
   - seated hips 0–1 mm from the seat's middle;
   - feet 0 mm of slide sitting, rising and standing after.
 - **Live, physics:** the playground's dining table (four 6 cm legs) and
-  chairs (3.5 cm legs) are static colliders marked `FootObstacle`. A
+  chairs (3.5 cm legs) are static colliders marked `Obstacle`. A
   walker sits at the table (`--sit-at-table N`), turning between a chair
   and the table, A/B on the same input (`--foot-obstacles off`):
   - without the obstacles, a foot 5.7–7.0 cm into a table leg;
@@ -133,10 +134,6 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
 
 ## Revisit when
 
-- **The body walks through furniture:** the chair approach routes round
-  its own chair only, and walking to a seat at the table it walked through
-  the table (its pelvis inside the table's footprint for ~6 s) before
-  reaching its spot. Route planning needs the same physics obstacles.
 - **Tilted or round furniture** matters: anything but an upright box is
   kept out by its bounds, wider than it is.
 - **The heel shortfall is fixed** (the leg solve reaching the ankle the
@@ -146,6 +143,6 @@ A first fix in the walker knew only that chair, and needed a 12 cm margin.
 
 ## Related
 
-- [Walking to a chair turns on a circle and paces its stop](./walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md) — context: the turn that put feet in the chair's legs.
+- [Walking to a chair turns on a circle and paces its stop](./walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md) — context: the turn that put feet in the chair's legs, and the walk that routes round the same physics obstacles (`RouteObstacles`).
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — deeper: how a planted foot's lock is moved by the body, which this moves too.
 - [Sample the ground in the world, not in the pose's frame](./sample-the-ground-in-the-world-not-the-pose.md) — same-trap: obstacles are asked in the world for the same reason.

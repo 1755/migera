@@ -451,12 +451,14 @@ type WalkingRig = (
     &'static mut WalkBalance,
     // Down or getting up, the walker stands.
     Option<&'static Ragdoll>,
+    // What it walks round, going to a chair.
+    Option<&'static super::obstacles::RouteObstacles>,
 );
 
 /// Drives each walker's gait from its clock, in `AnimSet::Target`, so the
 /// phase layer composes on top and the springs smooth the result.
 pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
-    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll) in
+    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll, route_obstacles) in
         &mut rigs
     {
         let state = &mut *state;
@@ -503,7 +505,15 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 // The turn ends a little in front of the spot, clear of the
                 // chair; the seat makes that up.
                 let turn_to = spot + chair.forward.normalize_or_zero() * approach::TURN_AHEAD;
-                let order = state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, turn_to, facing_yaw + ahead, speed, Some(&chair));
+                // Round its chair and whatever else stands in the way.
+                // Its own chair's pieces, in the physics world too, are its
+                // chair: the spot is within their margin by design.
+                let own = chair.footprint();
+                let mut obstacles = vec![own];
+                if let Some(route) = route_obstacles {
+                    obstacles.extend(route.0.iter().copied().filter(|piece| !own.contains(piece, 0.05)));
+                }
+                let order = state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, turn_to, facing_yaw + ahead, speed, &obstacles);
                 match order {
                     approach::Order::Walk { speed, heading, rate } => {
                         (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
