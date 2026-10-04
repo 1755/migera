@@ -29,33 +29,66 @@ use super::rig::{offset_from, LocalPose, RigGeometry};
 use crate::character::skeleton::Bone;
 
 /// The nearest the feet come, toe joint to toe joint across, metres.
-pub const SHUFFLE_CLOSEST: f32 = 0.14;
+pub const SHUFFLE_CLOSEST: f32 = 0.12;
 
 /// How high a swinging foot lifts at mid-swing, metres: a shuffle's foot
 /// skims, it does not stride over.
 pub const SHUFFLE_LIFT: f32 = 0.05;
+
+/// How far through its swing a foot has finished moving across, the rest
+/// a set-down.
+pub const SHUFFLE_ACROSS_BY: f32 = 0.75;
 
 /// The share of a cycle each foot stands: both down a while between the
 /// steps, as in a slow walk.
 pub const SHUFFLE_DUTY: f32 = 0.65;
 
 /// The longest a shuffle travels a cycle, metres.
-pub const SHUFFLE_LONGEST: f32 = 0.55;
+pub const SHUFFLE_LONGEST: f32 = 0.45;
+
+/// A shuffle's stride per m/s of speed, metres: short and quick, about
+/// 1.8 cycles a second. At 0.8 a stride the stance widened 7.5 cm a side
+/// at 0.6 m/s, all within the first swing; the sprung leg standing through
+/// it lagged, and its lock let it go 1.7 cm out at lift-off.
+pub const SHUFFLE_STRIDE_PER_SPEED: f32 = 0.55;
 
 /// How fast a shuffle under way takes a new speed asked, m/s per second:
 /// its stride and width ease to the new one rather than jump.
 pub const SHUFFLE_REGEAR: f32 = 0.4;
 
+/// How fast a shuffle under way takes a new diagonal, of its way forward
+/// per second.
+pub const SHUFFLE_REAIM: f32 = 0.5;
+
 /// A shuffle at `speed` m/s toward `toward` (+1 the rig's left, -1 its
-/// right): its stride grows with speed up to [`SHUFFLE_LONGEST`], the
-/// cadence carrying the rest.
-pub fn shuffling(speed: f32, toward: f32) -> GaitParams {
-    let stride = (speed.abs() * 0.8).clamp(0.12, SHUFFLE_LONGEST);
+/// right), `ahead` of its way forward (0 straight across, at most
+/// [`SHUFFLE_MOST_AHEAD`]; negative, back): its stride grows with speed up
+/// to [`SHUFFLE_LONGEST`], the cadence carrying the rest.
+pub fn shuffling(speed: f32, toward: f32, ahead: f32) -> GaitParams {
+    let stride = (speed.abs() * SHUFFLE_STRIDE_PER_SPEED).clamp(0.1, SHUFFLE_LONGEST);
     GaitParams {
         duty_factor: SHUFFLE_DUTY,
-        curves: super::gait::LegCurves::Shuffle { step: stride * SHUFFLE_DUTY, toward: toward.signum() },
+        curves: super::gait::LegCurves::Shuffle {
+            step: stride * SHUFFLE_DUTY,
+            toward: toward.signum(),
+            ahead: ahead.clamp(-SHUFFLE_MOST_AHEAD, SHUFFLE_MOST_AHEAD),
+        },
         ..GaitParams::default()
     }
+}
+
+/// The most of a shuffle's way that is forward or back, a diagonal at 45°:
+/// beyond it the body walks, turned to its way (`walker`).
+pub const SHUFFLE_MOST_AHEAD: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Which feet a shuffle has down (left, right), for the foot locks
+/// (`plugin::AnimFootIk::planted`): at `cycle`, the gait in at `weight`.
+/// While the gait fades in or out, never the foot the fade swings
+/// (`swinging_left`: a start's first, a stop's last): its clock counts it
+/// down while it is still being set down (9 mm up, 1 cm short), and locked
+/// there it was dropped short.
+pub fn planted(cycle: f32, duty: f32, weight: f32, swinging_left: bool) -> [bool; 2] {
+    [(0usize, 0.0f32), (1, 0.5)].map(|(leg, shift)| leg_phase(cycle + shift, duty).is_stance() && (weight >= 1.0 || (leg == 0) != swinging_left))
 }
 
 /// Where each foot sits across at `phase`, metres along the travel, from
@@ -66,25 +99,33 @@ pub fn foot_at(phase: f32, duty: f32, step: f32) -> (f32, f32) {
     match leg_phase(phase, duty) {
         LegPhase::Stance { progress } => (step * (0.5 - progress), 0.0),
         LegPhase::Swing { progress } => {
-            let eased = progress * progress * (3.0 - 2.0 * progress);
+            // Across by three quarters of the swing, then straight down: on
+            // the arc's own schedule the sprung foot met the floor still
+            // going, and slid its last 6-15 mm every step.
+            let across = (progress / SHUFFLE_ACROSS_BY).min(1.0);
+            let eased = across * across * (3.0 - 2.0 * across);
             (step * (eased - 0.5), SHUFFLE_LIFT * (std::f32::consts::PI * progress).sin())
         }
     }
 }
 
-/// The shuffle's pose at `phase` on `base` (a standing pose), for `step`
-/// and `toward` ([`super::gait::LegCurves::Shuffle`]).
-pub fn shuffle_pose(phase: f32, params: &GaitParams, step: f32, toward: f32, base: &LocalPose, rig: &RigGeometry) -> LocalPose {
+/// The shuffle's pose at `phase` on `base` (a standing pose), for `step`,
+/// `toward` and `ahead` ([`super::gait::LegCurves::Shuffle`]).
+pub fn shuffle_pose(phase: f32, params: &GaitParams, step: f32, toward: f32, ahead: f32, base: &LocalPose, rig: &RigGeometry) -> LocalPose {
     let mut pose = *base;
-    let across = rig.left() * toward;
+    // The way it goes: across, and forward or back on a diagonal.
+    let sideways = (1.0 - ahead * ahead).max(0.0).sqrt();
+    let across = rig.left() * toward * sideways + rig.forward() * ahead;
     // The stance stood, toe to toe across, and the mean the shuffle needs.
     let toe = |bone| offset_from(base, rig, Bone::Hips, bone);
     let stood = (toe(Bone::LeftToeBase) - toe(Bone::RightToeBase)).dot(rig.left()).abs();
     // The gap swings by a stride (the body's travel a cycle, `step / duty`)
     // about its mean, so the mean is the closest plus half of it. Plus a
     // whole `step` either side, as a walk's feet pass, it spread 0.69 m.
+    // On a diagonal only the stride's part across: front to back the feet
+    // pass each other, apart across, as a walk's do.
     let duty = params.duty_factor;
-    let wider = ((SHUFFLE_CLOSEST + 0.5 * step / duty).max(stood) - stood) * 0.5;
+    let wider = ((SHUFFLE_CLOSEST + 0.5 * sideways * step / duty).max(stood) - stood) * 0.5;
     let (mut feet, mut loads) = ([Vec3::ZERO; 2], [0.0f32; 2]);
     for (leg, shift) in [(0usize, 0.0f32), (1, 0.5)] {
         let (along, lift) = foot_at(phase + shift, duty, step);
@@ -100,7 +141,50 @@ pub fn shuffle_pose(phase: f32, params: &GaitParams, step: f32, toward: f32, bas
         }
     }
     super::stance::move_pelvis_and_feet(&mut pose, rig, Vec3::ZERO, Quat::IDENTITY, loads, feet, 0.0, feet, [0.0; 2], |needed, _| needed);
+    carry_arms(&mut pose, phase, duty, rig);
     pose
+}
+
+/// How far a shuffle carries each upper arm out from the body, radians.
+/// Authored, not measured: no recording of the side shuffle's arms was to
+/// hand. A walk's arms swing against the legs to cancel the body's twist
+/// about the vertical; across, the legs swing in the frontal plane, and the
+/// arms are held a little out of it.
+pub const SHUFFLE_ARM_OUT: f32 = 0.2;
+
+/// How far each arm sways further out as the opposite leg swings out,
+/// radians: the counter-swing, small.
+pub const SHUFFLE_ARM_SWAY: f32 = 0.05;
+
+/// How much further a shuffle bends the elbows than standing, radians.
+pub const SHUFFLE_ELBOW: f32 = 0.35;
+
+/// Carries the arms a little out, the elbows a little bent, each arm
+/// swaying out as the other side's leg swings: on the rig in hand, each
+/// axis derived from the arm as posed (as the walk's arm swing is), so the
+/// sign holds on any rig.
+fn carry_arms(pose: &mut LocalPose, phase: f32, duty: f32, rig: &RigGeometry) {
+    use super::rig::delta_after_world_turn;
+    let arms = [(Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand, rig.left(), 0.5f32), (Bone::RightArm, Bone::RightForeArm, Bone::RightHand, -rig.left(), 0.0)];
+    for (shoulder, elbow, hand, outward, opposite) in arms {
+        // Out as the opposite leg swings, by how far through its swing.
+        let sway = match leg_phase(phase + opposite, duty) {
+            LegPhase::Swing { progress } => (std::f32::consts::PI * progress).sin(),
+            LegPhase::Stance { .. } => 0.0,
+        };
+        let along = offset_from(pose, rig, shoulder, hand).normalize_or_zero();
+        // Turning `along` toward `outward`: a positive angle about their
+        // cross carries the hand out.
+        let out = along.cross(outward).normalize_or_zero();
+        if out.length_squared() > 0.25 {
+            pose.rotations[shoulder] = delta_after_world_turn(pose, rig, shoulder, Quat::from_axis_angle(out, SHUFFLE_ARM_OUT + SHUFFLE_ARM_SWAY * sway));
+        }
+        let forearm = offset_from(pose, rig, elbow, hand).normalize_or_zero();
+        let fold = forearm.cross(rig.forward()).normalize_or_zero();
+        if fold.length_squared() > 0.25 {
+            pose.rotations[elbow] = delta_after_world_turn(pose, rig, elbow, Quat::from_axis_angle(fold, SHUFFLE_ELBOW));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,11 +202,11 @@ mod tests {
         // The walker sets the cadence from the stride the pose travels
         // (`distance_per_cycle`), and root motion reads it off the planted
         // feet: walked at that cadence a cycle carries the body one stride
-        // across, toward the side asked.
+        // across, toward the side asked; on a diagonal, along it.
         use crate::character::anim::locomotion::{distance_per_cycle, root_displacement_between};
         let (stood, rig) = real_stood();
-        for (speed, toward) in [(0.3, 1.0), (0.6, -1.0)] {
-            let params = shuffling(speed, toward);
+        for (speed, toward, ahead) in [(0.3, 1.0, 0.0), (0.6, -1.0, 0.0), (0.5, 1.0, 0.6), (0.5, -1.0, -0.5)] {
+            let params = shuffling(speed, toward, ahead);
             let stride = distance_per_cycle(&params, &stood, &rig);
             let frames = 240;
             let mut moved = Vec3::ZERO;
@@ -133,17 +217,112 @@ mod tests {
                 moved += root_displacement_between(&before, &after, cycle - 0.5 / frames as f32, &params, &rig).unwrap();
                 before = after;
             }
-            let across = moved.dot(rig.left() * toward);
-            assert!((across - stride).abs() < 0.01 * stride, "{speed}: a cycle moved {across:.3} m across, the stride is {stride:.3}");
-            assert!(moved.dot(rig.forward()).abs() < 0.01, "{speed}: and {:.3} m along", moved.dot(rig.forward()));
+            let way = rig.left() * toward * (1.0f32 - ahead * ahead).sqrt() + rig.forward() * ahead;
+            let along = moved.dot(way);
+            assert!((along - stride).abs() < 0.01 * stride, "{speed}, {ahead}: a cycle moved {along:.3} m its way, the stride is {stride:.3}");
+            assert!((moved - way * along).length() < 0.01, "{speed}, {ahead}: and {:.3} m off it", (moved - way * along).length());
+        }
+    }
+
+    /// A shuffle started from a stand as the walker does it, headless: the
+    /// transition, the pose, root motion off the rendered contacts. Per
+    /// frame, each ball in the world (the body carried by root motion), the
+    /// gait's weight, and which feet the gait has down.
+    fn start(speed: f32, toward: f32, frames: usize) -> Vec<([Vec3; 2], f32, [bool; 2])> {
+        use crate::character::anim::gait::walk_pose_on;
+        use crate::character::anim::locomotion::{distance_per_cycle, root_displacement_between};
+        use crate::character::anim::rig::forward_kinematics_on;
+        use crate::character::anim::transition::{Transition, TransitionConfig, TransitionEvent};
+        const DT: f32 = 1.0 / 60.0;
+        let (stood, rig) = real_stood();
+        let params = shuffling(speed, toward, 0.0);
+        let cadence = speed / distance_per_cycle(&params, &stood, &rig);
+        let config = TransitionConfig { mid_swing: params.duty_factor * 0.5, ..Default::default() };
+        let mut transition = Transition::standing();
+        let (mut cycle, mut body) = (0.0f32, Vec3::ZERO);
+        let (mut previous, mut previous_cycle) = (stood, 0.0f32);
+        let mut out = Vec::new();
+        for _ in 0..frames {
+            if let Some(TransitionEvent::FirstStep { cycle: from }) = transition.advance(speed, cycle, &config, DT) {
+                cycle = from;
+            }
+            let weight = transition.weight;
+            let mut prepared = stood;
+            transition.apply_release(&mut prepared, &rig);
+            let pose = if weight <= 0.0 { prepared } else { transition.blend(&prepared, &walk_pose_on(cycle, &params, &stood, &rig), &rig) };
+            if weight > 0.0 {
+                let middle = previous_cycle + 0.5 * (cycle - previous_cycle).rem_euclid(1.0);
+                body += root_displacement_between(&previous, &pose, middle, &params, &rig).unwrap_or(Vec3::ZERO);
+            }
+            let joints = forward_kinematics_on(&pose, &rig);
+            // As the walker tells the foot locks.
+            let down = planted(cycle, params.duty_factor, weight, transition.stance < 0.0);
+            out.push(([joints[Bone::LeftToeBase] + body, joints[Bone::RightToeBase] + body], weight, down));
+            (previous, previous_cycle) = (pose, cycle);
+            cycle = (cycle + cadence * DT * f32::from(transition.release >= 1.0 || weight > 0.0)).rem_euclid(1.0);
+        }
+        out
+    }
+
+    #[test]
+    fn a_shuffle_carries_the_hands_out_and_forward_both_sides_alike() {
+        // Hanging as they stood, the arms read as a body moved by its legs
+        // alone. Carried: each hand further out to its own side and a
+        // little forward of standing, the two alike.
+        let (stood, rig) = real_stood();
+        let hands = |pose: &LocalPose| [Bone::LeftHand, Bone::RightHand].map(|bone| offset_from(pose, &rig, Bone::Hips, bone));
+        let [stood_left, stood_right] = hands(&stood);
+        // At a moment no foot swings: no sway.
+        let params = shuffling(0.4, 1.0, 0.0);
+        let at = (0..100).map(|i| i as f32 / 100.0).find(|&c| leg_phase(c, params.duty_factor).is_stance() && leg_phase(c + 0.5, params.duty_factor).is_stance()).unwrap();
+        let pose = crate::character::anim::gait::walk_pose_on(at, &params, &stood, &rig);
+        let [left, right] = hands(&pose);
+        let out = [(left - stood_left).dot(rig.left()), (right - stood_right).dot(-rig.left())];
+        let ahead = [(left - stood_left).dot(rig.forward()), (right - stood_right).dot(rig.forward())];
+        for side in 0..2 {
+            assert!(out[side] > 0.04, "hand {side} {:.3} m out", out[side]);
+            assert!(ahead[side] > 0.02, "hand {side} {:.3} m forward", ahead[side]);
+        }
+        assert!((out[0] - out[1]).abs() < 0.02 && (ahead[0] - ahead[1]).abs() < 0.02, "out {out:?}, forward {ahead:?}");
+    }
+
+    #[test]
+    fn a_shuffle_starts_with_the_feet_down_staying_where_they_are() {
+        // Started from a stand through the transition (its release, the
+        // first swing fading the gait in), each way: a foot the gait has
+        // down stays where it was set in the world, within 8 mm over its
+        // whole stance (measured, the toe joint as the first fade passes:
+        // 5.1 mm starting left, 3 mm right; live, nothing over 2 mm on the
+        // floor).
+        for toward in [1.0, -1.0] {
+            let frames = start(0.6, toward, 150);
+            for leg in 0..2 {
+                let mut set: Option<Vec3> = None;
+                for (frame, (balls, weight, down)) in frames.iter().enumerate() {
+                    if *weight <= 0.0 || !down[leg] {
+                        set = None;
+                        continue;
+                    }
+                    let at = *set.get_or_insert(balls[leg]);
+                    let moved = Vec3::new(balls[leg].x - at.x, 0.0, balls[leg].z - at.z).length();
+                    assert!(moved < 0.008, "toward {toward}: foot {leg} down moved {:.1} mm at frame {frame}", moved * 1e3);
+                }
+            }
         }
     }
 
     #[test]
     fn the_feet_never_cross_and_stand_planted_through_their_stance() {
+        // Straight across, and on diagonals forward and back.
+        for ahead in [0.0, 0.6, -0.6] {
+            feet_never_cross_and_stand_planted(ahead);
+        }
+    }
+
+    fn feet_never_cross_and_stand_planted(ahead: f32) {
         use crate::character::anim::foot::Sole;
         let (stood, rig) = real_stood();
-        let params = shuffling(0.6, 1.0);
+        let params = shuffling(0.6, 1.0, ahead);
         let duty = params.duty_factor;
         let frames = 240;
         let toes = |pose: &LocalPose| [Bone::LeftToeBase, Bone::RightToeBase].map(|bone| offset_from(pose, &rig, Bone::Hips, bone) + pose.root_translation);
@@ -165,16 +344,16 @@ mod tests {
                 && both_down(before)
             {
                 let apart = ((left - was_left) - (right - was_right)) * Vec3::new(1.0, 0.0, 1.0);
-                assert!(apart.length() < 5.0e-4, "at {cycle:.3} the feet down moved {:.2} mm apart in a frame", apart.length() * 1e3);
+                assert!(apart.length() < 5.0e-4, "{ahead}: at {cycle:.3} the feet down moved {:.2} mm apart in a frame", apart.length() * 1e3);
             }
             previous = Some([left, right]);
             for (leg, ankle) in [(0usize, Bone::LeftFoot), (1, Bone::RightFoot)] {
                 if leg_phase(cycle + 0.5 * leg as f32, duty).is_stance() {
                     let down = floor(&pose, ankle) - standing;
-                    assert!(down.abs() < 2.0e-3, "at {cycle:.3} a standing foot is {:.1} mm off the floor", down * 1e3);
+                    assert!(down.abs() < 2.0e-3, "{ahead}: at {cycle:.3} a standing foot is {:.1} mm off the floor", down * 1e3);
                 }
             }
         }
-        assert!(closest > SHUFFLE_CLOSEST - 0.005, "the feet came {closest:.3} m apart");
+        assert!(closest > SHUFFLE_CLOSEST - 0.005, "{ahead}: the feet came {closest:.3} m apart");
     }
 }

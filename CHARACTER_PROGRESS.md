@@ -41,6 +41,44 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Strafing diagonally; the shuffle's arms; a clean restart
+
+- **Aside and forward at once** (`Walker::speed` and `Walker::aside`):
+  mostly across (45° or more off forward), the shuffle on a diagonal
+  (`LegCurves::Shuffle::ahead`), its stride along the way and the stance
+  widened for the part across only; mostly forward, the walk with the body
+  turned toward its way (`WalkerState::strafe`) and the head looking where
+  it faced. Changing between them stops first. Live: 0.25 forward + 0.5
+  left went 64° left of forward (asked 63°) at 0.53 m/s; 1.0 + 0.4 went
+  21° (asked 22°) at 1.06 m/s, no foot moving on the floor.
+- **Arms** (`shuffle::carry_arms`): 0.2 rad out, elbows 0.35 rad more bent,
+  a 0.05 rad sway out as the opposite leg swings. Authored: no recording of
+  a shuffle's arms was found.
+- **The restart creep, fixed:** turning back, the standing foot crept
+  2.4 cm, 8 mm up. The fade's blend sank it 2 cm in the pose and the locks'
+  speed test let it go mid-stance. The shuffle now tells the locks which
+  feet are down (`shuffle::planted`), never the foot a fade swings (counted
+  down by the clock while still 9 mm up). A 1.7 cm flick at lift-off left
+  after that was the sprung leg lagging a 7.5 cm stance widening in one
+  swing: shorter, quicker strides (0.55 × speed, closest 0.12 m) widen it
+  2 cm, and the pelvis sinks 16 mm instead of 32.
+- **The swing sets down** across by three quarters of it, then straight
+  down: the in-air arrival at each touchdown 4–9 mm, from 6–15.
+- **Tests:** diagonals forward and back in the stride and feet tests; the
+  hands carried out and forward alike; a start from a stand keeps its feet
+  down within 8 mm (5.1 / 3 mm; 10.4 if the fade's swinging foot counts as
+  down).
+- **Live reversal** (0.4 left, 0.6 right, stop): 0.37 / 0.55 m/s; three
+  floor-to-floor moves over 2 mm in the run (4.7 mm the stop's last foot,
+  3 mm each first swing); never nearer than 0.125 m.
+- **Seen**, Front, gizmos then the mesh: the arms carried a little out,
+  elbows bent, alike; the turned walk's head toward where it faced.
+- **Found, not fixed:** a walk stopped during its start skids the stopping
+  foot 20.8 mm (0.25 m/s, stopped 1 s in), shuffle or not.
+- Distilled in
+  [walking sideways is a shuffle](./docs/knowledge/character-animation/ik-and-locomotion/walking-sideways-is-a-shuffle-on-the-walks-clock.md).
+- `cargo test --release --lib`: 1140 passed. Clippy: 0 warnings.
+
 ### Walking sideways: the side shuffle; one step aside
 
 - **`shuffle.rs`, `gait::LegCurves::Shuffle`:** walking sideways as a

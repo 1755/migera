@@ -308,6 +308,12 @@ pub struct WalkerState {
     /// The speed the shuffle's stride and width are for, m/s: the last
     /// asked.
     pub shuffle_speed: f32,
+    /// How much of the shuffle's way is forward, as its stride is laid
+    /// (`shuffle::shuffling`): the last asked, eased.
+    pub shuffle_ahead: f32,
+    /// How far the body is turned off where it was steered to face, to walk
+    /// its way going aside and forward at once, radians (left positive).
+    pub strafe: f32,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound and whether it shuffles: measuring it
     /// costs a cycle of root-motion samples, so it is redone only when one
@@ -333,6 +339,8 @@ impl WalkerState {
             stepping_aside: false,
             shuffle: None,
             shuffle_speed: 0.0,
+            shuffle_ahead: 0.0,
+            strafe: 0.0,
             measured: None,
         }
     }
@@ -620,15 +628,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // first, and stands up before it walks again.
         // Walking to a chair, it walks.
         let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived);
-        // Asked to walk aside, standing and asked neither to walk nor to
-        // sit: the side shuffle (`shuffle`), a walk of its own on the same
-        // clock. Turning the other way, or walking on, it stops first.
-        let aside = if still || walker.sit.is_some() || wanted_speed > 0.0 { 0.0 } else { walker.aside };
-        let toward = (aside != 0.0).then(|| aside.signum());
+        // Asked to go aside (`Walker::aside`), with or without forward, and
+        // not to sit. Mostly across (45° or more off forward): the side
+        // shuffle (`shuffle`), a walk of its own on the same clock, forward
+        // on a diagonal. Mostly forward: the walk, the body turned to its way
+        // and the head kept on where it faced (`strafe`, below). Changing
+        // between them, or the shuffle's side, it stops first.
+        let side = if still || walker.sit.is_some() { 0.0 } else { walker.aside };
+        let forward = wanted_speed.max(0.0);
+        let going = forward.hypot(side);
+        let ahead = if going > 0.0 { forward / going } else { 0.0 };
+        let toward = (side != 0.0 && ahead <= super::shuffle::SHUFFLE_MOST_AHEAD).then(|| side.signum());
         if state.transition.is_at_rest() {
             state.shuffle = toward;
         }
         let shuffling = state.shuffle.is_some() && state.shuffle == toward;
+        let strafe = if side != 0.0 && toward.is_none() && state.shuffle.is_none() { side.atan2(forward) } else { 0.0 };
         // One step aside asked (`Walker::step_aside`): the standing
         // balance's side step and close, from a stand. A walk asked for
         // meanwhile starts once the feet have closed.
@@ -641,9 +656,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         let asked = if still || state.stepping_aside {
             0.0
         } else if state.shuffle.is_some() {
-            if shuffling { aside.abs() } else { 0.0 }
+            if shuffling { going } else { 0.0 }
+        } else if toward.is_some() {
+            // Walking, asked to shuffle: it stops first.
+            0.0
         } else {
-            wanted_speed + walk_balance.surge
+            going + walk_balance.surge
         };
         let weight_before = state.transition.weight;
         let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
@@ -655,16 +673,19 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // The shuffle's stride and width from the speed asked, held through
         // its stop; set from a stand, eased to a new speed asked on the way
         // (at once, the feet jumped to the new stride and width).
+        // Its diagonal likewise.
         if shuffling {
-            state.shuffle_speed = if weight_before <= 0.0 {
-                aside.abs()
+            if weight_before <= 0.0 {
+                (state.shuffle_speed, state.shuffle_ahead) = (going, ahead);
             } else {
                 let most = super::shuffle::SHUFFLE_REGEAR * time.delta_secs();
-                state.shuffle_speed + (aside.abs() - state.shuffle_speed).clamp(-most, most)
-            };
+                state.shuffle_speed += (going - state.shuffle_speed).clamp(-most, most);
+                let most = super::shuffle::SHUFFLE_REAIM * time.delta_secs();
+                state.shuffle_ahead += (ahead - state.shuffle_ahead).clamp(-most, most);
+            }
         }
         let params = if let Some(toward) = state.shuffle {
-            super::shuffle::shuffling(state.shuffle_speed, toward)
+            super::shuffle::shuffling(state.shuffle_speed, toward, state.shuffle_ahead)
         } else if speed >= RUN_ABOVE {
             GaitParams::running()
         } else if placing {
@@ -778,7 +799,20 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         }
         // The feet the balance has down stay locked however its sprung legs
         // lag a stumbling body; a walk's feet are the locks' own call.
-        foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) { balance.planted() } else { [false; 2] };
+        foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) {
+            balance.planted()
+        } else if state.shuffle.is_some() && weight > 0.0 {
+            // A shuffle's feet down are known from its clock. Left to the
+            // locks' speed test, the foot standing through a restart's fade
+            // (the blend sinking it 2 cm in the pose) was let go mid-stance,
+            // rose 8 mm and crept 2.4 cm.
+            // The fade's swinging foot: a stop's last, else a start's first
+            // (the one not standing through it).
+            let swinging_left = if state.transition.last_swing > 0.0 { state.transition.last_swing_leg > 0.0 } else { state.transition.stance < 0.0 };
+            super::shuffle::planted(cycle, params.duty_factor, weight, swinging_left)
+        } else {
+            [false; 2]
+        };
 
         // A push while walking: the walk goes on, its footfalls moved to
         // catch the body; the body moves by the push's offset like root
@@ -874,6 +908,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         }
 
 
+        // Turned to its way going aside and forward at once, it looks where
+        // it was steered to face.
+        if look_at.is_none() && state.strafe != 0.0 {
+            let ahead = approach::heading_of(gait_rig.forward());
+            look_at = Some(root.translation + approach::direction_of(state.facing.yaw - state.strafe + ahead) * 3.0 + Vec3::Y * 1.6);
+        }
         // The look, composed after the gait, independent of it.
         // Retargeted in place, so the look eases from where it is.
         state.look.target = look_at;
@@ -904,6 +944,17 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.facing.turn_rate = rate;
             }
         }
+        // Going aside and forward at once, mostly forward: the body turned
+        // to its way, by the angle off where it was steered to face (the
+        // head kept there, below). A fresh target takes the whole turn; a
+        // held one the change. Not on a circle.
+        let strafe = if matches!(steer, Steer::Circle(_)) { 0.0 } else { strafe };
+        match steer {
+            Steer::Toward { .. } => state.facing.target_yaw = facing::shortest_angle(state.facing.target_yaw + strafe),
+            Steer::Straight => state.facing.target_yaw = facing::shortest_angle(state.facing.target_yaw + strafe - state.strafe),
+            Steer::Circle(_) => {}
+        }
+        state.strafe = strafe;
 
         let turn = locomotion::advance_turning_with(
             &mut state.locomotion,

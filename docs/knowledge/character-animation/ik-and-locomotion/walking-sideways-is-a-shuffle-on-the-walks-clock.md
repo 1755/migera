@@ -1,6 +1,6 @@
 ---
 title: Walking sideways is a shuffle on the walk's own clock, the feet sweeping across
-description: "Walker::aside walks sideways as a gait cycle (LegCurves::Shuffle): the walk's timing, each foot's stance sweeping it across, the stance widened so the feet never cross, legs placed by move_pelvis_and_feet; root motion, cadence and start/stop are the walk's. Read before changing shuffle.rs."
+description: "Walker::aside walks sideways as a gait cycle (LegCurves::Shuffle) on the walk's timing, feet sweeping across, the stance widened so they never cross; with forward too, a diagonal shuffle or the walk turned to its way. Root motion, cadence, start/stop are the walk's. Read before changing shuffle.rs or strafing."
 type: decision
 status: current
 tags:
@@ -28,6 +28,11 @@ aliases:
   - SHUFFLE_CLOSEST
   - SHUFFLE_REGEAR
   - shuffle_speed
+  - shuffle_ahead
+  - WalkerState::strafe
+  - diagonal
+  - carry_arms
+  - shuffle::planted
   - --aside-schedule
 ---
 
@@ -48,25 +53,42 @@ direction.
   the cycle, the left at phase 0 and the right at 0.5 (`gait::leg_phase`).
   Through its stance a foot sweeps under the body from half a step toward
   the travel to half a step away, at a constant rate; its swing carries it
-  back, eased, on a 5 cm arc.
+  back on a 5 cm arc, across by three quarters of the swing
+  (`SHUFFLE_ACROSS_BY`) and then straight down.
   - Both feet down move alike under the body, so neither slides: root
     motion follows them.
 - **The feet never cross.** Walking, the feet pass front to back; sideways
   they must not. The gap between them swings by a stride (the body's
-  travel a cycle) about its mean, so the mean is `SHUFFLE_CLOSEST` (0.14 m,
+  travel a cycle) about its mean, so the mean is `SHUFFLE_CLOSEST` (0.12 m,
   toe to toe) plus half a stride, never narrower than they stood. The
   leading foot steps out, the trailing one closes: the gap opens to a
   stride past the closest and shuts again.
 - **The legs are placed, not curved:** `stance::move_pelvis_and_feet`, the
   pelvis taking the height that keeps every foot down in reach (spread
   wide, it sinks, as a shuffling body does).
-- **Stride from speed:** `0.8 × speed`, 0.12–0.55 m a cycle; the cadence
-  carries the rest.
-- **The stride and width are set from the speed asked, not the speed the
-  legs step at**, held through the stop, set outright from a stand and
-  eased to a new speed on the way (`SHUFFLE_REGEAR`, 0.4 m/s a second).
-- **In the walker:** asked neither to walk nor to sit. Turning the other
-  way, or walking on, it stops first and starts again.
+- **Stride from speed:** `0.55 × speed` (`SHUFFLE_STRIDE_PER_SPEED`),
+  0.10–0.45 m a cycle, about 1.8 cycles a second: short, quick steps.
+- **The stride, width and diagonal are set from what is asked, not the
+  speed the legs step at**, held through the stop, set outright from a
+  stand and eased on the way (`SHUFFLE_REGEAR` 0.4 m/s a second,
+  `SHUFFLE_REAIM` 0.5 a second).
+- **The feet down are told to the foot locks** (`shuffle::planted`), from
+  the clock; while the gait fades in or out, never the foot the fade
+  swings (a start's first, a stop's last).
+- **The arms** are carried 0.2 rad out from the body, the elbows 0.35 rad
+  more bent, each swaying 0.05 rad further out as the opposite leg swings
+  (`carry_arms`). Authored, not measured: no recording of a shuffle's arms
+  was found. A walk's arms swing against the legs to cancel the body's
+  twist about the vertical; across, the legs swing in the frontal plane.
+- **Aside and forward at once** (`Walker::speed` and `Walker::aside`):
+  - mostly across (45° or more off forward): the shuffle on a diagonal,
+    its stride laid along the way, the stance widened for the part across
+    only (front to back the feet pass, apart across, as a walk's do);
+  - mostly forward: the walk, the body turned toward its way by the angle
+    off where it was steered (`WalkerState::strafe`), the head looking
+    where it faced.
+- **In the walker:** not asked to sit. Changing between shuffle and walk,
+  or the shuffle's side, it stops first and starts again.
 
 ## Alternatives considered
 
@@ -89,34 +111,55 @@ direction.
   only over 0.05 of it: the pelvis stood too high for that foot to reach
   the floor (7–10 mm up). Every foot down now counts at least 0.2.
 - **A height-only test of "planted" reads a skimming swing as a slide:**
-  the end of a swing within 4 mm of the floor gave 53 mm "slid". Within
-  1.5 mm of the floor, the feet down move at most 5 mm (the standing idle
-  alone shows 5.0 on the same check).
+  the end of a swing within 4 mm of the floor gave 53 mm "slid". The
+  honest check is a foot that moves between two samples both on the floor.
+- **Restarting the other way, a standing foot crept 2.4 cm, 8 mm up.** The
+  fade's blend sank it 2 cm in the pose, the locks' speed test let it go
+  mid-stance, and the lock's release eased it toward the sunken foot. Told
+  the locks which feet are down, it held; then the stance widening 7.5 cm
+  a side within the first swing (at 0.8 a stride) left the sprung leg
+  lagging, and it flicked 1.7 cm out at lift-off. Shorter strides widen it
+  2 cm; nothing is left.
+- **The clock alone counted a first swing's foot down** while the fade
+  still held it 9 mm up and 1 cm short: locked there, it would have been
+  dropped short (10.4 mm, headless). Hence the fade's swinging foot is
+  never planted.
+- **The swing set down on the arc's own schedule** met the floor still
+  going, its last 6–15 mm on the floor each step; across by three quarters
+  of the swing, 4–9 mm (in the air, live, between samples).
 
 ## Consequences
 
 - **Model** (`shuffle::tests`, the real rig): a cycle carries the body one
-  stride across within 1 %, under 1 cm along; the feet never nearer than
-  0.135 m; every foot down on the floor within 2 mm; both feet down move
-  alike within 0.5 mm a frame (a non-linear sweep fails it at 3.1 mm).
-- **Live** (gallery, 0.4 left then 0.6 right, then stop; and 0.2 → 0.6 →
-  0.3 on the way):
-  - 0.37 / 0.54 m/s, and 0.18 / 0.58 / 0.29 m/s;
-  - the feet down move at most 5.0 mm; never nearer than 0.143 m;
-  - the pelvis at most 32 mm down;
-  - stopped, the feet side by side at their standing width and height.
+  stride along its way within 1 %, under 1 cm off it, across and on
+  diagonals forward and back; the feet never nearer than the closest less
+  5 mm; every foot down on the floor within 2 mm; both feet down move
+  alike within 0.5 mm a frame (a non-linear sweep fails it at 3.1 mm); a
+  start from a stand keeps its planted feet within 8 mm (5.1 / 3 mm, the
+  toe joint through the first fade); the hands carried out and forward,
+  both sides alike.
+- **Live** (gallery):
+  - 0.4 left then 0.6 right, then stop: 0.37 / 0.55 m/s; floor-to-floor,
+    3 moves over 2 mm in the run (4.7 mm the stop's last foot, 3 mm each
+    first swing); the pelvis at most 16 mm down (32 at 0.8 a stride);
+    never nearer than 0.125 m; stopped, standing as it stood;
+  - 0.25 forward and 0.5 left: 64° left of forward (asked 63°), 0.53 m/s;
+  - 1.0 forward and 0.4 left (the walk turned): 21° (asked 22°),
+    1.06 m/s, no foot moving on the floor.
 - **Seen** at 0.5 m/s, Front and Left, gizmos then the mesh: a foot lifted
-  mid-swing beside one standing, the stance opening and closing, legs
-  never crossing, knees bent forward, the trunk upright.
+  mid-swing beside one standing, legs never crossing, knees bent forward,
+  the trunk upright, the arms carried out a little, elbows bent; the walk
+  turned to its way, the head kept toward where it faced.
 
 ## Revisit when
 
-- **Walking and shuffling at once** (strafing diagonally): this is
-  sideways only.
-- **The arms:** they hang as the base pose has them; a shuffle's arms are
-  carried a little out and swing little.
-- **The first step after turning back** lifts its foot ~8 mm and moves it
-  2.4 cm outward before its swing (the start's release).
+- **The arms' shape** is authored; a recording of a side shuffle would
+  settle it.
+- **Stopping a walk during its start** skids the stopping foot 20.8 mm on
+  the floor (walking 0.25 m/s, told to stop 1 s in): the walk's, met on
+  the way into a shuffle, the same with no shuffle at all.
+- **Backward diagonals** from `Walker::speed` below zero: the walk does
+  not go backward.
 
 ## Related
 

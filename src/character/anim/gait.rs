@@ -180,8 +180,9 @@ pub enum LegCurves {
     Authored,
     /// Walking sideways (`super::shuffle`): each foot sweeps `step` metres
     /// across under the body through its stance, toward `toward` (+1 the
-    /// rig's left, -1 its right).
-    Shuffle { step: f32, toward: f32 },
+    /// rig's left, -1 its right), `ahead` of the way forward (0 straight
+    /// across; a diagonal, up to ~0.7).
+    Shuffle { step: f32, toward: f32, ahead: f32 },
 }
 
 /// The leg length the gait's fractional amplitudes were authored against.
@@ -1124,8 +1125,8 @@ pub fn walk_pose_on(
     rig: &super::rig::RigGeometry,
 ) -> LocalPose {
     // Sideways, a gait of its own on the same clock.
-    if let LegCurves::Shuffle { step, toward } = params.curves {
-        return super::shuffle::shuffle_pose(wrap_phase(phase), params, step, toward, base, rig);
+    if let LegCurves::Shuffle { step, toward, ahead } = params.curves {
+        return super::shuffle::shuffle_pose(wrap_phase(phase), params, step, toward, ahead, base, rig);
     }
 
     // Which way this rig's legs have to swing. `+1` reproduces exactly what
