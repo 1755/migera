@@ -300,26 +300,16 @@ pub fn pendulum_k(pose: &LocalPose, rig: &RigGeometry) -> f32 {
     height.max(0.0) / GRAVITY
 }
 
-/// How long a side step walking aside swings, seconds
-/// ([`Balance::walk_aside`]).
+/// How long a step aside swings, seconds ([`Balance::step_aside`]).
 pub const ASIDE_STEP_SECONDS: f32 = STEP_SECONDS;
 
-/// The longest side step walking aside takes, metres: well inside a
-/// recovery side step's [`SIDE_STEP_MAX`].
+/// The longest step aside, metres: well inside a recovery side step's
+/// [`SIDE_STEP_MAX`].
 pub const ASIDE_STEP_MAX: f32 = 0.3;
 
-/// How long one step-and-close walking aside takes, seconds: what turns a
-/// speed into a step length ([`aside_step`]).
-pub const ASIDE_SECONDS: f32 = 1.0;
-
 /// How near rest between the feet the body comes, m/s and metres, before
-/// walking aside the other way.
+/// stepping aside the other way.
 const ASIDE_TURNING: f32 = 0.02;
-
-/// The side step that walks aside at `speed` m/s, metres, signed as it.
-pub fn aside_step(speed: f32) -> f32 {
-    (speed.abs() * ASIDE_SECONDS).clamp(0.1, ASIDE_STEP_MAX) * speed.signum()
-}
 
 /// A foot swinging to a new place.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -425,11 +415,13 @@ pub struct Balance {
     shove: Vec2,
     /// The rate it is delivered at, m/s².
     shove_rate: Vec2,
-    /// The speed asked to walk aside at, m/s, positive to the left
-    /// ([`Balance::walk_aside`]).
+    /// A step aside asked for and not yet taken, metres, positive to the
+    /// left ([`Balance::step_aside`]).
     aside: f32,
-    /// The leg that led the last side step walking aside.
+    /// The leg that led the last step aside.
     aside_led: Option<usize>,
+    /// The swing under way is a step aside: the body heads for its landing.
+    aside_swing: bool,
 }
 
 impl Balance {
@@ -453,16 +445,18 @@ impl Balance {
         std::mem::take(&mut self.shove)
     }
 
-    /// Walks aside at `speed` m/s, positive to the left, zero to stop: side
-    /// steps and closes (step, then the other foot joins it), each step
-    /// [`aside_step`] long. A person moves a short way sideways so, along a
-    /// table or between chairs; the leading leg's loaded side step is the
-    /// same one a sideways push gets.
-    pub fn walk_aside(&mut self, speed: f32) {
-        self.aside = if speed.is_finite() { speed } else { 0.0 };
+    /// Steps aside `length` metres, positive to the left: one side step
+    /// and close (the step, then the other foot joins it), up to
+    /// [`ASIDE_STEP_MAX`]. A person shifts over so, to stand square to a
+    /// chair or make room; the leading leg's loaded side step is the same
+    /// one a sideways push gets. Asked again before the last has closed,
+    /// it waits for it.
+    pub fn step_aside(&mut self, length: f32) {
+        self.aside = if length.is_finite() { length.clamp(-ASIDE_STEP_MAX, ASIDE_STEP_MAX) } else { 0.0 };
     }
 
-    /// The speed asked to walk aside at, m/s ([`Balance::walk_aside`]).
+    /// The step aside asked for and not yet taken, metres
+    /// ([`Balance::step_aside`]).
     pub fn aside(&self) -> f32 {
         self.aside
     }
@@ -506,13 +500,13 @@ impl Balance {
     /// one, over that foot's sole sideways.
     fn rest(&self, support: &Support) -> Vec2 {
         let over = |leg: usize, foot: Vec2| Vec2::new(foot.x, support.feet[leg].shifted(foot).centre().y);
-        // A side step walking aside is meant: the body heads for where it
-        // lands, pushing off the foot it stands on. Held back over that
-        // foot, as a recovery step's is, the first step's body went the
-        // wrong way through the swing, and the pelvis sank 74 mm landing.
+        // A step aside is meant: the body heads for where it lands, pushing
+        // off the foot it stands on. Held back over that foot, as a
+        // recovery step's is, the first step's body went the wrong way
+        // through the swing, and the pelvis sank 74 mm landing.
         if let Some(swing) = self.swing
             && !swing.joining
-            && self.aside != 0.0
+            && self.aside_swing
         {
             return over(swing.leg, swing.to);
         }
@@ -640,6 +634,7 @@ impl Balance {
             if swing.progress() >= 1.0 {
                 self.feet[swing.leg] = swing.to;
                 self.swing = None;
+                self.aside_swing = false;
                 self.landed = Some((swing, 0.0));
                 self.stepped_last = (!swing.joining).then_some(swing.leg);
                 // The weight moves onto a recovery step as it lands: the
@@ -702,41 +697,43 @@ impl Balance {
             let short = capture - capture.clamp(alone.min, alone.max);
             self.holds(support, stepped) && short.dot(toward) >= 0.0
         };
-        // Walking aside (`walk_aside`), feet together and no push to catch:
-        // the weight onto the trailing foot, then the leading one steps out.
-        // Its landing and the join are a recovery step's (above and below).
+        // A step aside asked (`step_aside`), feet together and no push to
+        // catch: the weight onto the trailing foot, then the leading one
+        // steps out. Its landing and the join are a recovery step's (above
+        // and below).
         let together = self.feet[0] == self.feet[1];
         if together && !self.needs_step && self.shove == Vec2::ZERO {
+            let asked = self.aside != 0.0;
             let trail = if self.aside > 0.0 { 1 } else { 0 };
             // Turning back: first at rest between the feet, then as from a
             // stand. Stepped with the body still going the other way, the
             // legs split and the pelvis sank 64 mm; stopped over the
             // trailing foot, the step fell the whole way onto the other and
             // jolted 5.4 mm landing.
-            let turning_back = self.aside_led == Some(trail);
+            let turning_back = asked && self.aside_led == Some(trail);
             if turning_back && self.velocity.length() < ASIDE_TURNING && (self.offset - rest).length() < ASIDE_TURNING {
                 self.aside_led = None;
             }
-            if self.aside == 0.0 || turning_back {
-                // Asked to stop before stepping, or turning back: the
-                // weight back between the feet.
+            if !asked || turning_back {
+                // None asked, or turning back: the weight between the feet.
                 self.transfer = None;
             } else if self.transfer != Some(trail) {
                 self.transfer = Some(trail);
             } else if self.holds(support, trail) {
                 let lead = 1 - trail;
                 self.aside_led = Some(lead);
+                self.aside_swing = true;
                 self.swing = Some(Swing {
                     leg: lead,
                     from: self.feet[lead],
-                    to: self.feet[lead] + Vec2::Y * aside_step(self.aside),
+                    to: self.feet[lead] + Vec2::Y * std::mem::take(&mut self.aside),
                     elapsed: 0.0,
                     duration: ASIDE_STEP_SECONDS,
                     joining: false,
                     ahead: 0.0,
                 });
             }
-            if self.aside != 0.0 {
+            if asked {
                 return;
             }
         }
@@ -1797,12 +1794,21 @@ mod tests {
         }
     }
 
+    /// Asks `balance` for a step aside `length` long each time the last has
+    /// closed, until `until` seconds.
+    fn step_aside_again(balance: &mut Balance, t: f32, until: f32, length: f32) {
+        if t < until && balance.swing.is_none() && balance.feet == [Vec2::ZERO; 2] && balance.aside() == 0.0 && balance.travelled.is_none() {
+            balance.step_aside(length);
+        }
+    }
+
     #[test]
-    fn walking_aside_side_steps_and_closes_cleanly_and_stops_standing_as_it_stood() {
+    fn steps_aside_close_cleanly_and_end_standing_as_it_stood() {
+        // Steps of 0.2 m asked one after another, each as the last closes.
         let (_, rig) = real_stood();
         let left = rig.left();
         for speed in [0.2, -0.2] {
-            let frames = replay_with(Vec2::ZERO, 9.0, &[DT], |b, t| b.walk_aside(if t < 4.0 { speed } else { 0.0 }));
+            let frames = replay_with(Vec2::ZERO, 9.0, &[DT], |b, t| step_aside_again(b, t, 4.0, speed));
             let (stood, pelvis0) = (&frames[0].0, frames[0].1);
             let width = (stood[0][1] - stood[1][1]).dot(left);
             let mut tips: [Option<Vec3>; 2] = [None; 2];
@@ -1824,10 +1830,10 @@ mod tests {
                 assert!(frame == 0 || (moved - last_move).length() < 0.0045, "{speed}: the pelvis jolted {:.1} mm", (moved - last_move).length() * 1e3);
                 last_move = moved;
             }
+            // A step and close a second.
             let at = |t: f32| frames[(t / DT) as usize].1;
             let pace = (at(3.5) - at(0.5)).dot(left) / 3.0;
-            eprintln!("{speed}: {pace:+.3} m/s");
-            assert!((pace - speed).abs() < 0.04, "{speed}: walked aside at {pace:+.3} m/s");
+            assert!((pace - speed).abs() < 0.04, "{speed}: stepped aside at {pace:+.3} m/s");
             let sank = pelvis0.y - frames.iter().map(|f| f.1.y).fold(f32::MAX, f32::min);
             assert!(sank < 0.03, "{speed}: the pelvis sank {:.0} mm", sank * 1e3);
             // Stopped: standing as it stood, feet side by side, the body
@@ -1846,13 +1852,17 @@ mod tests {
     }
 
     #[test]
-    fn walking_aside_turns_back_cleanly() {
-        // Live, left at 0.2 m/s then right at 0.25: stepped the other way
+    fn stepping_aside_turns_back_cleanly() {
+        // Live, 0.2 m steps left then 0.25 m right: stepped the other way
         // with the body still going, the pelvis sank 104 mm.
-        let (_, rig) = real_stood();
-        let left = rig.left();
         for turn_at in [2.5, 2.8, 3.1, 3.4] {
-            let frames = replay_with(Vec2::ZERO, 9.0, &[DT], |b, t| b.walk_aside(if t < turn_at { 0.2 } else if t < 6.0 { -0.25 } else { 0.0 }));
+            let frames = replay_with(Vec2::ZERO, 9.0, &[DT], |b, t| {
+                if t < turn_at {
+                    step_aside_again(b, t, turn_at, 0.2);
+                } else {
+                    step_aside_again(b, t, 6.0, -0.25);
+                }
+            });
             let pelvis0 = frames[0].1;
             let mut tips: [Option<Vec3>; 2] = [None; 2];
             let mut last_move = Vec3::ZERO;
@@ -1879,41 +1889,7 @@ mod tests {
                 last_move = moved;
             }
             let sank = pelvis0.y - frames.iter().map(|f| f.1.y).fold(f32::MAX, f32::min);
-            eprintln!("turned at {turn_at}: sank {:.0} mm, ended {:+.3} m", sank * 1e3, (frames.last().unwrap().1 - pelvis0).dot(left));
             assert!(sank < 0.035, "turned at {turn_at}: the pelvis sank {:.0} mm", sank * 1e3);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn probe_walk_aside() {
-        let (_, rig) = real_stood();
-        let left = rig.left();
-        for speed in [0.2, 0.3, 0.5, -0.3] {
-            let frames = replay_with(Vec2::ZERO, 9.0, &[DT], |b, t| b.walk_aside(if t < 6.0 { speed } else { 0.0 }));
-            let pelvis0 = frames[0].1;
-            let (mut jolt, mut last, mut sank) = (0.0f32, Vec3::ZERO, 0.0f32);
-            let mut gap = f32::MAX;
-            for (i, pair) in frames.windows(2).enumerate() {
-                let moved = pair[1].1 - pair[0].1;
-                if i > 0 {
-                    jolt = jolt.max((moved - last).length());
-                }
-                last = moved;
-                sank = sank.max(pelvis0.y - pair[1].1.y);
-                gap = gap.min((pair[1].0[0][1] - pair[1].0[1][1]).dot(left));
-            }
-            let at = |t: f32| frames[((t / DT) as usize).min(frames.len() - 1)].1;
-            let steps = frames.windows(2).filter(|p| p[0].2.is_none() && p[1].2.is_some()).count();
-            eprintln!(
-                "speed {speed:+.2}: moved {:+.3} m in 6 s ({:+.3} m/s over 1-5 s), {steps} swings, max jolt {:.1} mm, sank {:.0} mm, narrowest feet {:.3} m, at rest {:+.3}",
-                (at(6.0) - pelvis0).dot(left),
-                (at(5.0) - at(1.0)).dot(left) / 4.0,
-                jolt * 1e3,
-                sank * 1e3,
-                gap,
-                (frames.last().unwrap().1 - at(6.0)).dot(left),
-            );
         }
     }
 

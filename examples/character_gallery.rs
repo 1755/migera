@@ -1089,13 +1089,18 @@ fn steer_the_walker(
     mut pushes: ResMut<PushSchedule>,
     sit: Res<SitConfig>,
     aside: Res<AsideSchedule>,
+    mut steps: ResMut<StepAsideSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
     let due = pushes.due(time.elapsed_secs());
     let sitting = sit.wanted(time.elapsed_secs());
+    let step = steps.due(time.elapsed_secs());
     for mut walker in &mut walkers {
         walker.speed = idle.speed;
         walker.aside = aside.at(time.elapsed_secs());
+        if let Some(length) = step {
+            walker.step_aside = length;
+        }
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
@@ -1108,18 +1113,44 @@ fn steer_the_walker(
     }
 }
 
-/// Walking aside: `--aside-schedule T:SPEED,...` walks aside at SPEED m/s
-/// (positive to the character's left) from T seconds on, until the next
-/// entry (`walker::Walker::aside`); e.g. `1:0.2,6:-0.2,11:0`.
+/// Walking aside: `--aside-schedule T:SPEED,...` shuffles aside at SPEED
+/// m/s (positive to the character's left) from T seconds on, until the
+/// next entry (`walker::Walker::aside`); e.g. `1:0.4,6:-0.4,11:0`.
+/// `--step-aside-at T:METRES,...` takes one step aside METRES long at T
+/// seconds (`walker::Walker::step_aside`).
 #[derive(Resource, Debug, Clone, Default)]
 struct AsideSchedule(Vec<(f32, f32)>);
 
+/// `--step-aside-at`, and how many of its steps have been asked for.
+#[derive(Resource, Debug, Clone, Default)]
+struct StepAsideSchedule(Vec<(f32, f32)>, usize);
+
+impl StepAsideSchedule {
+    fn from_args() -> Self {
+        Self(AsideSchedule::parse("--step-aside-at"), 0)
+    }
+
+    /// The step falling due by `elapsed` seconds, if one is.
+    fn due(&mut self, elapsed: f32) -> Option<f32> {
+        let (at, length) = *self.0.get(self.1)?;
+        (elapsed >= at).then(|| {
+            self.1 += 1;
+            length
+        })
+    }
+}
+
 impl AsideSchedule {
     fn from_args() -> Self {
+        Self(Self::parse("--aside-schedule"))
+    }
+
+    /// `T:VALUE,...` after `flag`, in time order.
+    fn parse(flag: &str) -> Vec<(f32, f32)> {
         let mut args = std::env::args().skip(1);
         let mut schedule = Vec::new();
         while let Some(arg) = args.next() {
-            if arg == "--aside-schedule" {
+            if arg == flag {
                 for entry in args.next().unwrap_or_default().split(',') {
                     if let Some((at, speed)) = entry.split_once(':')
                         && let (Ok(at), Ok(speed)) = (at.trim().parse(), speed.trim().parse())
@@ -1130,7 +1161,7 @@ impl AsideSchedule {
             }
         }
         schedule.sort_by(|a: &(f32, f32), b| a.0.total_cmp(&b.0));
-        Self(schedule)
+        schedule
     }
 
     /// The speed asked at `elapsed` seconds.
@@ -1928,6 +1959,7 @@ fn main() {
         )
         .insert_resource(SitConfig::from_args())
         .insert_resource(AsideSchedule::from_args())
+        .insert_resource(StepAsideSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
         .add_systems(Update, place_chair.after(WalkerSet::Drive));

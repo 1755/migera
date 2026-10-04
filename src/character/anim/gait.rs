@@ -178,6 +178,10 @@ pub enum LegCurves {
     /// a run uses, because the reference is a walk and there is no measured
     /// run to draw from.
     Authored,
+    /// Walking sideways (`super::shuffle`): each foot sweeps `step` metres
+    /// across under the body through its stance, toward `toward` (+1 the
+    /// rig's left, -1 its right).
+    Shuffle { step: f32, toward: f32 },
 }
 
 /// The leg length the gait's fractional amplitudes were authored against.
@@ -1119,6 +1123,11 @@ pub fn walk_pose_on(
     base: &LocalPose,
     rig: &super::rig::RigGeometry,
 ) -> LocalPose {
+    // Sideways, a gait of its own on the same clock.
+    if let LegCurves::Shuffle { step, toward } = params.curves {
+        return super::shuffle::shuffle_pose(wrap_phase(phase), params, step, toward, base, rig);
+    }
+
     // Which way this rig's legs have to swing. `+1` reproduces exactly what
     // this function did before the rig was a parameter.
     let facing = super::stance::facing_sign(rig);
@@ -1135,7 +1144,7 @@ pub fn walk_pose_on(
 
     let mean = match params.curves {
         LegCurves::Authored => thigh_cycle_mean(params),
-        LegCurves::Measured { .. } => 0.0,
+        LegCurves::Measured { .. } | LegCurves::Shuffle { .. } => 0.0,
     };
 
     // The measured stride: recorded angles, as deltas from the base pose's
@@ -1150,7 +1159,7 @@ pub fn walk_pose_on(
             pose = super::walk::walk_cycle(params, amplitude, base, rig).pose(base, rig, phase, facing);
             true
         }
-        LegCurves::Authored => false,
+        LegCurves::Authored | LegCurves::Shuffle { .. } => false,
     };
 
     for (leg_cycle, hip, knee, ankle) in legs {

@@ -41,6 +41,45 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walking sideways: the side shuffle; one step aside
+
+- **`shuffle.rs`, `gait::LegCurves::Shuffle`:** walking sideways as a
+  gait cycle on the walk's own clock and timing. Each foot's stance sweeps
+  it across under the body at a constant rate, its swing carries it back
+  on a 5 cm arc; the stance is widened to 0.14 m plus half a stride so the
+  feet never cross; the legs are placed by `move_pelvis_and_feet`. The
+  walk's cadence (`distance_per_cycle`), start and stop (`transition`) and
+  root motion (`root_displacement_between`) serve it unchanged.
+- **`Walker::aside`** (m/s) now shuffles. Turning the other way, or walking
+  on, it stops first. Stride and width come from the speed asked, held
+  through the stop and eased to a new speed (0.4 m/s a second).
+- **`Walker::step_aside`** (metres): one step and close from a stand, the
+  balance's (`Balance::step_aside`, which replaces the repeating
+  `walk_aside`). Gallery: `--step-aside-at T:METRES,...`.
+- **Traps:** the walk's feet turned across cross (a mean gap of a whole
+  step spread them 0.69 m; it swings by a stride); a foot just set down
+  carries no load and the leg solver skipped it, so it hovered 7–10 mm
+  (every foot down now counts 0.2); a height-only "planted" test read a
+  skimming swing's end as a 53 mm slide.
+- **Tests:** a cycle carries the body a stride across within 1 %; the feet
+  never nearer than 0.135 m; every foot down on the floor within 2 mm; both
+  feet down move alike within 0.5 mm a frame (a non-linear sweep fails it
+  at 3.1 mm).
+- **Live** (gallery): 0.4 left then 0.6 right, then stop: 0.37 / 0.54 m/s;
+  0.2 → 0.6 → 0.3 on the way: 0.18 / 0.58 / 0.29 m/s. Feet down move at
+  most 5.0 mm (the standing idle alone: 5.0); never nearer than 0.143 m;
+  the pelvis at most 32 mm down; stopped, standing as it stood. One step
+  aside 0.25 m and back: out 0.245 m, back within 7 mm, planted feet within
+  0.4 mm.
+- **Seen** at 0.5 m/s, Front and Left, gizmos then the mesh: a foot lifted
+  mid-swing beside one standing, legs never crossing, knees forward, trunk
+  upright.
+- **Not done:** strafing diagonally (walking and shuffling at once); the
+  arms only hang.
+- Distilled in
+  [walking sideways is a shuffle](./docs/knowledge/character-animation/ik-and-locomotion/walking-sideways-is-a-shuffle-on-the-walks-clock.md).
+- `cargo test --release --lib`: 1138 passed. Clippy: 0 warnings.
+
 ### Walking aside: side step and close
 
 - **`Walker::aside`** (m/s, + to the left) walks a standing character
@@ -82,7 +121,7 @@ purely because fixed overhead is not amortized.
 - **Not done:** faster than ~0.24 m/s (a step and close takes ~1.0–1.25
   s), and stepping aside while walking.
 - Distilled in
-  [walking aside](./docs/knowledge/character-animation/ik-and-locomotion/walking-aside-is-a-side-step-and-close.md)
+  [a step aside](./docs/knowledge/character-animation/ik-and-locomotion/a-step-aside-is-the-balances-side-step-and-close.md)
   and [foot locks need the body's travel](./docs/knowledge/character-animation/ik-and-locomotion/foot-locks-need-the-bodys-travel.md).
 - `cargo test --release --lib`: 1136 passed. Clippy: 0 warnings.
 

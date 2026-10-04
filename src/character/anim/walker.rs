@@ -107,10 +107,15 @@ pub struct Walker {
     /// A chair to sit on, sitting a chair's way: it walks there and turns
     /// round first (`approach`). `None` sits where it stands.
     pub chair: Option<approach::Chair>,
-    /// Walk aside at this speed, m/s, positive to its left: side steps and
-    /// closes (`balance::Balance::walk_aside`), only standing and asked
-    /// neither to walk nor to sit. Up to ~0.24 m/s.
+    /// Walk aside at this speed, m/s, positive to its left: the side
+    /// shuffle (`shuffle`), only asked neither to walk nor to sit. Turning
+    /// the other way, or walking on, it stops first.
     pub aside: f32,
+    /// One step aside, metres, positive to its left, from a stand: the
+    /// standing balance's side step and close
+    /// (`balance::Balance::step_aside`). Taken when read; a walk asked for
+    /// meanwhile starts once the feet have closed.
+    pub step_aside: f32,
 }
 
 impl Default for Walker {
@@ -129,6 +134,7 @@ impl Default for Walker {
             chair_height: sitting::CHAIR_HEIGHT,
             chair: None,
             aside: 0.0,
+            step_aside: 0.0,
         }
     }
 }
@@ -293,12 +299,20 @@ pub struct WalkerState {
     pub sit_offset: Vec2,
     /// Seconds both feet stay planted after standing up ([`STOOD_HOLD`]).
     pub stood_hold: f32,
-    /// Walking aside ([`Walker::aside`]), until the feet have closed.
+    /// A step aside under way ([`Walker::step_aside`]), until the feet have
+    /// closed.
     pub stepping_aside: bool,
-    /// The stride the current gait really takes, keyed by its speed and
-    /// whether the real rig has bound: measuring it costs a cycle of
-    /// root-motion samples, so it is redone only when either changes.
-    measured: Option<(u32, bool, f32)>,
+    /// Shuffling aside ([`Walker::aside`]), toward +1 its left or -1 its
+    /// right, until the shuffle has stopped.
+    pub shuffle: Option<f32>,
+    /// The speed the shuffle's stride and width are for, m/s: the last
+    /// asked.
+    pub shuffle_speed: f32,
+    /// The stride the current gait really takes, keyed by its speed,
+    /// whether the real rig has bound and whether it shuffles: measuring it
+    /// costs a cycle of root-motion samples, so it is redone only when one
+    /// changes.
+    measured: Option<(u32, bool, bool, f32)>,
 }
 
 impl WalkerState {
@@ -317,6 +331,8 @@ impl WalkerState {
             sit_offset: Vec2::ZERO,
             stood_hold: 0.0,
             stepping_aside: false,
+            shuffle: None,
+            shuffle_speed: 0.0,
             measured: None,
         }
     }
@@ -511,7 +527,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let stride_speeds = super::gait::stride_speeds_with_steps(super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS);
                 let gait = approach::Gait {
                     cycle: cycle_of(&phase),
-                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, distance)| distance), stride_speeds),
+                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, _, distance)| distance), stride_speeds),
                     speed: speed_now,
                     stopped: !walking && state.transition.is_at_rest(),
                     stride_speeds,
@@ -604,21 +620,52 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // first, and stands up before it walks again.
         // Walking to a chair, it walks.
         let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived);
-        // Asked to walk aside, standing still and asked neither to walk nor
-        // to sit: the standing balance side-steps and closes. A walk asked
-        // for meanwhile starts once the feet have closed.
-        let aside = if still || walker.sit.is_some() || wanted_speed > 0.0 || !state.transition.is_at_rest() { 0.0 } else { walker.aside };
-        balance.walk_aside(aside);
-        let closed = balance.swing.is_none() && balance.feet == [Vec2::ZERO; 2];
-        state.stepping_aside = aside != 0.0 || state.stepping_aside && !closed;
-        let asked = if still || state.stepping_aside { 0.0 } else { wanted_speed + walk_balance.surge };
+        // Asked to walk aside, standing and asked neither to walk nor to
+        // sit: the side shuffle (`shuffle`), a walk of its own on the same
+        // clock. Turning the other way, or walking on, it stops first.
+        let aside = if still || walker.sit.is_some() || wanted_speed > 0.0 { 0.0 } else { walker.aside };
+        let toward = (aside != 0.0).then(|| aside.signum());
+        if state.transition.is_at_rest() {
+            state.shuffle = toward;
+        }
+        let shuffling = state.shuffle.is_some() && state.shuffle == toward;
+        // One step aside asked (`Walker::step_aside`): the standing
+        // balance's side step and close, from a stand. A walk asked for
+        // meanwhile starts once the feet have closed.
+        let step_aside = std::mem::take(&mut walker.step_aside);
+        if step_aside != 0.0 && !still && state.transition.is_at_rest() && state.shuffle.is_none() {
+            balance.step_aside(step_aside);
+        }
+        let closed = balance.swing.is_none() && balance.feet == [Vec2::ZERO; 2] && balance.aside() == 0.0;
+        state.stepping_aside = !closed && (state.stepping_aside || balance.aside() != 0.0);
+        let asked = if still || state.stepping_aside {
+            0.0
+        } else if state.shuffle.is_some() {
+            if shuffling { aside.abs() } else { 0.0 }
+        } else {
+            wanted_speed + walk_balance.surge
+        };
+        let weight_before = state.transition.weight;
         let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
         let speed = state.transition.stride_speed;
 
         // A walk's stride grows with its speed, scaled to this rig's leg.
         // Placing itself at a chair, its stride shortens further: the
         // approach paces its stop and turns by it (`gait::SHORT_STEPS`).
-        let params = if speed >= RUN_ABOVE {
+        // The shuffle's stride and width from the speed asked, held through
+        // its stop; set from a stand, eased to a new speed asked on the way
+        // (at once, the feet jumped to the new stride and width).
+        if shuffling {
+            state.shuffle_speed = if weight_before <= 0.0 {
+                aside.abs()
+            } else {
+                let most = super::shuffle::SHUFFLE_REGEAR * time.delta_secs();
+                state.shuffle_speed + (aside.abs() - state.shuffle_speed).clamp(-most, most)
+            };
+        }
+        let params = if let Some(toward) = state.shuffle {
+            super::shuffle::shuffling(state.shuffle_speed, toward)
+        } else if speed >= RUN_ABOVE {
             GaitParams::running()
         } else if placing {
             GaitParams::walking_with_steps(speed, super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS)
@@ -653,12 +700,14 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // gait's stride travel at exactly this speed: set once at spawn, the
         // legs kept the launch rhythm while the body moved at the new speed,
         // and the planted feet slid by the difference.
-        let key = (speed.to_bits(), foot_ik.rig.is_some());
+        // Keyed by the speed the stride is for: a shuffle's, the one asked.
+        let stride_for = if state.shuffle.is_some() { state.shuffle_speed } else { speed };
+        let key = (stride_for.to_bits(), foot_ik.rig.is_some(), state.shuffle.is_some());
         let distance = match state.measured {
-            Some((speed, bound, distance)) if (speed, bound) == key => distance,
+            Some((speed, bound, shuffle, distance)) if (speed, bound, shuffle) == key => distance,
             _ => {
                 let distance = locomotion::distance_per_cycle(&params, &stood, &gait_rig);
-                state.measured = Some((key.0, key.1, distance));
+                state.measured = Some((key.0, key.1, key.2, distance));
                 distance
             }
         };
