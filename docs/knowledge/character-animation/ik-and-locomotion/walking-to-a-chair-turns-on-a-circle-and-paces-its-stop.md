@@ -1,17 +1,18 @@
 ---
 title: Walking to a chair turns round on a small circle, paces its last steps to stop on the spot, and the seat makes up the rest
-description: "A walker given a chair routes round obstacles (a visibility graph; physics ones at body height), comes at its spot from an entry where needed, then a Dubins turn (0.25 m circle, Robinson's ~1.5 s 180°) ending 10 cm in front of it. The stop is paced; the seat takes the rest. Read before changing approach.rs."
+description: "A walker given a chair routes round obstacles (visibility graph), comes at its spot from an entry where needed, then turns on a 0.18 m circle in short steps (~1.5 s 180°) ending 10 cm in front of it. The stop is paced on the stride the gait really takes; the seat takes the rest. Read before changing approach.rs."
 type: decision
 status: current
 tags:
   - locomotion
   - biomechanics
   - correctness
-updated: 2026-10-03
-verified: 2026-10-03
+updated: 2026-10-04
+verified: 2026-10-04
 code:
   - src/character/anim/approach.rs
   - src/character/anim/walker.rs
+  - src/character/anim/gait.rs
   - src/character/anim/sitting.rs
   - src/character/anim/footlock.rs
   - src/character/anim/obstacles.rs
@@ -34,6 +35,9 @@ aliases:
   - Seat::back
   - Seat::across
   - Walker::chair
+  - SHORT_STEPS
+  - stride_speeds
+  - miss_cost
   - turn to sit
   - walk round the chair
 ---
@@ -51,13 +55,19 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
 - **Where it stands** (`stand_spot`): where the upright seated pose puts
   the hips over the seat with the feet unmoved (`sitting::seat_offset`),
   facing the chair's way.
-- **The path:** straight to a tangent of a 0.25 m circle, then round it,
+- **The path:** straight to a tangent of a 0.18 m circle, then round it,
   arriving facing away from the chair.
   - The shorter of the two circles (left or right), re-planned every frame.
-  - At 0.5 m/s round it, half a circle takes ~1.6 s and ~2.5 steps, as
-    healthy adults turn 180° (Robinson: 1.5 s median).
+  - At 0.4 m/s round it, half a circle takes 1.4 s, as healthy adults turn
+    180° (Robinson: 1.5 s median).
   - The turn ends `TURN_AHEAD` (10 cm) in front of the spot: a circle
-    ending on the spot dips a radius behind it.
+    ending on the spot dips a radius behind it, toward the seat's front
+    corner.
+- **In short steps** (`gait::SHORT_STEPS`): walking to a chair, the
+  stride shortens with speed down to 0.3 of the recorded one's excursions,
+  not the usual 0.5. That is a 0.23 m step on `puppet_base`, as a person
+  shuffles closing on a chair. Only in short steps can the walk follow the
+  0.18 m circle and pace its stop onto the spot.
   - Turns sharper than 0.8 rad are walked at the turning pace.
   - It looks at the chair on the way, until it turns.
 - **Round obstacles** (`route`): its own chair (`Chair::footprint`,
@@ -85,14 +95,20 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   - A person comes at a chair from in front in the open, and along the
     gap from one side at a table.
 - **The stop is paced.** A stop can end only in half-stride steps (a
-  footfall, then a last step, `transition`): 0.39 m apart at the turning
-  pace, up to 0.29 m off the spot.
+  footfall, then a last step, `transition`): about 0.33 m apart at the
+  turning pace, up to a quarter stride off the spot.
   - Over the last `FIT_WITHIN` (the arc and 0.6 m) it walks at the speed
-    whose stride lands a footfall's stop on the spot (stride ∝ speed^0.65).
-    This is how a person closes on a target (Lee, Lishman & Thomson 1982).
+    whose stride lands a footfall's stop on the spot. This is how a person
+    closes on a target (Lee, Lishman & Thomson 1982).
+  - The stride grows as speed^0.65 only between `gait::stride_speeds`;
+    slower, only the cadence drops. In short steps that is from 0.25 m/s.
+  - It paces only once lined up with the path (heading within 0.8 rad).
   - It re-paces at most once a step, and only if the stop has drifted
     past 3 cm.
-  - It stops only once paced and walking at that pace.
+  - It stops only once paced and walking at that pace, at the better of
+    this footfall's stop and the next (`miss_cost`). Past the turn's end
+    the seat takes up only 5 cm; short of it, round the circle, 25 cm back
+    but only 8 cm to the side.
 - **The seat makes up the rest** (`sitting::Seat`), so the hips land on
   the seat's middle with the feet where they stopped:
   - `back` (±15 cm, along the chair) swings the shins forward or back;
@@ -103,10 +119,13 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
 
 ## Alternatives considered
 
-- **A smaller turning circle**, to keep the turn's dip off the chair. At
-  0.12 m and at 0.18 m the walk could not follow it: the body trails its
-  heading by about a step, and it stood 18–22 cm off its spot, past what
-  the seat takes up.
+- **A smaller turning circle in the walk's own steps.** At 0.12 m and at
+  0.18 m the walk could not follow it: the body trails its heading by
+  about a step (0.39 m), and it stood 18–22 cm off its spot, past what the
+  seat takes up. In short steps it follows 0.18 m (taken).
+- **The 0.25 m circle, walked 30° short of the heading, the rest turned
+  standing**, to keep the dip off the chair. A turn at rest pivots the
+  planted feet with the body (`AnimFootIk::turn`): ~5 cm of foot slide.
 - **A pivot on the spot** (a very slow walk turning hard, 0.18 m/s at
   2 rad/s). The body stays within ~12 cm, but the feet swing up to 30 cm
   out, as far past the chair's front as the circle's dip.
@@ -128,6 +147,19 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   25 cm short, beside the chair.
 - **Stopping before pacing** stopped from a full-speed stride (1.4 m at
   1.2 m/s), 1.3 m out.
+- **The stride stops shortening below 0.54 m/s** (`gait::walking_for`
+  holds its excursions at half the recorded ones). Paced to 0.30-0.37 m/s
+  on `speed^0.65`, four of sixteen live walks to the table stopped 12-20 cm
+  past the turn's end, beyond what the seat takes up. The prediction of
+  where the stop ends was right in every one; the stride it was given was
+  not (0.52 m where the walk took 0.77).
+- **Paced while turning onto a short straight** (from an entry, at
+  0.8 m/s, turning at 2 rad/s), the walk swung wide and met the circle
+  1.3 rad off its heading, ending 23 cm to the side.
+- **Weighing a stop's miss by distance alone** took 30 cm short (16 cm to
+  the side, round the circle) over 4 cm past. And a cost held flat beyond
+  half a circle short gave two stops a step apart the same cost: the walk
+  stopped a metre out.
 - **The arc's remaining length must use the radius actually walked.**
   Wide of the circle, measured at its radius, the stop fell 2–4 cm short.
 - **A stop short of the path's end never turned the rest of the way**: it
@@ -176,13 +208,16 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
 ## Consequences
 
 - **Tests:**
-  - A point walk that stops as the transition does arrives within 4 cm,
-    from ahead, beside, behind, close and too close, at four stride phases.
+  - A point walk that stops as the transition does ends where the seat
+    takes it up, with 2 cm to spare, from ahead, beside, behind, close and
+    too close, at four stride phases.
   - Round the chair it stays within 6 cm of its own 0.2 m margin.
-  - The gallery's three chairs, from three headings each, end within 6 cm.
-  - Through the turn, the body's middle is never more than 7 cm past the
-    seat's front edge.
-  - Without the pacing or the routing, their tests fail.
+  - The gallery's three chairs, from three headings each, likewise.
+  - Through the turn, the body's middle stays 11 cm clear of the chair.
+  - Paced on a stride that ignores the gait's floor, or before lined up,
+    or without the routing, their tests fail.
+  - The model walk has no step lag, so it follows a small circle in any
+    step: only live can show the short steps are needed for it.
 - **Live,** four chair placements, including one with its back to the
   walker:
   - stopped 53–125 mm off the spot;
@@ -195,22 +230,38 @@ Contents: [Decision](#decision) · [Alternatives considered](#alternatives-consi
   chair, floor between it and the front leg.
 - **At a table** (`approach::tests`): the playground's dining set, each of
   four chairs from four sides of the room. Never into the table or another
-  chair, past its own chair's front by at most the turn, within 6 cm of
-  its spot.
-- **Live at the table** (playground `--sit-at-table N`, physics
-  obstacles), three chairs, one from behind:
-  - the body's middle 9–38 cm clear of the table throughout (before:
-    16–39 cm inside it);
-  - feet at least 2.3 cm from every leg;
-  - two sat with their hips 0 mm from the seat; one stopped 20 cm past
-    its spot, its hips 15 cm off.
+  chair, 10 cm clear of its own, where the seat makes up the rest.
+- **The model's walks** (48, in short steps on the 0.18 m circle) end
+  4.7 cm short to 3.0 cm past the turn's end, at most 1.1 cm to the side;
+  the body's middle at least 12.2 cm from the chair (5 cm on 0.25 m).
+- **Live at the table** (playground `--sit-at-table N --start X,Z,YAW`,
+  physics obstacles), sixteen walks, the four chairs from four starts:
+  - before: four of sixteen stopped 12–20 cm past the turn's end, beyond
+    the seat (paced below where the stride shortens);
+  - on the stride the gait takes, in its own steps: all sixteen within
+    the seat, but two at its edge (23.5 cm short of the turn's end and
+    7.3 cm across; 8 cm across);
+  - in short steps on the 0.18 m circle: all sixteen from 9.8 cm short to
+    2.1 cm past the turn's end, 2.0–4.9 cm across (the seat takes 25 / 5 /
+    8);
+  - at two chairs measured over BRP, the body's middle 19–34 cm clear of
+    the table, feet at least 2.3 cm from every leg (with no loose props:
+    see Revisit), hips 0 mm off the seat.
+- **Live at the gallery's chairs** (four placements, one from behind), A/B
+  on the same input: through the turn the body's middle came within
+  2.8–4.8 cm of the chair on the 0.25 m circle, 8.4–13.4 cm on 0.18 m.
+  Hips 0–2 mm off the seat in all eight.
+- **Seen** mid-turn, gizmos and mesh, Front and Left: short steps beside
+  the chair, feet a shoe apart, no leg crossing or twisted foot.
 
 ## Revisit when
 
-- **The stop in a tight place:** from an entry the final approach is short
-  and slow, and a stop can still land up to a quarter stride off. At the
-  table one walk stopped 20 cm past its spot, beyond what the seat takes
-  up (its hips 15 cm off the seat's middle).
+- **A steady 2–5 cm sideways miss live** that the model does not show
+  (≤ 1.1 cm there): the seat takes it, but its cause is not known.
+- **Feet on a loose prop by the chair:** the feet's obstacle band is
+  measured from the ground the body stands on, so standing on a prop
+  0.3 m up a foot went 3.8 cm into a chair leg below it (with no props,
+  2.3 cm clear). The band wants each foot's own ground.
 - **Moving obstacles, crowds:** the graph is re-planned every frame but
   knows nothing of other walkers.
 - **Other seats** (a bench, a sofa): `Chair::standard` is one chair's size.

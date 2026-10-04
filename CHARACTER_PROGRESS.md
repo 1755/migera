@@ -41,6 +41,57 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Stops land on the spot, in short steps round a smaller circle
+
+- **The stride the gait takes, not `speed^0.65`:** `gait::walking_for`
+  holds a walk's excursions at half the recorded ones below 0.54 m/s
+  (`puppet_base`); slower, only its cadence drops. The approach assumed
+  the stride kept shrinking. Paced to 0.30–0.37 m/s, four of sixteen live
+  walks to the table stopped 12–20 cm past the turn's end, beyond what
+  the seat takes up. Where the stop would end was predicted right every
+  time (within 1–5 cm); the stride it was given was 0.52 m for 0.77.
+  - `gait::stride_speeds`, and `approach::stride_at` and `Walked::stride`
+    grow the stride only between them.
+- **Short steps** (`gait::SHORT_STEPS`, `GaitParams::walking_with_steps`):
+  walking to a chair, the stride shortens down to 0.3 of the recorded
+  excursions (from 0.25 m/s), not 0.5. Pacing then lands every stop of a
+  1–2 m sweep within 1 cm (9 of 100 missed by up to 8.5 cm without).
+- **A 0.18 m turning circle at 0.4 m/s** (was 0.25 m at 0.5): half a circle
+  in 1.4 s. In the walk's own 0.39 m steps it could not be followed
+  (18–22 cm off, tried before); in short steps it can.
+- **The stop:** paced only once lined up with the path; at the better of
+  this footfall's stop and the next by how much of the seat's range each
+  takes (`miss_cost`): past the turn's end it takes up 5 cm, short of it
+  25 cm back and 8 cm across. A cost held flat past half a circle short
+  stopped a walk a metre out, and is now ever worse further short.
+- **Tests:** the model walk takes the gait's stride (short steps), ends
+  where the seat takes it up, 11 cm clear of its chair through the turn
+  (was 5 cm on 0.25 m); the test chairs stand 0.51 m behind the spot as
+  live, not 0.40. Pacing blind to the floor fails five tests; pacing
+  before lined up, two.
+- **Live at the table,** sixteen walks (four chairs from four starts):
+  - before: four past the seat's range (seat clamped at +150 mm);
+  - on the stride the gait takes, own steps: all within, two at the edge
+    (23.5 cm short of the turn's end; 8 cm across);
+  - in short steps on 0.18 m: 9.8 cm short to 2.1 cm past the turn's end,
+    2.0–4.9 cm across;
+  - two chairs over BRP: the body's middle 19–34 cm clear of the table,
+    feet ≥ 2.3 cm from every leg, hips 0 mm off the seat.
+- **Live at the gallery's chairs,** A/B on the same input (four placements,
+  one from behind): through the turn the body's middle came within
+  2.8–4.8 cm of the chair on 0.25 m, 8.4–13.4 cm on 0.18 m; hips 0–2 mm
+  off the seat in all eight.
+- **Seen** mid-turn, Front and Left, gizmos with the mesh off, then the
+  mesh: short steps beside the chair, no leg crossing or twisted foot.
+- **Found, not fixed:**
+  - Standing on a loose prop 0.3 m up beside the chair, a foot went
+    3.8 cm into a chair leg: the feet's obstacle band follows the body's
+    ground, and rose above the legs. With no props, 2.3 cm clear.
+  - A steady 2–5 cm sideways miss live, ≤ 1.1 cm in the model.
+- Distilled in
+  [walking to a chair](./docs/knowledge/character-animation/ik-and-locomotion/walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md).
+- `cargo test --release --lib`: 1132 passed. Clippy: 0 warnings.
+
 ### Walks to a chair route round tables and chairs
 
 - **`approach::route`:** a visibility graph over every obstacle's corners

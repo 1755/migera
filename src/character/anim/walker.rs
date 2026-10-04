@@ -361,10 +361,11 @@ impl Walked {
     }
 
     /// The stride a walk at `speed` covers: two of the last steps measured,
-    /// grown or shrunk with the speed as the gait's are; else `geometric`.
-    fn stride(&self, speed: f32, geometric: f32) -> f32 {
+    /// grown or shrunk with the speed as the gait's are (only between
+    /// `speeds`, `gait::stride_speeds`); else `geometric`.
+    fn stride(&self, speed: f32, geometric: f32, speeds: (f32, f32)) -> f32 {
         match self.step {
-            Some((length, at)) if at > 0.0 && speed > 0.0 => 2.0 * length * (speed / at).powf(0.65),
+            Some((length, at)) if at > 0.0 && speed > 0.0 => approach::stride_at(speed, 2.0 * length, at, speeds),
             _ => geometric,
         }
     }
@@ -477,6 +478,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // is solved once per chair.
         let fallen = ragdoll.is_some_and(Ragdoll::is_falling);
         let (mut wanted_speed, mut steer, mut arrived, mut look_at) = (walker.speed, walker.steer, true, walker.look_at);
+        // Walking to a chair it places itself, in short steps when slow.
+        let mut placing = false;
         match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
             (Some(how), Some(chair), Some(rig)) if how.on_chair() && state.posture.is_standing() && !fallen => {
                 // Headings are the walking direction's, the rig's own
@@ -496,11 +499,14 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let walking = state.transition.weight > 0.0;
                 let speed_now = if walking { state.transition.stride_speed } else { 0.0 };
                 state.walked.update(state.locomotion.position, cycle_of(&phase), speed_now);
+                placing = true;
+                let stride_speeds = super::gait::stride_speeds_with_steps(super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS);
                 let gait = approach::Gait {
                     cycle: cycle_of(&phase),
-                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, distance)| distance)),
+                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, distance)| distance), stride_speeds),
                     speed: speed_now,
                     stopped: !walking && state.transition.is_at_rest(),
+                    stride_speeds,
                 };
                 // The turn ends a little in front of the spot, clear of the
                 // chair; the seat makes that up.
@@ -595,7 +601,15 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         let speed = state.transition.stride_speed;
 
         // A walk's stride grows with its speed, scaled to this rig's leg.
-        let params = if speed >= RUN_ABOVE { GaitParams::running() } else { GaitParams::walking_on(speed, &gait_rig) };
+        // Placing itself at a chair, its stride shortens further: the
+        // approach paces its stop and turns by it (`gait::SHORT_STEPS`).
+        let params = if speed >= RUN_ABOVE {
+            GaitParams::running()
+        } else if placing {
+            GaitParams::walking_with_steps(speed, super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS)
+        } else {
+            GaitParams::walking_on(speed, &gait_rig)
+        };
 
         // The standing knee bend, from the rig's own measured geometry, so
         // it bends the right way on any rig (baked into a pose file it bent

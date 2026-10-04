@@ -39,6 +39,7 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::math::{Vec2, Vec3};
 
+use super::gait;
 use super::obstacles::Footprint;
 use super::rig::{forward_kinematics_on, LocalPose, RigGeometry};
 use super::sitting;
@@ -234,19 +235,19 @@ pub fn route(obstacles: &[Footprint], own: bool, at: Vec3, to: Vec3, held: Optio
     Route::Via(nodes[best])
 }
 
-/// The turning circle's radius, metres: the slow walk at 2 rad/s, half a
-/// circle in ~1.6 s (Robinson: 1.5 s).
+/// The turning circle's radius, metres: the slow walk at 2.2 rad/s, half a
+/// circle in 1.4 s (Robinson: 1.5 s).
 ///
 /// A circle ending on the spot facing away from the chair dips a radius
-/// behind it just before, and the chair's front edge is only ~0.10 m
-/// behind the spot: ending on the spot, the body passed 15 cm behind the
-/// seat's front edge, at its corner ([`TURN_AHEAD`] keeps that to ~5 cm,
-/// beside it). Smaller circles the walk could not follow: the body trails
-/// its heading by about a step, and at 0.12 m and 0.18 m it stood 18-22 cm
-/// off its spot, past what the seat makes up.
-pub const TURN_RADIUS: f32 = 0.25;
-/// The walk round the turning circle, m/s, before it is paced.
-pub const TURN_SPEED: f32 = 0.5;
+/// behind it just before, toward the seat's front corner. At 0.25 m the
+/// body's middle came within 5 cm of the chair; at 0.18 m, 12 cm. The walk
+/// follows the smaller circle only in short steps (`gait::SHORT_STEPS`):
+/// in its own 0.39 m ones the body trailed its heading by about a step, and
+/// at 0.12 m and 0.18 m it stood 18-22 cm off its spot.
+pub const TURN_RADIUS: f32 = 0.18;
+/// The walk round the turning circle, m/s, before it is paced: half a
+/// circle in 1.4 s.
+pub const TURN_SPEED: f32 = 0.4;
 /// The turn ends this far in front of the spot, metres, so its dip stays
 /// beside the chair; the seat makes it up (`sitting::Seat::back`).
 pub const TURN_AHEAD: f32 = 0.10;
@@ -257,9 +258,6 @@ pub const APPROACH_SPEED: f32 = 1.0;
 pub const FIT_WITHIN: f32 = PI * TURN_RADIUS + 0.6;
 /// The paces it may take, m/s.
 const PACES: (f32, f32) = (0.25, 0.8);
-/// A stride grows as speed to this power (`gait::GaitParams::walking_at`:
-/// cadence as `speed^0.35`, stride as `speed^0.65`).
-const STRIDE_POWER: f32 = 0.65;
 /// How far the body travels through a stop's last step, from its footfall
 /// to standing, as a fraction of the stride: the double support, then the
 /// gait fading out over the other foot's swing (`transition`). Measured
@@ -302,6 +300,9 @@ pub struct Gait {
     pub speed: f32,
     /// Fully at rest.
     pub stopped: bool,
+    /// The speeds between which the stride grows with speed
+    /// (`gait::stride_speeds`).
+    pub stride_speeds: (f32, f32),
 }
 
 /// How far a walk told to stop now travels before it stands, metres: on to
@@ -320,24 +321,68 @@ fn stops_from(cycle: f32) -> impl Iterator<Item = f32> {
 }
 
 /// The stride a walk at `speed` takes, from one at `known_speed` taking
-/// `known`.
-fn stride_at(speed: f32, known: f32, known_speed: f32) -> f32 {
-    known * (speed / known_speed).powf(STRIDE_POWER)
+/// `known`: it grows as `speed^0.65` between `speeds`, and is held outside
+/// them (`gait::stride_speeds`).
+pub fn stride_at(speed: f32, known: f32, known_speed: f32, speeds: (f32, f32)) -> f32 {
+    let held = |speed: f32| speed.clamp(speeds.0, speeds.1);
+    known * (held(speed) / held(known_speed)).powf(gait::STRIDE_GROWTH)
 }
 
 /// The pace that puts a stop's end `left` metres on: of the coming
-/// footfalls, the one whose stride is nearest the turning pace's, its
-/// stride turned into a speed.
+/// footfalls, the one whose stride is nearest the turning pace's among
+/// those a pace can give, its stride turned into a speed; with none, the
+/// one that lands nearest.
+///
+/// Below `Gait::stride_speeds` a slower pace only steps slower: assuming
+/// it shortened the stride, a walk paced to 0.30 m/s stopped 20 cm past
+/// its spot.
 pub fn fitted_pace(left: f32, gait: &Gait) -> f32 {
     if gait.speed <= 0.0 || gait.stride <= 0.0 {
         return TURN_SPEED;
     }
-    let nominal = stride_at(TURN_SPEED, gait.stride, gait.speed);
-    let ratio = stops_from(gait.cycle)
-        .map(|fraction| left / fraction / nominal)
-        .min_by(|a, b| a.ln().abs().total_cmp(&b.ln().abs()))
-        .unwrap_or(1.0);
-    (TURN_SPEED * ratio.powf(1.0 / STRIDE_POWER)).clamp(PACES.0, PACES.1)
+    let stride = |speed: f32| stride_at(speed, gait.stride, gait.speed, gait.stride_speeds);
+    let (shortest, longest, nominal) = (stride(PACES.0), stride(PACES.1), stride(TURN_SPEED));
+    let wanted = || stops_from(gait.cycle).map(|fraction| (fraction, left / fraction));
+    let wanted = wanted()
+        .filter(|&(_, wanted)| (shortest..=longest).contains(&wanted))
+        .min_by(|a, b| (a.1 / nominal).ln().abs().total_cmp(&(b.1 / nominal).ln().abs()))
+        .or_else(|| {
+            let miss = |(fraction, wanted): (f32, f32)| miss_cost(left - fraction * wanted.clamp(shortest, longest));
+            wanted().min_by(|&a, &b| miss(a).total_cmp(&miss(b)))
+        })
+        .map_or(nominal, |(_, wanted)| wanted.clamp(shortest, longest));
+    // The pace taking it; for the shortest, the pace it stops shortening
+    // at.
+    let held = gait.speed.clamp(gait.stride_speeds.0, gait.stride_speeds.1);
+    (held * (wanted / gait.stride).powf(1.0 / gait::STRIDE_GROWTH)).clamp(PACES.0, PACES.1)
+}
+
+/// How much of what the seat makes up (`sitting::Seat`) a stop ending
+/// `short` metres of the path's end takes (negative: past it); over 1 it
+/// sits off the seat's middle.
+///
+/// The path ends round the turning circle heading away from the chair, the
+/// turn [`TURN_AHEAD`] in front of the spot:
+/// - past it, the stop stands further out, where the seat's 15 cm back
+///   take up only 5;
+/// - short of it, back round the circle: nearer the chair (25 cm) and to
+///   the side (8 cm).
+///
+/// Where the stride no longer shortens (`Gait::stride_speeds`) no pace may
+/// land a stop on the end; the nearer by distance alone may be 30 cm short
+/// and 16 cm to the side, against 4 cm past that the seat takes up.
+fn miss_cost(short: f32) -> f32 {
+    if short < 0.0 {
+        return -short / (sitting::SEAT_BACK_RANGE - TURN_AHEAD);
+    }
+    let round = (short / TURN_RADIUS).min(PI);
+    let back = TURN_RADIUS * if round < PI * 0.5 { round.sin() } else { 1.0 };
+    let across = TURN_RADIUS * (1.0 - round.cos());
+    // Further short than the half circle, on the straight before it: still
+    // worse the further (held there, two stops a step apart cost the same,
+    // and it stopped a metre out).
+    let before = (short - PI * TURN_RADIUS).max(0.0);
+    (back / (sitting::SEAT_BACK_RANGE + TURN_AHEAD)).max(across / sitting::SEAT_ACROSS_RANGE) + before / (sitting::SEAT_BACK_RANGE + TURN_AHEAD)
 }
 
 /// How far off the nearest stop the walk can still make ends from `left`
@@ -624,12 +669,19 @@ impl Approach {
                 // And walking at that pace: a stop decided on a stride from
                 // another speed (0.72 m/s, paced at 0.39) ended mid-turn,
                 // 25 cm short, beside the chair.
+                // Of this stop and the next, half a stride on, the better
+                // (`miss_cost`): past the end costs more.
                 let at_pace = pace.is_some_and(|(pace, _)| (gait.speed - pace).abs() < 0.02);
-                if at_pace && left - stop_distance(gait.cycle, gait.stride) <= 0.25 * gait.stride {
+                let short = left - stop_distance(gait.cycle, gait.stride);
+                if at_pace && miss_cost(short) <= miss_cost(short - 0.5 * gait.stride) {
                     *self = Approach::Stopping { side: Some(side), on_arc };
                     return Order::Stop { heading: toward, rate: turning(gait.speed) };
                 }
-                let pace = if left > FIT_WITHIN {
+                // Paced only once lined up with the path: paced to 0.8 m/s
+                // while turning onto a short straight from an entry, it swung
+                // wide and met the circle 1.3 rad off its heading.
+                let lined_up = super::facing::shortest_angle(toward - walking).abs() <= SHARP_TURN;
+                let pace = if left > FIT_WITHIN || !lined_up {
                     None
                 } else {
                     // Paced once, then again only if the stop drifts off,
@@ -678,8 +730,21 @@ mod tests {
     use super::*;
     use crate::character::anim::facing::shortest_angle;
 
-    /// The stride the model walk takes at the turning pace (the live one's).
+    /// The stride the model walk takes at 0.54 m/s (the live one's, measured
+    /// at the turning pace when its stride was held from there down).
     const STRIDE: f32 = 0.772;
+    const STRIDE_SPEED: f32 = 0.54;
+
+    /// Where the model walk's stride grows with speed: `puppet_base`'s, its
+    /// legs 0.888 m, placing itself in short steps (0.25-2.1 m/s).
+    fn stride_speeds() -> (f32, f32) {
+        gait::stride_speeds_with_steps(0.888, gait::SHORT_STEPS)
+    }
+
+    /// The model walk's stride at `speed`.
+    fn stride_of(speed: f32) -> f32 {
+        stride_at(speed, STRIDE, STRIDE_SPEED, stride_speeds())
+    }
 
     /// A walk modelled as the real one stops: told to stop, it walks on to
     /// a footfall (one within [`FOOTFALL_WINDOW`] counts) and then
@@ -696,12 +761,12 @@ mod tests {
 
     impl Walk {
         fn stride(&self) -> f32 {
-            stride_at(self.speed.max(0.05), STRIDE, TURN_SPEED)
+            stride_of(self.speed.max(0.05))
         }
 
         fn gait(&self) -> Gait {
             let stopped = matches!(self.stopping, Some(Some(left)) if left <= 0.0);
-            Gait { cycle: self.cycle, stride: self.stride(), speed: if stopped { 0.0 } else { self.speed }, stopped }
+            Gait { cycle: self.cycle, stride: self.stride(), speed: if stopped { 0.0 } else { self.speed }, stopped, stride_speeds: stride_speeds() }
         }
 
         fn step(&mut self, order: Order, dt: f32) {
@@ -760,32 +825,58 @@ mod tests {
         panic!("never arrived from {from} heading {heading}");
     }
 
+    /// Whether the seat makes up a walk ending at `at` for a turn ending at
+    /// `turn_end` heading `arrive` (`sitting::Seat`, its back and across
+    /// ranges round the spot [`TURN_AHEAD`] behind it), with 2 cm to spare:
+    /// how far it ended past the spot and to its side.
+    fn seat_makes_up(at: Vec3, turn_end: Vec3, arrive: f32) -> Result<(), String> {
+        let along = direction_of(arrive);
+        let off = Vec3::new(at.x - turn_end.x, 0.0, at.z - turn_end.z) + along * TURN_AHEAD;
+        let (past, across) = (off.dot(along), off.dot(Vec3::Y.cross(along)));
+        if past.abs() < sitting::SEAT_BACK_RANGE - 0.02 && across.abs() < sitting::SEAT_ACROSS_RANGE - 0.02 {
+            Ok(())
+        } else {
+            Err(format!("ended {past:+.3} m past the spot, {across:+.3} m to its side"))
+        }
+    }
+
+    /// How far in front of the seated hips the walker's `stand_spot` puts
+    /// the spot on `puppet_base`, metres (measured live: 0.40 from the hips'
+    /// own offset, and the standing hips 0.11 behind the root).
+    const SPOT_IN_FRONT: f32 = 0.51;
+
     /// The chair whose turn ends at (0, 0, -3), sat on facing +Z: its seat
-    /// 0.4 m behind the spot, as the rig's upright sit puts it, the spot
-    /// [`TURN_AHEAD`] behind where the turn ends.
+    /// [`SPOT_IN_FRONT`] behind the spot, the spot [`TURN_AHEAD`] behind
+    /// where the turn ends.
     fn chair_behind_the_spot() -> Chair {
-        Chair::standard(Vec3::new(0.0, 0.0, -3.4 - TURN_AHEAD), Vec3::Z)
+        Chair::standard(Vec3::new(0.0, 0.0, -3.0 - SPOT_IN_FRONT - TURN_AHEAD), Vec3::Z)
     }
 
     #[test]
-    fn the_turn_onto_the_spot_passes_at_most_7_cm_past_the_seat_front() {
+    fn the_turn_onto_the_spot_keeps_the_body_11_cm_clear_of_the_chair() {
         // Every way of arriving dips a turning radius behind where the turn
-        // ends; ending on the spot, the body's middle passed 15 cm past the
-        // seat's front edge, by its corner. Ended TURN_AHEAD in front, at
-        // most 7 cm. (A smaller circle the walk cannot follow; a pivot
-        // swings the feet as far.)
+        // ends, toward the seat's front corner. On a 0.25 m circle the
+        // body's middle came within 5 cm of the chair; on 0.18 m, in short
+        // steps, 12 cm. (A pivot instead swings the feet 30 cm out.)
         let chair = chair_behind_the_spot().footprint();
         let spot = Vec3::new(0.0, 0.0, -3.0);
         for (from, heading) in [(Vec3::ZERO, 0.0), (Vec3::new(2.0, 0.0, -3.0), PI * 0.5), (Vec3::new(-2.0, 0.0, -2.5), -PI * 0.5)] {
             let (_, _, _, track) = walk(from, heading, spot, PI, 0.2, &[chair]);
-            let half = chair.size * 0.5;
-            for local in track.iter().map(|&point| chair.local(point)) {
-                let behind_front = half.y - local.y;
-                if local.x.abs() < half.x && behind_front > 0.0 {
-                    assert!(behind_front < 0.07, "from {from}: {:.0} mm past the seat's front edge", behind_front * 1e3);
-                }
-            }
+            let clear = clearance(&track, &chair);
+            assert!(clear > 0.11, "from {from}: the body's middle came within {clear:.3} m of the chair");
         }
+    }
+
+    /// How near a walk's track comes to a footprint, metres: negative inside.
+    fn clearance(track: &[Vec3], footprint: &Footprint) -> f32 {
+        let half = footprint.size * 0.5;
+        track
+            .iter()
+            .map(|&point| {
+                let over = footprint.local(point).abs() - half;
+                if over.cmplt(Vec2::ZERO).all() { over.max_element() } else { over.max(Vec2::ZERO).length() }
+            })
+            .fold(f32::INFINITY, f32::min)
     }
 
     #[test]
@@ -813,20 +904,18 @@ mod tests {
         // The gallery's character starts at the origin; its chairs (`--chair`)
         // at -1.5,-1.5 facing the camera and at 0,-1.5 with its back to the
         // character. Live, the first walked 12 cm into the seat's corner and
-        // the second never sat down. The spot 0.4 m in front of the seat,
+        // the second never sat down. The spot SPOT_IN_FRONT of the seat,
         // the turn ending TURN_AHEAD further, as the walker has it.
         for (seat, forward) in [(Vec3::new(-1.5, 0.0, -1.5), Vec3::Z), (Vec3::new(0.0, 0.0, -1.5), Vec3::NEG_Z), (Vec3::new(1.5, 0.0, -2.0), Vec3::NEG_X)] {
             let chair = Chair::standard(seat, forward).footprint();
-            let turn_end = seat + forward * (0.4 + TURN_AHEAD);
+            let turn_end = seat + forward * (SPOT_IN_FRONT + TURN_AHEAD);
             for heading in [0.0, PI, 0.7] {
                 let (at, _, _, track) = walk(Vec3::ZERO, heading, turn_end, heading_of(forward), 0.3, &[chair]);
-                let off = Vec3::new(at.x - turn_end.x, 0.0, at.z - turn_end.z).length();
-                assert!(off < 0.06, "chair at {seat} from heading {heading}: ended {off:.3} m off");
-                let half = chair.size * 0.5;
-                for local in track.iter().map(|&point| chair.local(point)) {
-                    let inside = half - local.abs();
-                    assert!(inside.x < 0.0 || inside.y < 0.07, "chair at {seat} from heading {heading}: walked into it at {local}");
+                if let Err(off) = seat_makes_up(at, turn_end, heading_of(forward)) {
+                    panic!("chair at {seat} from heading {heading}: {off}");
                 }
+                let clear = clearance(&track, &chair);
+                assert!(clear > 0.1, "chair at {seat} from heading {heading}: came within {clear:.3} m of it");
             }
         }
     }
@@ -836,8 +925,8 @@ mod tests {
         // The playground's dining set: a 1.2 by 0.8 m table and four chairs
         // pulled out 0.75 m, facing it. Routed round its own chair only, the
         // walk went through the table. From each side of the room, to each
-        // chair: never into the table or another chair, past its own chair's
-        // front edge at most as the turn does, and on its spot.
+        // chair: never into the table or another chair, 10 cm clear of its
+        // own, and where the seat makes up the rest.
         let table = Footprint { middle: Vec3::ZERO, forward: Vec3::Z, size: Vec2::new(1.2, 0.8) };
         let chairs: Vec<Chair> = [(-0.3, 1.0), (0.3, 1.0), (-0.3, -1.0), (0.3, -1.0)]
             .into_iter()
@@ -851,24 +940,16 @@ mod tests {
             // Its own chair first, as the walker passes them.
             let mut obstacles = vec![chair.footprint(), table];
             obstacles.extend(chairs.iter().enumerate().filter(|(i, _)| *i != index).map(|(_, c)| c.footprint()));
-            // The spot 0.51 m in front of the seated hips, as the walker's
-            // `stand_spot` puts it on the rig (measured live: 0.40 from the
-            // hips' own offset, and the standing hips 0.11 behind the root).
-            let turn_end = chair.seat + chair.forward * (0.51 + TURN_AHEAD);
+            let turn_end = chair.seat + chair.forward * (SPOT_IN_FRONT + TURN_AHEAD);
             for (from, heading) in [(Vec3::new(0.0, 0.0, 4.0), 0.0), (Vec3::new(0.0, 0.0, -4.0), PI), (Vec3::new(4.0, 0.0, 0.5), 1.5), (Vec3::new(-4.0, 0.0, -0.5), -1.5)] {
                 let (at, _, _, track) = walk(from, heading, turn_end, heading_of(chair.forward), 0.2, &obstacles);
-                let off = Vec3::new(at.x - turn_end.x, 0.0, at.z - turn_end.z).length();
-                assert!(off < 0.06, "chair {index} from {from}: ended {off:.3} m off");
-                for point in &track {
-                    for (i, obstacle) in obstacles.iter().enumerate() {
-                        let inside = obstacle.size * 0.5 - obstacle.local(*point).abs();
-                        if inside.x <= 0.0 || inside.y <= 0.0 {
-                            continue;
-                        }
-                        // Its own chair: only past the front edge, by the turn.
-                        let own = i == 0 && obstacle.local(*point).y > 0.0 && inside.y < 0.07;
-                        assert!(own, "chair {index} from {from}: walked into obstacle {i} at {point}");
-                    }
+                if let Err(off) = seat_makes_up(at, turn_end, heading_of(chair.forward)) {
+                    panic!("chair {index} from {from}: {off}");
+                }
+                for (i, obstacle) in obstacles.iter().enumerate() {
+                    let clear = clearance(&track, obstacle);
+                    let needed = if i == 0 { 0.1 } else { 0.0 };
+                    assert!(clear > needed, "chair {index} from {from}: came within {clear:.3} m of obstacle {i}");
                 }
             }
         }
@@ -884,10 +965,11 @@ mod tests {
         let spot = Vec3::new(0.0, 0.0, -3.0);
         for (from, heading) in [(Vec3::new(0.0, 0.0, -6.0), 0.0), (Vec3::new(1.0, 0.0, -5.5), PI), (Vec3::new(-0.8, 0.0, -4.5), 0.5)] {
             let (at, _, _, track) = walk(from, heading, spot, PI, 0.1, &[chair]);
-            let off = Vec3::new(at.x - spot.x, 0.0, at.z - spot.z).length();
             // Less straight is left to pace on once round the chair; still
-            // well within what the seat makes up (15 cm back, 8 across).
-            assert!(off < 0.06, "from {from}: ended {off:.3} m off the spot");
+            // within what the seat makes up (15 cm back, 8 across).
+            if let Err(off) = seat_makes_up(at, spot, PI) {
+                panic!("from {from}: {off}");
+            }
             let closest = track
                 .iter()
                 .filter(|point| point.distance(spot) > 0.6)
@@ -900,14 +982,10 @@ mod tests {
             // Less than CLEAR_OF_CHAIR: a straight may end beside the chair
             // (ENDS_BESIDE), and the walk trails its heading through a turn.
             assert!(closest > CLEAR_OF_CHAIR - 0.1, "from {from}: came within {closest:.2} m of the chair");
-            // And through the turn, never into it: past its front edge only
-            // brushing its corner (see
-            // `the_turn_onto_the_spot_passes_at_most_7_cm_past_the_seat_front`).
-            for point in &track {
-                let local = chair.local(*point);
-                let inside = chair.size * 0.5 - local.abs();
-                assert!(inside.x < 0.03 || inside.y < 0.07, "from {from}: walked into the chair at {point}");
-            }
+            // And through the turn, 10 cm clear (see
+            // `the_turn_onto_the_spot_keeps_the_body_11_cm_clear_of_the_chair`).
+            let clear = clearance(&track, &chair);
+            assert!(clear > 0.1, "from {from}: came within {clear:.3} m of the chair");
         }
     }
 
@@ -948,9 +1026,11 @@ mod tests {
                 // No chair to walk round: the stop alone (round it, see
                 // `a_walk_from_behind_the_chair_goes_round_it`).
                 let (at, facing, walked, _) = walk(from, heading, spot, arrive, cycle, &[]);
-                let off = Vec3::new(at.x - spot.x, 0.0, at.z - spot.z).length();
-                // Re-paced only past REPACE_OFF: the seat makes up the rest.
-                assert!(off < REPACE_OFF + 0.01, "from {from} at cycle {cycle}: ended {off:.3} m off the spot");
+                // Not always on it: from where the stride no longer
+                // shortens, the stop lands short where no pace fits.
+                if let Err(off) = seat_makes_up(at, spot, arrive) {
+                    panic!("from {from} at cycle {cycle}: {off}");
+                }
                 assert!(shortest_angle(facing - arrive).abs() < 0.03, "from {from}: facing {facing}");
                 let straight_line = from.distance(spot);
                 assert!(walked < straight_line + detour, "from {from}: walked {walked:.2} m for {straight_line:.2}");
@@ -965,17 +1045,83 @@ mod tests {
         let worst = (0..100)
             .map(|i| {
                 let left = 1.0 + i as f32 * 0.01;
-                stop_off(left, &Gait { cycle: 0.1, stride: STRIDE, speed: TURN_SPEED, stopped: false })
+                stop_off(left, &Gait { cycle: 0.1, stride: stride_of(TURN_SPEED), speed: TURN_SPEED, stopped: false, stride_speeds: stride_speeds() })
             })
             .fold(0.0, f32::max);
-        assert!(worst > 0.18, "unpaced worst {worst:.3} m");
-        // Paced for the same, it lands within a centimetre.
+        assert!(worst > 0.24 * stride_of(TURN_SPEED), "unpaced worst {worst:.3} m");
+        // Paced for the same, it lands within a centimetre: in short steps
+        // (`gait::SHORT_STEPS`). With the walk's own, held below 0.54 m/s,
+        // 9 of 100 landed up to 8.5 cm short.
         for i in 0..100 {
             let left = 1.0 + i as f32 * 0.01;
-            let gait = Gait { cycle: 0.1, stride: STRIDE, speed: TURN_SPEED, stopped: false };
+            let gait = Gait { cycle: 0.1, stride: stride_of(TURN_SPEED), speed: TURN_SPEED, stopped: false, stride_speeds: stride_speeds() };
             let pace = fitted_pace(left, &gait);
-            let paced = Gait { stride: stride_at(pace, STRIDE, TURN_SPEED), speed: pace, ..gait };
+            let paced = Gait { stride: stride_of(pace), speed: pace, ..gait };
             assert!(stop_off(left, &paced) < 0.01, "left {left}: paced {pace:.2} m/s still {:.3} m off", stop_off(left, &paced));
+        }
+    }
+
+    #[test]
+    fn a_stop_is_weighed_by_how_much_of_the_seats_range_it_takes() {
+        // The point a stop `short` of the turn's end stands on, round the
+        // circle from the end of a path arriving heading +Z at the origin:
+        // how far past the spot (TURN_AHEAD behind) and to its side.
+        let path_end = Vec3::ZERO;
+        let centre = centre_of(path_end, PI, Side::Left);
+        let stands = |short: f32| -> (f32, f32) {
+            let point = if short < 0.0 {
+                path_end + Vec3::Z * -short
+            } else {
+                let radial = bevy::math::Quat::from_rotation_y(-short / TURN_RADIUS) * (path_end - centre);
+                centre + radial
+            };
+            (point.z + TURN_AHEAD, point.x)
+        };
+        let seat_used = |short: f32| {
+            let (past, across) = stands(short);
+            (past.abs() / sitting::SEAT_BACK_RANGE).max(across.abs() / sitting::SEAT_ACROSS_RANGE)
+        };
+        // Past and short by a few centimetres: past takes more.
+        for off in [0.03, 0.06, 0.09] {
+            assert!(miss_cost(-off) > miss_cost(off), "{off}");
+            assert!(seat_used(-off) > seat_used(off), "{off}");
+        }
+        // 30 cm short is 16 cm to the side: worse than 4 cm past, which the
+        // seat takes. By distance alone the short one is nearer.
+        assert!(miss_cost(0.3) > miss_cost(-0.04));
+        assert!(seat_used(0.3) > 1.0 && seat_used(-0.04) < 1.0);
+        // And both agree where the seat stops taking it up.
+        for short in [-0.06, -0.04, 0.05, 0.08, 0.15] {
+            assert_eq!(miss_cost(short) > 1.0, seat_used(short) > 1.0, "{short}");
+        }
+        // Ever worse the further short, past the half circle too: held
+        // there, two stops a step apart cost the same, and the walk stopped
+        // a metre out.
+        for i in 0..200 {
+            let short = i as f32 * 0.01;
+            assert!(miss_cost(short + 0.01) > miss_cost(short), "{short}");
+        }
+    }
+
+    #[test]
+    fn a_pace_below_where_the_stride_stops_shortening_does_not_shorten_it() {
+        // Live, paced to 0.30 m/s on a stride measured at 0.61, the walk
+        // stopped 20 cm past its spot: the gait's stride is held below
+        // 0.54 m/s (`gait::stride_speeds`), and only its cadence drops.
+        // Placing itself in short steps, below 0.25 m/s.
+        let amplitude = |params: gait::GaitParams| match params.curves {
+            gait::LegCurves::Measured { amplitude } => amplitude,
+            _ => unreachable!(),
+        };
+        for (speeds, walk) in [
+            (gait::stride_speeds(0.888), &(|speed| gait::GaitParams::walking_for(speed, 0.888)) as &dyn Fn(f32) -> gait::GaitParams),
+            (stride_speeds(), &|speed| gait::GaitParams::walking_with_steps(speed, 0.888, gait::SHORT_STEPS)),
+        ] {
+            let slowest = speeds.0;
+            assert!((stride_at(slowest * 0.6, 0.833, 0.61, speeds) - stride_at(slowest, 0.833, 0.61, speeds)).abs() < 1.0e-6);
+            // As the gait itself takes it, on the rig the model's legs are.
+            assert_eq!(amplitude(walk(slowest * 0.6)), amplitude(walk(slowest)));
+            assert!(amplitude(walk(slowest + 0.05)) > amplitude(walk(slowest)));
         }
     }
 
@@ -992,7 +1138,7 @@ mod tests {
     #[test]
     fn already_there_sits_without_walking() {
         let mut approach = Approach::default();
-        let standing = Gait { cycle: 0.0, stride: 0.0, speed: 0.0, stopped: true };
+        let standing = Gait { cycle: 0.0, stride: 0.0, speed: 0.0, stopped: true, stride_speeds: stride_speeds() };
         let spot = Vec3::new(0.02, 0.0, 0.0);
         assert!(matches!(approach.advance(Vec3::ZERO, 0.1, &standing, spot, 0.0, 1.0, &[]), Order::Stop { heading: 0.0, .. }));
         assert_eq!(approach.advance(Vec3::ZERO, 0.0, &standing, spot, 0.0, 1.0, &[]), Order::Arrived);

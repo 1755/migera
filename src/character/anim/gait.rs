@@ -291,9 +291,14 @@ impl GaitParams {
     /// cadence is then whatever carries the stride at `speed`; see
     /// [`super::locomotion::distance_per_cycle`].
     pub fn walking_for(speed: f32, leg_length: f32) -> Self {
-        let reference = super::reference::SPEED
-            * (leg_length.max(0.1) / super::reference::LEG_LENGTH).sqrt();
-        let amplitude = (speed.max(0.0) / reference).powf(0.65).clamp(0.5, 1.3);
+        Self::walking_with_steps(speed, leg_length, STRIDE_AMPLITUDE.0)
+    }
+
+    /// [`Self::walking_for`], its stride shortening with speed down to
+    /// `shortest` of the recorded one's excursions, not half: a walk
+    /// placing itself ([`SHORT_STEPS`]).
+    pub fn walking_with_steps(speed: f32, leg_length: f32, shortest: f32) -> Self {
+        let amplitude = (speed.max(0.0) / froude_speed(leg_length)).powf(STRIDE_GROWTH).clamp(shortest, STRIDE_AMPLITUDE.1);
         Self {
             // A slower walker spends longer with both feet down: stance
             // grows from the recording's 61% toward ~65% of the stride at
@@ -351,6 +356,39 @@ impl GaitParams {
             ..walk
         }
     }
+}
+
+/// A stride grows as speed to this power (`GaitParams::walking_for`).
+pub const STRIDE_GROWTH: f32 = 0.65;
+/// The measured stride's excursions scale between these: below, a walk is a
+/// shuffle; above, the leg runs out of reach.
+const STRIDE_AMPLITUDE: (f32, f32) = (0.5, 1.3);
+/// How short a walk placing itself steps, of the recorded stride's
+/// excursions (`GaitParams::walking_with_steps`): the short steps of
+/// someone closing on a chair and turning to sit, a 0.23 m step on
+/// `puppet_base`. At half, the walk's 0.39 m steps could not land a stop on
+/// its spot, nor follow a turn tighter than 0.25 m.
+pub const SHORT_STEPS: f32 = 0.3;
+
+/// The speed the recorded stride is exactly right at for legs `leg_length`
+/// long, m/s (`GaitParams::walking_for`).
+fn froude_speed(leg_length: f32) -> f32 {
+    super::reference::SPEED * (leg_length.max(0.1) / super::reference::LEG_LENGTH).sqrt()
+}
+
+/// The speeds, m/s, between which a walk on legs `leg_length` long grows its
+/// stride with speed; slower or faster, only its cadence changes. On
+/// `puppet_base`, 0.54-2.1 m/s: a walk to a chair paced at 0.3 m/s took the
+/// stride of 0.54, and a stop timed by `speed^0.65` overshot 20 cm.
+pub fn stride_speeds(leg_length: f32) -> (f32, f32) {
+    stride_speeds_with_steps(leg_length, STRIDE_AMPLITUDE.0)
+}
+
+/// [`stride_speeds`] for a walk shortening its stride down to `shortest`
+/// (`GaitParams::walking_with_steps`).
+pub fn stride_speeds_with_steps(leg_length: f32, shortest: f32) -> (f32, f32) {
+    let at = |amplitude: f32| froude_speed(leg_length) * amplitude.powf(1.0 / STRIDE_GROWTH);
+    (at(shortest), at(STRIDE_AMPLITUDE.1))
 }
 
 /// The speed the default walk is authored for, m/s.
