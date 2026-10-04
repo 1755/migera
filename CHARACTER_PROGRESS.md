@@ -41,6 +41,33 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### A stop asked before a start is in finishes the start
+
+- **The skid:** walking 0.25 m/s and told to stop 1 s in, the stopping
+  foot skidded 20.8 mm on the floor. Stopped during the first step's fade
+  (`Stage::FirstStep`), or while a restart blended in (`Stage::Blending`),
+  the transition faded out on the clock, whatever the feet; headless, a
+  foot down moved 9.5 mm a frame, and 23 mm stopped mid-restart.
+- **Now it finishes what it started:** the first step completes (its fade
+  landing at heel contact) and the stop starts from the walk; a restart's
+  weight rises, only in single support, to the walk, then stops from
+  there. Every fade is placed in the stride.
+- **Tried first:** held at its part weight through the next footfall, the
+  heel landed under the part-blended walk (7.6 mm a frame); faded out in
+  single support anywhere, the swing was set down short as the weight
+  reached zero near its landing (23 mm).
+- **Tests** (headless, as the walker runs it: the feet the gait has down,
+  their sole contacts within 1 mm of the floor in two frames, from the stop
+  asked): stopped in the first step at 0.25 m/s, 1.44 mm a frame and 46 mm
+  in all, against 1.28 and 58 from walking (9.55 and 100 before); stopped
+  as a restart blends in at 1.0 m/s, the same as from walking (23.24 mm a
+  frame before).
+- **Live:** the same 0.25 m/s walk stopped 1 s in moves no foot over 2 mm
+  on the floor (20.8 mm before); it takes its step and closes, 0.38 m.
+- Distilled in
+  [fade a gait only through single support](./docs/knowledge/character-animation/ik-and-locomotion/fade-a-gait-only-through-single-support.md).
+- `cargo test --release --lib`: 1142 passed. Clippy: 0 warnings.
+
 ### Strafing diagonally; the shuffle's arms; a clean restart
 
 - **Aside and forward at once** (`Walker::speed` and `Walker::aside`):

@@ -155,9 +155,6 @@ direction.
 
 - **The arms' shape** is authored; a recording of a side shuffle would
   settle it.
-- **Stopping a walk during its start** skids the stopping foot 20.8 mm on
-  the floor (walking 0.25 m/s, told to stop 1 s in): the walk's, met on
-  the way into a shuffle, the same with no shuffle at all.
 - **Backward diagonals** from `Walker::speed` below zero: the walk does
   not go backward.
 

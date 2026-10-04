@@ -380,8 +380,15 @@ impl Transition {
                     self.weight = self.weight.max(smoothstep(self.first_swing));
                 }
                 Stage::Walking => {}
+                // Asked to walk again while stopping: the weight back up,
+                // but only in single support. Raised on the clock through
+                // the double support after a footfall too, a foot down
+                // moved 7.6 mm a frame; stopped again while blending in,
+                // and faded out on the clock, 23 mm.
                 Stage::LastStep { .. } | Stage::Blending => {
-                    self.weight = (self.weight + step).min(1.0);
+                    if phase.rem_euclid(0.5) >= config.toe_off() {
+                        self.weight = (self.weight + step).min(1.0);
+                    }
                     self.stage = Stage::Blending;
                 }
             }
@@ -441,17 +448,37 @@ impl Transition {
                 }
                 return None;
             }
-            Stage::FirstStep { .. } | Stage::Blending => {
-                self.stage = Stage::Blending;
-                self.weight = (self.weight - step).max(0.0);
-                self.release = (self.release - release_step).max(0.0);
-                if self.weight <= 0.0 {
-                    self.stride_speed = speed;
-                    self.stage = if self.release > 0.0 { Stage::Releasing } else { Stage::Standing };
-                    if self.stage == Stage::Standing {
-                        return Some(TransitionEvent::AtRest);
-                    }
+            // Stopped during the first step: it finishes, its fade landing
+            // at heel contact, and the stop starts there (a step, then the
+            // other foot beside it). Faded out on the clock instead, both
+            // feet down at times, a foot on the floor moved 9.5 mm a frame
+            // (live, 20.8 mm skidded walking 0.25 m/s, stopped 1 s in).
+            Stage::FirstStep { from } => {
+                let from = from.unwrap_or(phase);
+                self.stage = Stage::FirstStep { from: Some(from) };
+                self.first_swing = through(from, 0.0);
+                self.weight = self.weight.max(smoothstep(self.first_swing));
+                if self.weight >= 1.0 {
+                    self.weight = 1.0;
+                    self.release = 0.0;
+                    self.stage = Stage::Walking;
                 }
+                return None;
+            }
+            // Stopped while a restart blends in: as a first step, it
+            // finishes (in single support), and the stop starts from the
+            // walk. Faded out on the clock, a foot down moved 23 mm a frame;
+            // held through the next footfall for a last step from there,
+            // the heel landing under the part-blended walk moved 7.6; faded
+            // out in single support anywhere, the foot was set down short.
+            Stage::Blending => {
+                if phase.rem_euclid(0.5) >= config.toe_off() {
+                    self.weight = (self.weight + step).min(1.0);
+                }
+                if self.weight >= 1.0 {
+                    self.stage = Stage::Walking;
+                }
+                return None;
             }
         }
 
@@ -1160,6 +1187,146 @@ mod tests {
             }
         }
         assert!(path.iter().any(|&(away, _)| away > 0.5), "test setup: the swing should start well behind its spot");
+    }
+
+    /// A walk at `speed` from a stand, told to stop once `stop(transition,
+    /// frame)` says ([`walk_asked`]).
+    fn walk_then_stop(speed: f32, stop: impl Fn(&Transition, usize) -> bool) -> (f32, f32, Stage) {
+        let stopped = std::cell::Cell::new(false);
+        walk_asked(speed, |t, frame| {
+            stopped.set(stopped.get() || stop(t, frame));
+            if stopped.get() { 0.0 } else { speed }
+        })
+    }
+
+    /// A walk from a stand asked `asked(transition, frame)` m/s each frame,
+    /// headless as the walker runs it: the clock at the stride's cadence
+    /// (of `speed`) until rest, root motion off the rendered contacts.
+    /// Returns, from the first stop asked, each foot's worst move on the
+    /// floor between two frames (its sole contacts within 1 mm of the
+    /// floor, both frames), metres, the total, and the stage when last told
+    /// to stop; it ends at rest after.
+    fn walk_asked(speed: f32, ask: impl Fn(&Transition, usize) -> f32) -> (f32, f32, Stage) {
+        use bevy::math::Vec3;
+        use super::super::foot::Sole;
+        use super::super::gait::{walk_pose_on, GaitParams};
+        use super::super::locomotion::{distance_per_cycle, root_displacement_between};
+        use super::super::rig::forward_kinematics_on;
+        use crate::character::skeleton::Bone;
+
+        let rig = super::super::gltf_rig::puppet_base_as_rendered();
+        let stood = stance::stance_on_rig(&super::super::poses::relaxed_stand(), stance::DEFAULT_KNEE_FLEX, &rig);
+        let params = GaitParams::walking_on(speed, &rig);
+        let cadence = speed / distance_per_cycle(&params, &stood, &rig);
+        let config = TransitionConfig { mid_swing: params.duty_factor * 0.5, ..Default::default() };
+        let soles = |pose: &LocalPose, body: Vec3| {
+            let hips = forward_kinematics_on(pose, &rig)[Bone::Hips];
+            [Bone::LeftFoot, Bone::RightFoot].map(|ankle| Sole::of(&rig, ankle).points(pose, &rig).map(|p| p + hips + body))
+        };
+        let floor = soles(&stood, Vec3::ZERO).iter().flatten().map(|p| p.y).fold(f32::MAX, f32::min);
+        let mut transition = Transition::standing();
+        let (mut cycle, mut body, mut asked, mut stopped_in) = (0.0_f32, Vec3::ZERO, speed, None);
+        let (mut previous, mut previous_cycle) = (stood, 0.0_f32);
+        let (mut worst, mut total) = (0.0_f32, 0.0_f32);
+        for frame in 0..1200 {
+            if let Some(TransitionEvent::FirstStep { cycle: start }) = transition.advance(asked, cycle, &config, DT) {
+                cycle = start;
+            }
+            let now = ask(&transition, frame);
+            if now <= 0.0 && asked > 0.0 {
+                stopped_in = Some(transition.stage);
+            }
+            asked = now;
+            let weight = transition.weight;
+            let mut prepared = stood;
+            transition.apply_release(&mut prepared, &rig);
+            let pose = if weight <= 0.0 { prepared } else { transition.blend(&prepared, &walk_pose_on(cycle, &params, &stood, &rig), &rig) };
+            let before = soles(&previous, body);
+            if weight > 0.0 || previous_cycle != cycle {
+                let middle = previous_cycle + 0.5 * (cycle - previous_cycle).rem_euclid(1.0);
+                body += root_displacement_between(&previous, &pose, middle, &params, &rig).unwrap_or(Vec3::ZERO);
+            }
+            let after = soles(&pose, body);
+            // From the first stop asked (a start's first swing skims the
+            // floor at speed, and is measured by its own tests), and the
+            // feet the gait has down, or both at rest: a swing's toe tip
+            // passes within the millimetre just after toe-off.
+            let stands = |foot: usize| weight <= 0.0 || super::super::gait::leg_phase(cycle + 0.5 * foot as f32, params.duty_factor).is_stance();
+            for foot in (0..2).filter(|&foot| stopped_in.is_some() && stands(foot)) {
+                for i in 0..3 {
+                    if before[foot][i].y < floor + 1.0e-3 && after[foot][i].y < floor + 1.0e-3 {
+                        let moved = Vec3::new(after[foot][i].x - before[foot][i].x, 0.0, after[foot][i].z - before[foot][i].z).length();
+                        worst = worst.max(moved);
+                        total += moved;
+                    }
+                }
+            }
+            (previous, previous_cycle) = (pose, cycle);
+            if stopped_in.is_some() && asked <= 0.0 && transition.is_at_rest() {
+                break;
+            }
+            cycle = (cycle + cadence * DT * f32::from(transition.release >= 1.0 || weight > 0.0)).rem_euclid(1.0);
+        }
+        (worst, total, stopped_in.expect("test setup: never told to stop"))
+    }
+
+    #[test]
+    fn a_walk_stopped_during_its_first_step_keeps_its_feet_down_still() {
+        // Live, walking 0.25 m/s and told to stop 1 s in, the stopping foot
+        // skidded 20.8 mm on the floor: stopped during the first step's
+        // fade, the walk faded out on the clock, both feet down. Held to a
+        // stop from a walk fully in, measured the same way.
+        let (steady, steady_total, _) = walk_then_stop(0.25, |t, frame| t.stage == Stage::Walking && frame > 400);
+        for stop_at in [0.2, 0.5, 0.8] {
+            let (worst, total, stage) = walk_then_stop(0.25, |t, _| t.first_swing >= stop_at);
+            assert!(matches!(stage, Stage::FirstStep { .. }), "test setup: stopped in {stage:?}");
+            // Measured: 1.44 mm a frame and 46 in all, against 1.28 and 58
+            // from walking; faded on the clock, 9.55 and 100.
+            assert!(
+                worst < steady + 5.0e-4 && total < steady_total + 5.0e-3,
+                "stopped {stop_at} through the first step, feet down moved {:.2} mm a frame, {:.1} in all; from walking {:.2}, {:.1}",
+                worst * 1e3,
+                total * 1e3,
+                steady * 1e3,
+                steady_total * 1e3
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_stopped_while_a_restart_blends_in_keeps_its_feet_down_still() {
+        // Stopping, asked to walk again in the last step, and stopped once
+        // more while that blends in: the weight held to the next footfall
+        // and the last step from there, as from walking. Faded on the clock
+        // instead, both feet down at times.
+        let (steady, steady_total, _) = walk_then_stop(1.0, |t, frame| t.stage == Stage::Walking && frame > 300);
+        let again = std::cell::Cell::new(None::<usize>);
+        // Walking, then stopping; in the last step walking again a few
+        // frames (a restart blending in), then stopping for good.
+        let (worst, total, stage) = walk_asked(1.0, |t, frame| {
+            if frame <= 300 {
+                return 1.0;
+            }
+            match (t.stage, again.get()) {
+                // Half through the last step's fade, the weight down.
+                (Stage::LastStep { .. }, None) if t.last_swing > 0.5 => {
+                    again.set(Some(frame));
+                    1.0
+                }
+                (_, Some(at)) if frame < at + 4 => 1.0,
+                _ => 0.0,
+            }
+        });
+        assert!(again.get().is_some(), "test setup: never in a last step to walk again from");
+        assert!(matches!(stage, Stage::Blending), "test setup: stopped again in {stage:?}");
+        assert!(
+            worst < steady + 5.0e-4 && total < steady_total + 1.0e-2,
+            "stopped while a restart blends in, feet down moved {:.2} mm a frame, {:.1} in all; from walking {:.2}, {:.1}",
+            worst * 1e3,
+            total * 1e3,
+            steady * 1e3,
+            steady_total * 1e3
+        );
     }
 
     /// What [`first_step`] measured.

@@ -1,13 +1,13 @@
 ---
 title: Fade a gait only through single support
-description: "A blend weight changing in double support slips a foot (12.5 mm/frame). Fades run in single support; root motion includes the hips' root_translation; a first swing is lifted; a last swing is set down by the foot IK on the rendered foot (springs lag it ~10 cm). Read before changing transition.rs or blending a gait."
+description: "A blend weight changing in double support slips a foot (12.5 mm/frame). Fades run in single support, placed in the stride; a stop before a start is in finishes the start; root motion includes the hips' root_translation; first swings lift, last ones land on the rendered foot. Read before changing transition.rs."
 type: lesson
 status: current
 tags:
   - locomotion
   - correctness
-updated: 2026-09-30
-verified: 2026-09-29
+updated: 2026-10-04
+verified: 2026-10-04
 code:
   - src/character/anim/transition.rs
   - src/character/anim/locomotion.rs
@@ -39,6 +39,20 @@ So `Transition` places both fades in single support (`TransitionConfig::fade`,
 - **First step:** from the swinging leg's mid-swing to its heel contact.
 - **Last step:** after the footfall, wait out the double support, then fade
   from the other foot's toe-off to its mid-swing. The feet end side by side.
+- **Stopped before a start is in, it finishes first.** Told to stop during
+  the first step's fade, the step completes (its fade landing at heel
+  contact) and the stop starts from the walk: a step, then the other foot
+  beside it. Likewise a restart from a last step: its weight rises (only in
+  single support) to the walk, then stops from there.
+  - Until 2026-10-04 both faded out on the clock instead, whatever the
+    feet: walking 0.25 m/s and stopped 1 s in, the stopping foot skidded
+    20.8 mm on the floor live; headless, a foot down moved 9.5 mm a frame,
+    and stopped while a restart blended in, 23 mm.
+  - Two half-measures failed: held at its part weight through the next
+    footfall, the heel landed under the part-blended walk and moved 7.6 mm;
+    faded out in single support anywhere, the swing was set down short as
+    the weight reached zero near its landing (23 mm). A fade-out has to be
+    placed in the stride, as the last step's is.
 
 ## 2. Root motion must see the hips move
 
@@ -101,6 +115,17 @@ its spot (28.6 mm to go at 19 mm up, then 6.9 at 5.2) and settles within
 `transition::tests::the_last_swing_is_set_down_onto_its_spot`,
 `..::a_stop_publishes_its_landing_through_the_fade_and_a_hold_after`,
 `plugin::tests::a_landing_foot_is_held_up_until_it_is_over_its_spot`.
+
+Stopped during the start (2026-10-04): headless, the feet down move as in a
+stop from walking, measured the same way (sole contacts within 1 mm of the
+floor in two frames, the gait's stance feet, from the stop asked): stopped
+in the first step at 0.25 m/s, 1.44 mm a frame and 46 mm in all against
+1.28 and 58; stopped as a restart blends in at 1.0 m/s, within 0.5 mm a
+frame of the 4.7 a stop from walking shows (a toe tip pivoting at
+toe-off). Live, the 0.25 m/s walk stopped 1 s in: no foot moves over 2 mm
+on the floor. Tests:
+`transition::tests::a_walk_stopped_during_its_first_step_keeps_its_feet_down_still`,
+`..::a_walk_stopped_while_a_restart_blends_in_keeps_its_feet_down_still`.
 
 ## Related
 
