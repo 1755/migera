@@ -519,7 +519,7 @@ impl Transition {
         };
         let left = self.last_swing_leg > 0.0;
         let chain = if left { LegChain::LEFT } else { LegChain::RIGHT };
-        Some(super::plugin::Landing { left, spot: forward_kinematics_on(standing, rig)[chain.toe], strength })
+        Some(super::plugin::Landing { left, spot: forward_kinematics_on(standing, rig)[chain.toe], strength, place: false })
     }
 
     /// Poses the release on `pose` (a standing one), on `rig`: the weight

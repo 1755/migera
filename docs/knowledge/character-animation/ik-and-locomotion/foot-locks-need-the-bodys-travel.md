@@ -1,14 +1,14 @@
 ---
 title: Foot locks need the body's travel
-description: "A foot lock works in the pose's frame: pass it all the body's travel, rise included (a foot rode along 14 cm, rose 9 cm up a slope), but not the turn, which that frame already has (a foot flicked 0.55 m a frame turning far from the origin). Read before touching footlock.rs or anything that moves or turns the character."
+description: "A foot lock works in the pose's frame: pass it all the body's travel, rise included, turned in through what the hips hang from, not the live hips (a 4° pelvic roll floated the feet 18 mm), and not the turn, which that frame has. Read before touching footlock.rs or anything that moves or turns the character."
 type: lesson
 status: current
 tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-02
-verified: 2026-10-02
+updated: 2026-10-04
+verified: 2026-10-04
 code:
   - src/character/anim/footlock.rs
   - src/character/anim/plugin.rs
@@ -40,7 +40,8 @@ motion started moving the entity, two things went wrong:
 
 Whatever moves the entity reports how far it moved: `Turn::travel`, in
 world axes on `AnimFootIk::turn`. The IK stage rotates it into the pose's
-axes (`root_rotation.inverse()`, as for arm targets). The lock subtracts it
+axes through what the hips hang from (`frame`, as the ground and the
+obstacles are sampled). The lock subtracts it
 from its anchor and adds it back into the speed estimate, so both are
 judged in the world. `walker::ride_rendered_feet` and
 `advance_turning_with` in `Authoritative` mode fill it in. A new mover that
@@ -69,6 +70,23 @@ the body), and of the hips, 2.9 mm. The rule is the same as for the
 travel: convert every part of `Turn` into the frame the lock's points are
 in.
 
+**Through what the hips hang from, not the live hips.** Until 2026-10-04
+the travel went through `root_rotation`, read off the live hips, which
+carry the pose's own rotation. Walking forward that never showed: the
+pelvis rolls about the forward axis, which leaves forward travel level.
+Walking aside it did. Standing on one leg the balance rolls the pelvis
+~4°, so each 0.2 m side step's travel came out 14 mm vertical. Every
+planted foot's anchor rose 14 mm a step, and after a few steps both feet
+hovered 17–18 mm over the floor. (The IK never lets a foot below the
+ground, so the other direction, an anchor sinking, was hidden.)
+
+## Why it matters
+
+Any vector handed between the world and the pose's frame goes through one
+rotation. Read it off a bone the pose moves, and that bone's animated
+rotation leaks into the conversion, exactly where the motion is across the
+axis it rolls or pitches about.
+
 ## Measured
 
 Live, start of a walk, worst slide of the planted ball: 17.6 mm → 2.7 mm.
@@ -78,6 +96,12 @@ anchor. `a_planted_foot_stays_put_while_the_body_climbs_over_it` fails on
 its first frame (4 mm) with the rise dropped.
 `plugin::a_planted_foot_turning_far_from_the_origin_stays_with_the_body`
 measured 340 mm in a frame before the turn was dropped, under 5 mm after.
+`plugin::a_planted_foot_keeps_its_height_as_a_rolled_body_moves_sideways`
+(the real rig's hierarchy, hips rolled 4°, the body moved 6 cm aside with
+its feet planted): a toe rose 4.2 mm through the live hips, under 1 mm
+through what they hang from. Live, walking aside, the left lock's anchor
+rose 13.6 mm at each step's travel; after the fix the feet rest at their
+standing height (ankle 0.086 m, as before the steps).
 
 ## Related
 

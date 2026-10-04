@@ -176,6 +176,12 @@ pub struct Landing {
     pub spot: Vec3,
     /// How much of the lift applies, 0 to 1.
     pub strength: f32,
+    /// Also carry the foot across onto its spot, by `strength`, before its
+    /// lock sees it: for a step whose spot is planned, not posed (a
+    /// balance's, `balance::Balance::landing_spot`). Left to the sprung
+    /// foot, a side step's landed 1.9 cm wide, its lock held it there, and
+    /// the leg, a centimetre short of straight, left its ankle 18 mm up.
+    pub place: bool,
 }
 
 /// Where one character's hands are reaching, in world space.
@@ -777,7 +783,14 @@ fn solve_foot_ik(
         .enumerate()
         {
             let displaced = foot_ik.displaced[slot];
-            let animated = animated_toes[chain.toe] + Vec3::new(displaced.x, 0.0, displaced.z);
+            let mut animated = animated_toes[chain.toe] + Vec3::new(displaced.x, 0.0, displaced.z);
+            if let Some(landing) = landing
+                && landing.place
+                && landing.left == matches!(side, Side::Left)
+            {
+                let across = (landing.spot - animated) * landing.strength;
+                animated += Vec3::new(across.x, 0.0, across.z);
+            }
 
             let Some(hit) = sample_ground(animated) else {
                 // No ground under this foot — over a ledge, say. Leave it
@@ -816,7 +829,13 @@ fn solve_foot_ik(
             // pose's frame jumped yaw × the character's distance from the
             // origin: at a wall 7 m out a planted foot flicked 0.55 m each
             // frame of the turn (`a_planted_foot_turning_far_from_the_origin_stays_with_the_body`).
-            let turn = Turn { travel: root_rotation.inverse() * turn.travel, yaw_delta: 0.0, pivot: Vec3::ZERO };
+            //
+            // Into the pose's frame through what the hips hang from (`frame`),
+            // not the live hips, which carry the pose's own pelvic roll: on
+            // one leg the balance rolls the pelvis ~4°, and each 0.2 m side
+            // step's travel came out 14 mm vertical, lifting every planted
+            // foot's anchor 14 mm a step until the feet hovered.
+            let turn = Turn { travel: frame.inverse() * turn.travel, yaw_delta: 0.0, pivot: Vec3::ZERO };
             let planted = foot_ik.planted[matches!(side, Side::Right) as usize];
             let lock = match side {
                 Side::Left => &mut foot_ik.left,
@@ -1658,6 +1677,58 @@ mod tests {
     }
 
     #[test]
+    fn a_planted_foot_keeps_its_height_as_a_rolled_body_moves_sideways() {
+        // The body's travel reaches the locks in the pose's frame. Turned
+        // into it through the live hips, it carried their roll: on one leg
+        // the balance rolls the pelvis ~4°, each 0.2 m side step's travel
+        // came out 14 mm vertical, and the planted feet rose 14 mm a step
+        // until they hovered. Through what the hips hang from, it stays
+        // level.
+        use crate::character::anim::gltf_rig::parsed_rig;
+        let (mut app, rig, asset) = app_with_real_rig(FlatGround::default());
+        // The live hierarchy: the hips under an armature node, transforms
+        // propagated, so the frame is read off the live hips as it is live.
+        app.add_plugins(TransformPlugin);
+        let hips = app.world().get::<HumanoidSkeleton>(rig).unwrap().entity(Bone::Hips);
+        let armature = app.world_mut().spawn((Transform::from_rotation(parsed_rig().hips_parent_rest_world_rotation), ChildOf(rig))).id();
+        app.world_mut().entity_mut(rig).insert(Transform::IDENTITY);
+        app.world_mut().entity_mut(hips).insert(ChildOf(armature));
+        step(&mut app, 120);
+        let mut rolled = app.world().get::<AnimTarget>(rig).unwrap().pose;
+        rolled.rotations[Bone::Hips] = super::super::rig::delta_after_world_turn(&rolled, &asset, Bone::Hips, Quat::from_axis_angle(asset.forward(), 0.07));
+        app.world_mut().get_mut::<AnimTarget>(rig).unwrap().pose = rolled;
+        step(&mut app, 60);
+        let heights = |app: &App| {
+            let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+            let joints = forward_kinematics_on(&ik.corrected.unwrap(), &ik.rig.clone().unwrap());
+            [joints[Bone::LeftToeBase].y, joints[Bone::RightToeBase].y]
+        };
+        // 6 cm each way, within the legs' reach of the feet left where they
+        // are (live, the balance moves them in the pose too). One way the
+        // old anchor sank, and the ground clamp hid it; the other it rose
+        // 4.2 mm.
+        let mut at = Vec3::ZERO;
+        for way in [1.0, -1.0, -1.0, 1.0] {
+            let before = heights(&app);
+            for _ in 0..20 {
+                let travel = Vec3::new(0.003 * way, 0.0, 0.0);
+                at += travel;
+                app.world_mut().get_mut::<Transform>(rig).unwrap().translation = at;
+                let mut ik = app.world_mut().get_mut::<AnimFootIk>(rig).unwrap();
+                ik.turn = crate::character::anim::footlock::Turn { pivot: at, yaw_delta: 0.0, travel };
+                // Down, as a standing balance says its feet are.
+                ik.planted = [true; 2];
+                step(&mut app, 1);
+            }
+            let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+            assert!(ik.left.anchor().is_some() && ik.right.anchor().is_some(), "both feet should stay locked");
+            for (now, then) in heights(&app).iter().zip(before) {
+                assert!((now - then).abs() < 1.0e-3, "a planted toe went {:+.1} mm up as the body moved 6 cm sideways", (now - then) * 1e3);
+            }
+        }
+    }
+
+    #[test]
     fn a_real_foot_stands_whole_on_raised_ground() {
         // The synthetic fixture's heel sank ~13 cm into ground raised 25 cm
         // under a body held still: its "knee" is an ankle stub, which flips
@@ -1697,7 +1768,7 @@ mod tests {
 
         // 6 cm short of its spot: held up by the lift for 6 cm.
         let spot = animated + Vec3::new(0.0, 0.0, 0.06);
-        let (held, _) = toe_after(Some(Landing { left: true, spot, strength: 1.0 }));
+        let (held, _) = toe_after(Some(Landing { left: true, spot, strength: 1.0, place: false }));
         let raised = held.y - planted.y;
         assert!(
             (raised - landing_lift(0.06)).abs() < 1.0e-3,
@@ -1707,8 +1778,33 @@ mod tests {
         );
 
         // Over its spot: down.
-        let (landed, _) = toe_after(Some(Landing { left: true, spot: animated, strength: 1.0 }));
+        let (landed, _) = toe_after(Some(Landing { left: true, spot: animated, strength: 1.0, place: false }));
         assert!((landed.y - planted.y).abs() < 1.0e-4, "over its spot the toe stayed {:.2} mm up", (landed.y - planted.y) * 1e3);
+    }
+
+    #[test]
+    fn a_placed_landing_carries_the_free_foot_onto_its_spot_and_locks_it_there() {
+        // A balance step's spot is planned: the sprung foot, left to itself,
+        // landed 1.9 cm wide of it and was locked there. Placed, the foot is
+        // carried across by the landing's strength before its lock sees it,
+        // and locks on the spot.
+        let toe_after = |landing: Option<Landing>, frames: usize| {
+            let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
+            app.world_mut().get_mut::<AnimFootIk>(rig).unwrap().landing = landing;
+            step(&mut app, frames);
+            let pose = app.world().get::<AnimFootIk>(rig).and_then(|ik| ik.corrected).unwrap();
+            forward_kinematics(&pose)[Bone::LeftToeBase]
+        };
+        let free = toe_after(None, 30);
+        let spot = free + Vec3::new(0.03, 0.0, 0.0);
+        for (strength, expect) in [(1.0, spot), (0.5, free + Vec3::new(0.015, 0.0, 0.0))] {
+            let placed = toe_after(Some(Landing { left: true, spot, strength, place: true }), 30);
+            let off = Vec3::new(placed.x - expect.x, 0.0, placed.z - expect.z).length();
+            assert!(off < 1.0e-3, "at strength {strength} the toe is {:.1} mm off", off * 1e3);
+        }
+        // Not placed: where the animation has it.
+        let left = toe_after(Some(Landing { left: true, spot, strength: 1.0, place: false }), 30);
+        assert!(Vec3::new(left.x - free.x, 0.0, left.z - free.z).length() < 1.0e-3);
     }
 
     #[test]

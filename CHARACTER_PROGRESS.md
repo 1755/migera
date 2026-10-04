@@ -41,6 +41,51 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Walking aside: side step and close
+
+- **`Walker::aside`** (m/s, + to the left) walks a standing character
+  sideways: `balance::Balance::walk_aside`. The weight onto the trailing
+  foot, the leading foot's side step (0.1–0.3 m, `aside_step`), the body
+  heading for its landing; then the stumble's own landing and join, and
+  the travel handed to root motion. Only standing and asked neither to
+  walk nor to sit; a walk asked for waits until the feet have closed.
+- **Gallery:** `--aside-schedule T:SPEED,...`.
+- **Turning back:** the body first comes to rest between the feet, then
+  starts as from a stand. With the body still going the legs split (64 mm
+  down); stopped over the new trailing foot, the next step jolted 5.4 mm.
+- **`Landing::place`:** a balance step's foot is carried across onto its
+  planned spot while it swings, before its lock sees it. Left to the
+  sprung leg it landed 1.9 cm wide, was locked there, and the leg (a
+  centimetre short of straight) left the ankle 18 mm up.
+- **A pre-existing foot-lock bug, fixed:** the body's travel reached the
+  locks through the live hips, which carry the pose's own pelvic roll. On
+  one leg that is ~4°, so each 0.2 m side step's travel came out 14 mm
+  vertical and the planted feet hovered 17–18 mm after a few steps. It now
+  goes through what the hips hang from, as the ground and obstacles are
+  sampled. Forward walking never showed it (a roll about the forward axis
+  leaves forward travel level); the live A/B on a 1.0 m/s circle walk
+  shows no change in planted slide (3.3/4.9 mm against 4.0/4.8 mm).
+- **Tests:** the real rig headless walks aside at 0.200 / −0.187 m/s
+  (asked 0.2), planted tips within 1 mm, feet never narrower than they
+  stood, jolts under 4.5 mm, sinking under 30 mm, and stops standing as it
+  stood (every sole point within 2 mm); turning back at four moments,
+  under 35 mm down. The placed landing, and the planted foot's height as a
+  rolled body moves aside (4.2 mm through the old frame, under 1 mm now),
+  each fail with their fix removed.
+- **Live** (gallery, 0.2 left, then 0.25 right, then stop): 0.18 and
+  0.23 m/s; the pelvis at most 38 mm down; planted feet within 5.3 mm (the
+  idle alone shows 5.0 on this check); the feet never narrower than they
+  stood, ending side by side at their standing height.
+- **Seen** mid-step, Front and Left, gizmos with the mesh off, then the
+  mesh: the leading leg out to the side, the stance leg upright, knees
+  bent forward, feet apart and straight.
+- **Not done:** faster than ~0.24 m/s (a step and close takes ~1.0–1.25
+  s), and stepping aside while walking.
+- Distilled in
+  [walking aside](./docs/knowledge/character-animation/ik-and-locomotion/walking-aside-is-a-side-step-and-close.md)
+  and [foot locks need the body's travel](./docs/knowledge/character-animation/ik-and-locomotion/foot-locks-need-the-bodys-travel.md).
+- `cargo test --release --lib`: 1136 passed. Clippy: 0 warnings.
+
 ### Stops land on the spot, in short steps round a smaller circle
 
 - **The stride the gait takes, not `speed^0.65`:** `gait::walking_for`

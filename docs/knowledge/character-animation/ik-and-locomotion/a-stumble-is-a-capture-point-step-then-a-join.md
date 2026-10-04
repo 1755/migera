@@ -293,5 +293,6 @@ limit on the hips' roll alone (sideways 8 mm).
 - [A foot may lift only when the other holds the body](./a-foot-may-lift-only-when-the-other-holds-the-body.md) — deeper: the gates on the join and every later step.
 - [The puppet_base fixture faces away from the rendered character](../rig-and-retargeting/puppet-base-fixture-faces-away-from-the-rendered-character.md) — same-trap: why these catch limits were once inverted.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — deeper: why the gallery passes `planted` to the foot IK.
+- [Walking aside is the balance's side step and close](./walking-aside-is-a-side-step-and-close.md) — applies: the side step asked for, repeated; and why a balance step's landing foot is now placed on its spot (`Landing::place`).
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — applies: the join's travelled distance becomes root motion the locks must be given.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — context: why a wide stance leaves the legs no reach to spare.

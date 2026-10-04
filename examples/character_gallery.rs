@@ -1088,12 +1088,14 @@ fn steer_the_walker(
     idle: Res<AnimIdleConfig>,
     mut pushes: ResMut<PushSchedule>,
     sit: Res<SitConfig>,
+    aside: Res<AsideSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
     let due = pushes.due(time.elapsed_secs());
     let sitting = sit.wanted(time.elapsed_secs());
     for mut walker in &mut walkers {
         walker.speed = idle.speed;
+        walker.aside = aside.at(time.elapsed_secs());
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
@@ -1103,6 +1105,37 @@ fn steer_the_walker(
         for &push in &due {
             walker.push(push);
         }
+    }
+}
+
+/// Walking aside: `--aside-schedule T:SPEED,...` walks aside at SPEED m/s
+/// (positive to the character's left) from T seconds on, until the next
+/// entry (`walker::Walker::aside`); e.g. `1:0.2,6:-0.2,11:0`.
+#[derive(Resource, Debug, Clone, Default)]
+struct AsideSchedule(Vec<(f32, f32)>);
+
+impl AsideSchedule {
+    fn from_args() -> Self {
+        let mut args = std::env::args().skip(1);
+        let mut schedule = Vec::new();
+        while let Some(arg) = args.next() {
+            if arg == "--aside-schedule" {
+                for entry in args.next().unwrap_or_default().split(',') {
+                    if let Some((at, speed)) = entry.split_once(':')
+                        && let (Ok(at), Ok(speed)) = (at.trim().parse(), speed.trim().parse())
+                    {
+                        schedule.push((at, speed));
+                    }
+                }
+            }
+        }
+        schedule.sort_by(|a: &(f32, f32), b| a.0.total_cmp(&b.0));
+        Self(schedule)
+    }
+
+    /// The speed asked at `elapsed` seconds.
+    fn at(&self, elapsed: f32) -> f32 {
+        self.0.iter().rev().find(|(at, _)| elapsed >= *at).map_or(0.0, |(_, speed)| *speed)
     }
 }
 
@@ -1894,6 +1927,7 @@ fn main() {
             (draw_skeleton_debug_gizmos, update_skeleton_hud, log_debug_stats),
         )
         .insert_resource(SitConfig::from_args())
+        .insert_resource(AsideSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
         .add_systems(Update, place_chair.after(WalkerSet::Drive));

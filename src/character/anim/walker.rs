@@ -107,6 +107,10 @@ pub struct Walker {
     /// A chair to sit on, sitting a chair's way: it walks there and turns
     /// round first (`approach`). `None` sits where it stands.
     pub chair: Option<approach::Chair>,
+    /// Walk aside at this speed, m/s, positive to its left: side steps and
+    /// closes (`balance::Balance::walk_aside`), only standing and asked
+    /// neither to walk nor to sit. Up to ~0.24 m/s.
+    pub aside: f32,
 }
 
 impl Default for Walker {
@@ -124,6 +128,7 @@ impl Default for Walker {
             sit: None,
             chair_height: sitting::CHAIR_HEIGHT,
             chair: None,
+            aside: 0.0,
         }
     }
 }
@@ -288,6 +293,8 @@ pub struct WalkerState {
     pub sit_offset: Vec2,
     /// Seconds both feet stay planted after standing up ([`STOOD_HOLD`]).
     pub stood_hold: f32,
+    /// Walking aside ([`Walker::aside`]), until the feet have closed.
+    pub stepping_aside: bool,
     /// The stride the current gait really takes, keyed by its speed and
     /// whether the real rig has bound: measuring it costs a cycle of
     /// root-motion samples, so it is redone only when either changes.
@@ -309,6 +316,7 @@ impl WalkerState {
             walked: Walked::default(),
             sit_offset: Vec2::ZERO,
             stood_hold: 0.0,
+            stepping_aside: false,
             measured: None,
         }
     }
@@ -596,7 +604,14 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // first, and stands up before it walks again.
         // Walking to a chair, it walks.
         let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived);
-        let asked = if still { 0.0 } else { wanted_speed + walk_balance.surge };
+        // Asked to walk aside, standing still and asked neither to walk nor
+        // to sit: the standing balance side-steps and closes. A walk asked
+        // for meanwhile starts once the feet have closed.
+        let aside = if still || walker.sit.is_some() || wanted_speed > 0.0 || !state.transition.is_at_rest() { 0.0 } else { walker.aside };
+        balance.walk_aside(aside);
+        let closed = balance.swing.is_none() && balance.feet == [Vec2::ZERO; 2];
+        state.stepping_aside = aside != 0.0 || state.stepping_aside && !closed;
+        let asked = if still || state.stepping_aside { 0.0 } else { wanted_speed + walk_balance.surge };
         let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
         let speed = state.transition.stride_speed;
 
@@ -708,7 +723,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             if foot_ik.landing.is_none()
                 && let Some((left, spot, strength)) = balance.landing_spot(&prepared, &gait_rig)
             {
-                foot_ik.landing = Some(Landing { left, spot, strength });
+                foot_ik.landing = Some(Landing { left, spot, strength, place: true });
             }
             balance.apply(&mut prepared, &gait_rig);
         }
