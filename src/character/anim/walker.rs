@@ -82,7 +82,8 @@ pub struct Walker {
     /// once loaded, so editing the file updates the running character.
     pub pose: String,
     /// The speed asked for, m/s. Zero stands; the transition walks it in
-    /// and out (Winter §11.3.3), a run above [`RUN_ABOVE`].
+    /// and out (Winter §11.3.3). A walk, or above `run::changeover_speed`
+    /// a run (`run`), the speed eased toward above a walk.
     pub speed: f32,
     pub steer: Steer,
     /// A world point to look at, else ahead.
@@ -266,13 +267,15 @@ impl Walker {
     }
 }
 
-/// A run above this speed, m/s, a walk below: where a fast walk's cadence
-/// would cost more than a run's flight.
-pub const RUN_ABOVE: f32 = 2.2;
-
 /// How long both feet stay planted after standing up, seconds: several
 /// times the legs' 0.015 s spring half-life, for the extension to settle.
 const STOOD_HOLD: f32 = 0.3;
+
+/// How far through its stance a gait's foot bears weight for the foot IK's
+/// hips (`AnimFootIk::gait_bearing`): past it, the foot is rolling off its
+/// toes. A run's foot in its last frame down, pinned behind a body
+/// speeding up, dropped the hips 21 mm for a frame.
+pub const BEARING: f32 = 0.85;
 
 /// A walker's own state: where it is and faces (root motion's to write),
 /// how far into walking it is, and what its last frame rendered.
@@ -314,6 +317,12 @@ pub struct WalkerState {
     /// How far the body is turned off where it was steered to face, to walk
     /// its way going aside and forward at once, radians (left positive).
     pub strafe: f32,
+    /// The speed handed to the gait, m/s: the speed asked, eased above a
+    /// walk at `run::ACCELERATION` and `run::DECELERATION`.
+    pub pace: f32,
+    /// Walking or running (`run`), and the one step that changes between
+    /// them.
+    pub gaits: super::run::Gaits,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound and whether it shuffles: measuring it
     /// costs a cycle of root-motion samples, so it is redone only when one
@@ -341,6 +350,8 @@ impl WalkerState {
             shuffle_speed: 0.0,
             shuffle_ahead: 0.0,
             strafe: 0.0,
+            pace: 0.0,
+            gaits: Default::default(),
             measured: None,
         }
     }
@@ -663,6 +674,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         } else {
             going + walk_balance.surge
         };
+        // Above a walk the speed is eased toward (`run::ACCELERATION`): up
+        // to the changeover at once, as a walk always took its speed, then
+        // gathered; coming down, shed until the gait is a walk again, which
+        // then stops as a walk does. Fallen, sitting or shuffling, at once.
+        let leg = super::gait::leg_length_of(&gait_rig);
+        let changeover = super::run::changeover_speed(leg);
+        let dt = time.delta_secs();
+        // Both feet down by the gait's clock, as last frame left it: a walk
+        // holds its speed then (`run::paced`).
+        let both_down = foot_ik.gait_swing == Some([false; 2]);
+        state.pace = if still || state.shuffle.is_some() || toward.is_some() {
+            asked
+        } else {
+            super::run::paced(asked, state.pace, state.gaits.running, changeover, state.transition.weight >= 1.0, both_down, dt)
+        };
+        let asked = state.pace;
         let weight_before = state.transition.weight;
         let event = state.transition.advance(asked, cycle_of(&phase), &config, time.delta_secs());
         let speed = state.transition.stride_speed;
@@ -684,15 +711,14 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.shuffle_ahead += (ahead - state.shuffle_ahead).clamp(-most, most);
             }
         }
-        let params = if let Some(toward) = state.shuffle {
+        let walk_params = if let Some(toward) = state.shuffle {
             super::shuffle::shuffling(state.shuffle_speed, toward, state.shuffle_ahead)
-        } else if speed >= RUN_ABOVE {
-            GaitParams::running()
         } else if placing {
-            GaitParams::walking_with_steps(speed, super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS)
+            GaitParams::walking_with_steps(speed, leg, super::gait::SHORT_STEPS)
         } else {
             GaitParams::walking_on(speed, &gait_rig)
         };
+        let run_params = GaitParams::running_for(speed, leg);
 
         // The standing knee bend, from the rig's own measured geometry, so
         // it bends the right way on any rig (baked into a pose file it bent
@@ -717,6 +743,46 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             _ => stood,
         };
 
+        // A run above the changeover speed, a walk again below a tenth less,
+        // changed in one step (`run::Gaits`); only walking fully and not
+        // shuffling. Through the change the gait coming in is posed where
+        // its planted foot matches the one going out's
+        // (`run::Matched::feet`), and the clock moves onto it at the end.
+        if still || state.shuffle.is_some() || state.transition.weight < 1.0 {
+            state.gaits.walk();
+        } else {
+            let previous_cycle = state.stride.cycle;
+            let now = cycle_of(&phase);
+            let feet = || {
+                super::run::Matched::feet(
+                    |p| walk_pose_on(p, &walk_params, &stood, &gait_rig),
+                    |p| walk_pose_on(p, &run_params, &stood, &gait_rig),
+                    walk_params.duty_factor,
+                    run_params.duty_factor,
+                    &gait_rig,
+                )
+            };
+            if let Some(onto) = state.gaits.advance(speed, changeover, walk_params.duty_factor, run_params.duty_factor, now, previous_cycle, feet) {
+                phase.gait = onto.rem_euclid(1.0) * TAU;
+                // Root motion reads which feet are down half-way through
+                // the frame, from last frame's clock: moved with it.
+                state.stride.previous_cycle += onto - now;
+            }
+        }
+        let running = state.gaits.running;
+        // What root motion, the foot locks and the transition read: the
+        // gait mostly in play, with the stance share between the two; while
+        // changing, the stance share of the gait going out, whose the clock
+        // still is.
+        let params = if running <= 0.0 {
+            walk_params
+        } else if running >= 1.0 {
+            run_params
+        } else {
+            let duty_factor = if state.gaits.from_run() { run_params.duty_factor } else { walk_params.duty_factor };
+            GaitParams { duty_factor, ..if running < 0.5 { walk_params } else { run_params } }
+        };
+
         // The speed reaches the LEG clock as the cadence that makes this
         // gait's stride travel at exactly this speed: set once at spawn, the
         // legs kept the launch rhythm while the body moved at the new speed,
@@ -724,13 +790,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Keyed by the speed the stride is for: a shuffle's, the one asked.
         let stride_for = if state.shuffle.is_some() { state.shuffle_speed } else { speed };
         let key = (stride_for.to_bits(), foot_ik.rig.is_some(), state.shuffle.is_some());
-        let distance = match state.measured {
+        let walked = match state.measured {
             Some((speed, bound, shuffle, distance)) if (speed, bound, shuffle) == key => distance,
+            _ if running >= 1.0 => 0.0,
             _ => {
-                let distance = locomotion::distance_per_cycle(&params, &stood, &gait_rig);
+                let distance = locomotion::distance_per_cycle(&walk_params, &stood, &gait_rig);
                 state.measured = Some((key.0, key.1, key.2, distance));
                 distance
             }
+        };
+        // A run's stride from its table (`run::distance_per_cycle`); through
+        // the change, the stride of the gait going out, whose the clock is:
+        // the one coming in, matched, keeps its own pace by it.
+        let distance = if running <= 0.0 || (state.gaits.changing() && !state.gaits.from_run()) {
+            walked
+        } else {
+            super::run::distance_per_cycle(&stood, &gait_rig, super::run::reference_speed(speed, leg))
         };
         if speed > 0.0 && distance > 1.0e-4 {
             phase.base_frequency_hz = 0.0;
@@ -799,6 +874,24 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         }
         // The feet the balance has down stay locked however its sprung legs
         // lag a stumbling body; a walk's feet are the locks' own call.
+        // A run's feet lock as they land (`FootLock::update_gripped`), and
+        // leave the floor at once (`run::swing_clearance`).
+        // A walk's too, fully walking (the start's and stop's fades lift and
+        // set down their own swings), not shuffling.
+        foot_ik.grip = running >= 0.5;
+        let walking = weight >= 1.0 && state.shuffle.is_none();
+        foot_ik.clear = [0.0, 0.5].map(|shift| match super::gait::leg_phase(cycle + shift, params.duty_factor) {
+            super::gait::LegPhase::Swing { progress } if foot_ik.grip => super::run::swing_clearance(progress),
+            super::gait::LegPhase::Swing { progress } if walking => super::walk::swing_clearance(progress),
+            _ => 0.0,
+        });
+        foot_ik.gait_swing = (weight > 0.0)
+            .then(|| [0.0, 0.5].map(|shift| !super::gait::leg_phase(cycle + shift, params.duty_factor).is_stance()));
+        foot_ik.gait_bearing = (weight > 0.0).then(|| {
+            [0.0, 0.5].map(|shift| {
+                matches!(super::gait::leg_phase(cycle + shift, params.duty_factor), super::gait::LegPhase::Stance { progress } if progress < BEARING)
+            })
+        });
         foot_ik.planted = if weight <= 0.0 && !balance.is_settled(1.0e-5) {
             balance.planted()
         } else if state.shuffle.is_some() && weight > 0.0 {
@@ -810,6 +903,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             // (the one not standing through it).
             let swinging_left = if state.transition.last_swing > 0.0 { state.transition.last_swing_leg > 0.0 } else { state.transition.stance < 0.0 };
             super::shuffle::planted(cycle, params.duty_factor, weight, swinging_left)
+        } else if running >= 0.5 {
+            // A run's stance foot is down from contact to toe-off: told to
+            // the locks, so the lagging sprung leg under a body going 3-6 m/s
+            // cannot fool their speed test, and let go at toe-off, so the
+            // lock does not hold a foot that has left.
+            [0.0, 0.5].map(|shift| super::gait::leg_phase(cycle + shift, params.duty_factor).is_stance())
         } else {
             [false; 2]
         };
@@ -848,11 +947,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             }
         }
         let transition_state = &state.transition;
+        let gaits = state.gaits;
         let rendered = |cycle: f32| {
             if weight <= 0.0 {
                 prepared
             } else {
-                let walking = walk_pose_on(cycle, &params, &stood, &gait_rig);
+                // Walking, running, or the one step changing between them,
+                // each gait at its own phase (`run::Gaits::phases`).
+                let walking = if running <= 0.0 {
+                    walk_pose_on(cycle, &walk_params, &stood, &gait_rig)
+                } else if running >= 1.0 {
+                    walk_pose_on(cycle, &run_params, &stood, &gait_rig)
+                } else {
+                    let (walked, ran) = gaits.phases(cycle);
+                    let (walk, run) = (walk_pose_on(walked, &walk_params, &stood, &gait_rig), walk_pose_on(ran, &run_params, &stood, &gait_rig));
+                    super::clip::blend(&walk, &run, running)
+                };
                 transition_state.blend(&prepared, &walking, &gait_rig)
             }
         };
@@ -997,6 +1107,17 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             // Standing, the idle sways the pelvis over feet that stay put;
             // read as root motion, that sway walked the character.
             _ if state.stride.weight <= 0.0 => Vec3::ZERO,
+            // Running, at the gait's own velocity (`locomotion::root_velocity_of`
+            // on the target, coasting through flight). From the rendered
+            // contacts instead, each landing foot — the sprung leg still
+            // swinging forward a few centimetres behind its target — braked
+            // the body from 3.2 to 0.3-1.5 m/s for a frame or two every step,
+            // and it ran 15 % slow; a walk has a second foot down to carry
+            // it through. The run's feet down are told to the locks from the
+            // clock, which hold them in the world whatever the springs do.
+            // Changing between the two, the planted foot it changes on:
+            // both gaits have it in the same place (`run::Gaits::phases`).
+            _ if state.gaits.running >= 0.5 && !state.gaits.changing() => state.locomotion.root_velocity * time.delta_secs(),
             (Some(params), Some(previous)) => {
                 // The cycle half-way through the frame decides which feet
                 // are planted.

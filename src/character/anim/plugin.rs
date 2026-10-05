@@ -102,6 +102,27 @@ pub struct AnimFootIk {
     pub left: FootLock,
     /// Right foot state.
     pub right: FootLock,
+    /// Each toe tip's own lock (left, right): a tip that has come down on
+    /// the floor stays there as the heel and then the ball rise over it, the
+    /// toe turned about its joint to meet it. The foot's own lock holds the
+    /// toe JOINT, which a rising ball lets go; the tip, pivoting on the floor
+    /// in pre-swing, slid 50 mm a frame without one (a 1.85 m/s walk).
+    pub tips: [FootLock; 2],
+    /// Which foot (left, right) a gait's clock has swinging, while a gait
+    /// has any weight, its start's and stop's fades included; `None` when no
+    /// gait owns the feet. A gait's toe tip is held from touching down to
+    /// its swing, and kept off the floor through it; without a gait a tip is
+    /// let go by its speed or its stretch. Read off the clipped
+    /// [`Self::clear`] instead, a start's first swing (no clearance there,
+    /// its fade lifts it) never let its tip go: the lock held it 12 mm up
+    /// through the next stance, and it dropped 10 mm under the floor and
+    /// skidded 24 mm as that swing began.
+    pub gait_swing: Option<[bool; 2]>,
+    /// Which foot (left, right) a gait has bearing weight, while a gait has
+    /// any: down, and not yet rolling off its toes (`walker::BEARING`).
+    /// `None` when no gait owns the feet. The hips drop to help only these
+    /// reach (`solve_pelvis_drop`), and any foot without a gait.
+    pub gait_bearing: Option<[bool; 2]>,
     /// How far the hips may drop to help a foot reach.
     pub pelvis: PelvisConfig,
     /// How far the body turned this frame.
@@ -154,6 +175,14 @@ pub struct AnimFootIk {
     /// Written each frame by whatever owns contact, such as a standing
     /// balance; `[false; 2]` leaves contact to the locks' own speed test.
     pub planted: [bool; 2],
+    /// Whether a [`Self::planted`] foot locks as soon as it touches the
+    /// ground, whatever its speed ([`FootLock::update_gripped`]): a run's.
+    pub grip: bool,
+    /// How far each foot's (left, right) sole must keep off the ground,
+    /// metres, judged on the rendered foot: a running foot just off the
+    /// floor (`run::swing_clearance`), which its sprung leg would leave down
+    /// a few frames.
+    pub clear: [f32; 2],
     /// How far each foot (left, right) goes from where the animation puts
     /// it, metres, the pose's frame, horizontal: where a walking balance
     /// sets a foot down to catch a push (`walk_balance::WalkBalance`).
@@ -837,11 +866,14 @@ fn solve_foot_ik(
             // foot's anchor 14 mm a step until the feet hovered.
             let turn = Turn { travel: frame.inverse() * turn.travel, yaw_delta: 0.0, pivot: Vec3::ZERO };
             let planted = foot_ik.planted[matches!(side, Side::Right) as usize];
+            // Where the toe joint stands with the foot flat on this ground:
+            // a gripping foot locks once it is down there.
+            let grip = foot_ik.grip.then(|| hit.height + toe_contact_offset(&LocalPose::REST, chain, &rig));
             let lock = match side {
                 Side::Left => &mut foot_ik.left,
                 _ => &mut foot_ik.right,
             };
-            let mut target = lock.update_planted(animated, surface, &lock_config, dt, turn, planted);
+            let mut target = lock.update_gripped(animated, surface, &lock_config, dt, turn, planted, grip);
 
             // Kept clear of what the feet must not stand in or swing through
             // (`obstacles`), about the target the leg is solved to: worked out
@@ -857,8 +889,9 @@ fn solve_foot_ik(
                 lock.shift_anchor(out);
             }
 
-            // Never let the sole sink below the surface, even mid-release.
-            target.y = target.y.max(surface);
+            // Never let the sole sink below the surface, even mid-release;
+            // nor nearer it than it must keep clear.
+            target.y = target.y.max(surface + foot_ik.clear[slot]);
 
             // A foot being set down clears the floor until it is over its
             // spot, measured on the rendered (sprung) foot.
@@ -879,13 +912,24 @@ fn solve_foot_ik(
         // Only when both feet have targets — with one foot over a ledge there
         // is no shared constraint to satisfy, and dropping the hips for the
         // single grounded foot would crouch the character mid-stride.
+        //
+        // Nor for a foot a gait has off its weight (`AnimFootIk::gait_bearing`):
+        // the hips come down to put a foot on the ground, not to reach after
+        // one leaving it. A run's trailing leg leaves the floor nearly
+        // straight, and its lock's release out to where it stood
+        // (`FootLock::let_go`) put that out of reach: at 4.7 m/s the hips
+        // dropped 41 mm in each flight and sprang back at the landing. Its
+        // last frame on its toes, pinned behind a body speeding up, dropped
+        // them 21 mm for a frame.
         if let [Some((left_chain, left_target, _)), Some((right_chain, right_target, _))] =
             resolved
         {
+            let bearing = |slot: usize| foot_ik.gait_bearing.is_none_or(|bearing| bearing[slot]);
+            let reaching = |slot: usize, chain: LegChain, target: Vec3| if bearing(slot) { target } else { animated_toes[chain.toe] };
             let drop = solve_pelvis_drop(
                 &solved,
                 &rig,
-                [(left_chain, left_target), (right_chain, right_target)],
+                [(left_chain, reaching(0, left_chain, left_target)), (right_chain, reaching(1, right_chain, right_target))],
                 &pelvis_config,
             );
             apply_pelvis_drop(&mut solved, drop);
@@ -898,6 +942,64 @@ fn solve_foot_ik(
         for entry in resolved.into_iter().flatten() {
             let (chain, target, hit) = entry;
             solve_leg_grounded(&mut solved, chain, target, Some(hit), &ik_config, &rig);
+        }
+
+        // Pass three, toes: a tip that has come down stays where it came
+        // down (`AnimFootIk::tips`), the toe turned to meet it. Locked by
+        // the same speed test as a foot, but only within `TIP_CONTACT` of
+        // where the tip stands flat — at a foot's 8 cm it would pin a toe
+        // still swinging down.
+        //
+        // A gait's clock says when it goes (`AnimFootIk::gait_swing`): held
+        // through its stance, out of the toe's reach too (the tip then on
+        // the line to where it stood, so off the floor), and let go by its
+        // speed once its swing begins. Without a gait, by its speed or once
+        // out of the toe's reach. Either way the release eases out of the
+        // pin, and a tip never goes under the floor, nor in a swing nearer
+        // it than its foot keeps (`AnimFootIk::clear`). Let go a frame
+        // before its swing and snapped back to the pose, it flicked between
+        // 4 mm under the floor and 12 mm over, moving 4-16 mm a frame.
+        let travel = Turn { travel: frame.inverse() * turn.travel, yaw_delta: 0.0, pivot: Vec3::ZERO };
+        let tip_config = FootLockConfig { max_contact_height: TIP_CONTACT, ..lock_config };
+        for (slot, entry) in resolved.iter().enumerate() {
+            let Some((chain, _, hit)) = *entry else {
+                foot_ik.tips[slot] = FootLock::default();
+                continue;
+            };
+            let Some((tip, toe)) = super::legik::toe_tip(&solved, chain, &rig) else { continue };
+            let flat = hit.height + toe_tip_height(chain, &rig);
+            let gait = foot_ik.gait_swing;
+            let swinging = gait.is_some_and(|swing| swing[slot]);
+            let lock = &mut foot_ik.tips[slot];
+            let mut target = if swinging && !lock.is_locked() {
+                lock.follow(tip, &tip_config, dt)
+            } else {
+                lock.update_planted(tip, flat, &tip_config, dt, travel, gait.is_some() && !swinging)
+            };
+            let reach = (tip - toe).length();
+            let stretch = if gait.is_some() { TIP_STRETCH_GAIT } else { TIP_STRETCH };
+            // Let go out of the toe's reach, or where it could only be
+            // reached through the floor (`aimed_off_the_floor`).
+            let through = (toe + (target - toe).normalize_or_zero() * reach).y < flat - TIP_CONTACT;
+            if lock.is_locked() && ((target - toe).length() > reach * stretch || through) {
+                lock.let_go(tip);
+                target = lock.follow(tip, &tip_config, 0.0);
+            }
+            // A swinging tip rises with its foot: its pin, and the release
+            // out of it, hold it back across the floor only. Held down too,
+            // a start's first swing dragged its tip 19 mm along the floor
+            // as the foot rose 12 mm.
+            let clear = if swinging {
+                target.y = target.y.max(tip.y);
+                foot_ik.clear[slot]
+            } else {
+                0.0
+            };
+            target.y = target.y.max(flat + clear);
+            let target = aimed_off_the_floor(toe, target, reach, flat);
+            if (target - tip).length() > 1.0e-5 {
+                super::legik::aim_toe_tip(&mut solved, chain, target, &rig);
+            }
         }
 
         // Pass four: the arms, if this character is reaching for anything.
@@ -986,6 +1088,47 @@ fn solve_foot_ik(
 enum Side {
     Left,
     Right,
+}
+
+/// How near where it stands flat a toe tip locks, metres (pass three, toes).
+const TIP_CONTACT: f32 = 0.004;
+
+/// How far past the toe's own length a locked tip may be from its joint
+/// before it lets go, with no gait to say when its foot leaves: the foot
+/// has left it. Let go at 4 %, a tip still low skimmed 31-49 mm with its
+/// toes relaxing.
+const TIP_STRETCH: f32 = 1.15;
+
+/// [`TIP_STRETCH`] in a gait, whose swing lets the tip go: only a foot
+/// gone well past its toe (displaced by a push, say) lets go before.
+const TIP_STRETCH_GAIT: f32 = 1.6;
+
+/// Where a toe `reach` long, from its joint at `toe`, puts its tip aimed at
+/// `target`, if that keeps the tip at or over `flat`, the floor's height for
+/// it: `target` itself then. Otherwise the point `reach` from the joint, as
+/// near the line to `target` as keeps it on the floor.
+///
+/// The toe is rigid, so aimed at a point nearer than its length, its tip
+/// goes past it: a foot carried 37 mm over its tip's pin in one frame (the
+/// run's change to a walk) swung the tip 40 mm under the floor.
+fn aimed_off_the_floor(toe: Vec3, target: Vec3, reach: f32, flat: f32) -> Vec3 {
+    let along = target - toe;
+    let tip = toe + along.normalize_or_zero() * reach;
+    if tip.y >= flat - 1.0e-4 || reach <= 0.0 {
+        return target;
+    }
+    let level = Vec3::new(along.x, 0.0, along.z).normalize_or_zero();
+    let up = ((flat - toe.y) / reach).clamp(-1.0, 1.0);
+    toe + level * (1.0 - up * up).sqrt() * reach + Vec3::Y * up * reach
+}
+
+/// How far above the floor `chain`'s toe tip stands with the foot flat: its
+/// height over the sole on the bind pose.
+fn toe_tip_height(chain: LegChain, rig: &RigGeometry) -> f32 {
+    use super::foot::{lowest, Sole};
+    let rest = LocalPose::REST;
+    let hips = forward_kinematics_on(&rest, rig)[Bone::Hips];
+    super::legik::toe_tip(&rest, chain, rig).map_or(0.0, |(tip, _)| tip.y - (hips.y + lowest(&Sole::of(rig, chain.ankle).points(&rest, rig))))
 }
 
 /// How far the toe JOINT sits above the lowest point of its own foot, in a

@@ -321,7 +321,10 @@ pub fn default_springs() -> BoneSet<SpringParams> {
         // bites harder on a faster stride, and 0.02 s still left 9.4 mm at
         // a brisk 1.6 strides/s; 0.015 keeps both under 5 mm. The gait's
         // own curves are already smooth, so the spring has nothing to add
-        // there.
+        // there. Given the target's velocity too (a goal-velocity spring),
+        // a running sole first down was within 4.5 mm in 99 % of frames
+        // instead of 10, but walks slid more at their sharp events (5.8 mm
+        // against 0.6 at 0.6 m/s): not taken.
         Bone::LeftUpLeg
         | Bone::LeftLeg
         | Bone::LeftFoot

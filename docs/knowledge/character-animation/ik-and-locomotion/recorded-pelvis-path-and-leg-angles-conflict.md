@@ -104,4 +104,5 @@ through the springs. It lost on every count the walk is judged by.
 
 - [Replay a recorded gait by segment attitudes](./replay-a-recorded-gait-by-segment-attitudes.md) — prerequisite: the angle mapping that exposes this conflict.
 - [A walking foot touches the ground at its heel, ball and toe](./walking-foot-rocker-contact-model.md) — deeper: the support rule the pelvis rides on.
+- [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — same-trap: Fukuchi's recorded run conflicts the same way (~4 cm, even on human proportions), resolved the same way.
 - [Winter 11.3.1 — inverted pendulum in steady walking](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.3-dynamic-balance-during-walking/11.3.1-inverted-pendulum-in-steady-walking.md) — contrast: the recorded pelvis/COM behaviour this falls short of.

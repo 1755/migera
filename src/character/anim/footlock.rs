@@ -52,6 +52,12 @@ use bevy::math::Vec3;
 
 use super::math::inertialize::InertializeCubic;
 
+/// How near the ground a gripping foot locks, metres
+/// ([`FootLock::update_gripped`]): touching, give or take the sprung leg's
+/// last centimetre. At [`FootLockConfig::max_contact_height`]'s 8 cm it
+/// would pin a foot still coming down and drop it there.
+pub const GRIP_HEIGHT: f32 = 0.01;
+
 /// Thresholds governing when a foot locks and releases.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FootLockConfig {
@@ -187,6 +193,31 @@ impl FootLock {
         }
     }
 
+    /// Lets a pinned foot go now, whatever its speed: from here it closes
+    /// the gap from its anchor to the animation, as after any release.
+    pub fn let_go(&mut self, animated: Vec3) {
+        if self.state == LockState::Locked {
+            self.state = LockState::Free;
+            self.release = InertializeCubic::begin(self.anchor, Vec3::ZERO, animated, Vec3::ZERO);
+        }
+    }
+
+    /// Advances a FREE foot one frame without letting it lock, and returns
+    /// where it goes: the animation plus whatever release gap is still
+    /// closing. For a contact its caller knows is in the air (a swinging toe
+    /// tip, which passes within a lock's reach of the floor just after
+    /// toe-off). A pinned foot stays pinned; see [`Self::let_go`].
+    pub fn follow(&mut self, animated: Vec3, config: &FootLockConfig, dt: f32) -> Vec3 {
+        if self.state == LockState::Locked {
+            return self.anchor;
+        }
+        self.previous_animated = Some(animated);
+        if dt > 0.0 {
+            self.release.advance(dt);
+        }
+        self.hold(animated, config)
+    }
+
     /// Advances one frame and returns where the toe should actually go.
     ///
     /// `animated` is where the animation alone would put it; `ground_height`
@@ -249,6 +280,31 @@ impl FootLock {
         turn: Turn,
         planted: bool,
     ) -> Vec3 {
+        self.update_gripped(animated, ground_height, config, dt, turn, planted, None)
+    }
+
+    /// [`Self::update_planted`], and with `grip`, a planted foot also LOCKS
+    /// the moment its toe joint is within [`GRIP_HEIGHT`] of `grip` — the
+    /// height it stands at with the foot flat on this ground — whatever its
+    /// speed.
+    ///
+    /// For a run: its landing foot, the sprung leg still swinging forward
+    /// behind its target under a body at 3-6 m/s, never slowed to
+    /// [`FootLockConfig::lock_speed`], and left unlocked it bobbed 20 mm up
+    /// off the floor and back in mid-stance. The height is the flat foot's,
+    /// not `ground_height`, which follows the foot's pitch: gripped at heel
+    /// strike, toes up, the toe joint was held 35 mm up all stance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_gripped(
+        &mut self,
+        animated: Vec3,
+        ground_height: f32,
+        config: &FootLockConfig,
+        dt: f32,
+        turn: Turn,
+        planted: bool,
+        grip: Option<f32>,
+    ) -> Vec3 {
         // The anchor pivots with the body BEFORE anything reads it, so the
         // distance and speed checks below compare against where the foot
         // now is rather than where it was a turn ago.
@@ -284,14 +340,25 @@ impl FootLock {
         match self.state {
             LockState::Free => {
                 let grounded = animated.y - ground_height <= config.max_contact_height;
+                let gripped = planted && grip.is_some_and(|flat| animated.y - flat <= GRIP_HEIGHT);
 
-                if speed < config.lock_speed && grounded {
+                if speed < config.lock_speed && grounded || gripped {
                     self.state = LockState::Locked;
                     // Pin at ground level, not at wherever the animation
                     // happened to be: a contact by definition touches the
                     // ground, and a few millimetres of float above it would
                     // read as hovering.
-                    self.anchor = Vec3::new(animated.x, ground_height, animated.z);
+                    //
+                    // Gripped, at the flat foot's height: the toe joint of a
+                    // foot still pitched from its landing sits higher, and
+                    // pinned there it held the whole foot 21 mm up all
+                    // stance. The foot IK keeps the sole above the floor
+                    // while the pitch lasts.
+                    let height = match grip {
+                        Some(flat) if gripped => flat,
+                        _ => ground_height,
+                    };
+                    self.anchor = Vec3::new(animated.x, height, animated.z);
                     return self.anchor;
                 }
 
@@ -536,6 +603,34 @@ mod tests {
         assert!(!lock.is_locked(), "a foot swinging away should release");
     }
 
+    /// A swinging toe tip passes slow and within a lock's reach of the floor
+    /// just after toe-off: followed, it never locks, and a pin let go eases
+    /// out of where it was rather than snapping to the animation.
+    #[test]
+    fn a_followed_foot_never_locks_and_a_let_go_eases_out_of_its_pin() {
+        let config = FootLockConfig::default();
+        let mut free = FootLock::new();
+        for _ in 0..30 {
+            free.follow(Vec3::ZERO, &config, DT);
+            assert!(!free.is_locked(), "a followed foot locked, still on the floor");
+        }
+        assert_eq!(free.follow(Vec3::X, &config, DT), Vec3::X, "a free foot with no release follows the animation");
+
+        let (mut lock, planted) = locked_foot(&config);
+        let away = planted + Vec3::new(0.0, 0.03, -0.05);
+        lock.let_go(away);
+        assert!(!lock.is_locked());
+        let first = lock.follow(away, &config, 0.0);
+        assert!((first - planted).length() < 1.0e-6, "let go, it jumped {:.4} m off its pin", (first - planted).length());
+        let mut previous = first;
+        for _ in 0..30 {
+            let at = lock.follow(away, &config, DT);
+            assert!((at - previous).length() < 0.012, "a frame of the release moved {:.4} m", (at - previous).length());
+            previous = at;
+        }
+        assert!((previous - away).length() < 1.0e-5, "the release ended {:.4} m short", (previous - away).length());
+    }
+
     #[test]
     fn a_planted_foot_holds_its_lock_against_speed_but_not_a_drag() {
         // A stumbling body's sprung leg lags its pelvis, and the animated
@@ -563,6 +658,43 @@ mod tests {
             lock.update_planted(animated, 0.0, &config, DT, Turn::NONE, true);
         }
         assert!(!lock.is_locked(), "dragged {:.2} m away, even a planted foot should release", animated.x - planted.x);
+    }
+
+    /// A running foot lands moving under a body at 3 m/s and never slows to
+    /// the speed test; gripped, it locks as its toe joint comes within
+    /// `GRIP_HEIGHT` of where it stands flat, AT that height — not at the
+    /// pitch-following `ground_height`, which held a just-landed foot
+    /// 21 mm up all stance.
+    #[test]
+    fn a_gripping_foot_locks_where_it_lands_at_any_speed() {
+        let config = FootLockConfig::default();
+        let (flat, pitched) = (0.015, 0.037);
+        let mut lock = FootLock::default();
+        let mut animated = Vec3::new(0.0, 0.08, 0.0);
+        let step = |lock: &mut FootLock, animated: Vec3, grip: Option<f32>| {
+            lock.update_gripped(animated, pitched, &config, DT, Turn::NONE, true, grip)
+        };
+        // Coming down fast: free above the flat height's reach, locked at
+        // once within it.
+        let held = loop {
+            animated += Vec3::new(3.0 * DT, -0.3 * DT, 0.0);
+            let held = step(&mut lock, animated, Some(flat));
+            if animated.y - flat > GRIP_HEIGHT {
+                assert!(!lock.is_locked(), "locked {} m up", animated.y - flat);
+            } else {
+                assert!(lock.is_locked(), "a gripping foot down to {} m should lock", animated.y);
+                break held;
+            }
+        };
+        assert!((held - Vec3::new(animated.x, flat, animated.z)).length() < 1.0e-6, "locked at {held}, not at the flat height");
+        // Without the grip, the same landing stays free: the speed test.
+        let mut free = FootLock::default();
+        let mut animated = Vec3::new(0.0, flat, 0.0);
+        for _ in 0..10 {
+            animated.x += 3.0 * DT;
+            step(&mut free, animated, None);
+        }
+        assert!(!free.is_locked());
     }
 
     #[test]

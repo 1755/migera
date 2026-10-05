@@ -8,8 +8,8 @@ tags:
   - springs
   - correctness
   - debugging
-updated: 2026-09-30
-verified: 2026-09-30
+updated: 2026-10-05
+verified: 2026-10-05
 code:
   - src/character/anim/footlock.rs
   - src/character/anim/plugin.rs
@@ -76,6 +76,13 @@ and backward stumbles.
   heuristic, so a landing foot locks only once the rendered foot has
   arrived. Forcing a lock at the swing's end would plant a foot still
   lagging ~10 cm. A drag past `break_distance` still releases it.
+- **Except a run's landing foot**, which never slows to the speed test
+  under a body at 3-6 m/s (it bobbed 20 mm in mid-stance). With
+  `AnimFootIk::grip`, a planted foot locks as soon as its toe joint is
+  within `footlock::GRIP_HEIGHT` (1 cm) of where it stands flat, and at
+  that height — not at the pitch-following surface, which pinned a foot
+  21 mm up all stance. See
+  [running](./running-replays-measured-strides-at-their-froude-number.md).
 - When a headless replay is clean and live is not, suspect springs and
   locks first: add a print on the lock's state changes (`FootLock` is not
   reflected, so BRP can't show it).
@@ -95,3 +102,5 @@ and backward stumbles.
 - [Push recovery is Winter's pendulum](./push-recovery-is-winters-pendulum.md) — same-trap: a one-frame push released the locks the same way.
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — deeper: the other thing a lock cannot see and must be told.
 - [A lagging pelvis rotation slides planted feet](./a-lagging-pelvis-rotation-slides-planted-feet.md) — same-trap: spring lag between pelvis and legs, seen through the feet.
+- [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — applies: a run's feet planted from the clock and gripped as they land.
+- [A toe tip pivots on the floor and needs its own lock](./a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md) — applies: a second lock per foot, for the toe tip.

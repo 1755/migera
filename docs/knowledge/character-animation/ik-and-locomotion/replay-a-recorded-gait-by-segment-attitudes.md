@@ -85,4 +85,5 @@ the ground sees: where the foot lands, and how it meets the floor.
 - [Winter Appendix A](../../biomechanics-winter/appendices/a-walking-trial-kinematic-kinetic-energy-data.md) — prerequisite: the trial, its events and sign conventions.
 - [Recorded pelvis path and recorded leg angles cannot both be kept](./recorded-pelvis-path-and-leg-angles-conflict.md) — deeper: the trade-off this mapping forces on a differently proportioned rig.
 - [A walking foot touches the ground at its heel, ball and toe](./walking-foot-rocker-contact-model.md) — applies: the contact model the replayed foot attitude rolls over.
+- [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — applies: the same zeros, on Fukuchi's recorded runs.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — contrast: the bind is a straight-legged T-pose, which is why it is not the geometric zero here.

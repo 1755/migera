@@ -16,17 +16,30 @@
 //! ```text
 //! cargo run --release --example anim_bench -- --characters 100 --frames 600
 //! ```
+//!
+//! `--gait walk|run --speed V` adds the gait as the walker poses it each
+//! frame, on the synthetic rig: the target pose at the gait clock and the root
+//! velocity read off its planted foot (`locomotion::root_velocity_of`).
 
 use std::time::Instant;
 
 use bevy::math::Vec3;
 use migera::character::anim::dho::DhoState;
+use migera::character::anim::gait::{walk_pose_on, GaitParams};
 use migera::character::anim::phase::{GaitPhase, PhaseLayer};
 use migera::character::anim::rig::forward_kinematics;
 use migera::character::anim::{default_springs, poses};
 
+/// The gait posed each frame, if any (`--gait`), and its speed.
+#[derive(Clone, Copy)]
+enum Gait {
+    None,
+    Walk(f32),
+    Run(f32),
+}
+
 fn main() {
-    let (characters, frames) = parse_args();
+    let (characters, frames, gait) = parse_args();
 
     // 1/60 s, the rate `AnimPlugin` is driven at. Fixed rather than
     // measured so the numbers describe the solve, not the host's clock.
@@ -53,17 +66,27 @@ fn main() {
         .collect();
 
     let layer = PhaseLayer::locomotion();
+    // The synthetic rig: the parsed `puppet_base` is a test fixture. The
+    // work per pose is the same.
+    let rig = migera::character::anim::rig::RigGeometry::default();
+    let stood = migera::character::anim::stance::stance_on_rig(&poses::relaxed_stand(), migera::character::anim::stance::DEFAULT_KNEE_FLEX, &rig);
+    let params = match gait {
+        Gait::None => None,
+        Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
+        Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
+    };
+    let posed = |cycle: f32| params.map(|p| (walk_pose_on(cycle, &p, &stood, &rig), p));
 
     // Warm up: first-touch page faults and cache population are real but
     // are not what the steady-state number is meant to describe.
     for _ in 0..60 {
-        step(&mut states, &layer, &base, &springs, DT);
+        step(&mut states, &layer, &base, &springs, DT, &posed, &rig);
     }
 
     let mut samples: Vec<f64> = Vec::with_capacity(frames);
     for _ in 0..frames {
         let started = Instant::now();
-        step(&mut states, &layer, &base, &springs, DT);
+        step(&mut states, &layer, &base, &springs, DT, &posed, &rig);
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
     }
 
@@ -71,8 +94,13 @@ fn main() {
     let p50 = samples[samples.len() / 2];
     let p99 = samples[(samples.len() * 99 / 100).min(samples.len() - 1)];
 
+    let gait = match gait {
+        Gait::None => String::new(),
+        Gait::Walk(speed) => format!("   walk {speed} m/s"),
+        Gait::Run(speed) => format!("   run {speed} m/s"),
+    };
     println!(
-        "anim_bench: {characters} characters x {frames} frames   \
+        "anim_bench: {characters} characters x {frames} frames{gait}   \
          p50 {p50:.3} ms   p99 {p99:.3} ms   \
          per-character p50 {:.4} ms",
         p50 / characters as f64,
@@ -88,13 +116,26 @@ fn step(
         migera::character::anim::SpringParams,
     >,
     dt: f32,
+    posed: &dyn Fn(f32) -> Option<(migera::character::anim::LocalPose, GaitParams)>,
+    rig: &migera::character::anim::rig::RigGeometry,
 ) {
     for (dho, phase) in states.iter_mut() {
         phase.advance(dt);
 
+        // The gait, as the walker poses it: the target at the clock, and
+        // the root velocity read off its planted foot.
+        let cycle = migera::character::anim::gait::cycle_of(phase);
+        let mut target = match posed(cycle) {
+            Some((pose, params)) => {
+                let at = |c: f32| posed(c).map_or(pose, |(p, _)| p);
+                std::hint::black_box(migera::character::anim::locomotion::root_velocity_of(cycle, 1.0, &params, &at, rig));
+                pose
+            }
+            None => *base,
+        };
+
         // On a rig, as `AnimPlugin` does once one is bound: the layer's
         // sway over the feet needs it.
-        let mut target = *base;
         layer.apply_on(phase, &mut target, &migera::character::anim::rig::RigGeometry::default());
 
         dho.advance(&target, springs, dt);
@@ -105,9 +146,10 @@ fn step(
     }
 }
 
-fn parse_args() -> (usize, usize) {
+fn parse_args() -> (usize, usize, Gait) {
     let mut characters = 100;
     let mut frames = 600;
+    let (mut gait, mut speed) = (None::<String>, 1.4);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -118,9 +160,16 @@ fn parse_args() -> (usize, usize) {
             "--frames" => {
                 frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(frames);
             }
+            "--gait" => gait = args.next(),
+            "--speed" => speed = args.next().and_then(|v| v.parse().ok()).unwrap_or(speed),
             _ => {}
         }
     }
 
-    (characters.max(1), frames.max(1))
+    let gait = match gait.as_deref() {
+        Some("walk") => Gait::Walk(speed),
+        Some("run") => Gait::Run(speed),
+        _ => Gait::None,
+    };
+    (characters.max(1), frames.max(1), gait)
 }

@@ -41,6 +41,291 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### A walk changes its speed only with one foot down
+
+- **The cause, measured, not the one guessed.** The first walking toe-off
+  after a run slid its toe tip 10.5 then 9.2 mm (18.5 mm run to a 1.0 m/s
+  walk). It was put down to the ball sitting ~5 mm too near the tip's pin.
+  Probed in the foot IK, the ball was 56 mm up, not low, and drew in 35 mm
+  toward the pin over the foot's last five frames down. A steady 1.88 m/s
+  walk's ball moves away from it instead (79 → 98 mm).
+- **A/B on the same run:** changed back into a walk at 1.878 m/s, with no
+  slowing after, the slide was 2.1 mm; asked down to 1.0, 18.5. The walk's
+  speed, eased down at 3 m/s² (last entry), was changing with both feet
+  down. Its stance share and stride follow its speed, so the trailing foot
+  slid as it rolled onto its toe. A plain walk slowing from 1.2 to 0.6 m/s
+  did the same: 28 mm.
+- **Fix:** `run::paced` holds a walk's speed while both feet are down
+  (`both_down`, from the gait's clock as last frame published it). A run, a
+  start and a stop are unchanged.
+- **Test** `a_walk_changes_its_speed_only_with_one_foot_down` (walker loop
+  replicated: `paced`, the walk at its pace, root motion off its contacts,
+  1.2 → 0.6 m/s from a footfall): the trailing foot moves 0.62 mm a frame
+  on the floor, as steady; eased through double support it slid 1.2, 3.0,
+  7.9 then 18.3 mm, and the test asserts that too.
+- **Live** (every frame at 60 Hz, worst toe-tip move at a toe-off within
+  3 mm of the floor):
+
+  | | Hold off | Hold on |
+  |---|---|---|
+  | Run 2.5 → walk 1.0 m/s | 18.5 mm | 2.4 mm |
+  | Mixed run schedule, first walking toe-off | 10.5 mm | within the run's own 5.0 mm |
+  | Walk 1.2 → 0.6 → 1.6 m/s | 28.0 mm | 2.3 mm |
+
+  Pelvis unchanged: worst vertical acceleration 6 against 5 m/s² walking,
+  52 against 50 on the mixed schedule; worst change of travel per frame
+  5.7 against 6.6 mm walking.
+- **Seen:** Left and Front, gizmos on and real mesh off, at the toe-off
+  run to a 1.0 m/s walk: the trailing foot rolls onto its toe with the tip
+  on the floor, nothing goes under it, the knees bend forward, the legs
+  sit under the hips without crossing, and the pelvis is level.
+- **Cost** (`anim_bench --gait`, 100 characters): walk 23.0 µs per
+  character per frame (22.9), run 40.9 (43.6).
+- Notes: [two gaits at one clock](docs/knowledge/character-animation/ik-and-locomotion/two-gaits-blended-at-one-clock-disagree-on-the-planted-foot.md),
+  [fade a gait only through single support](docs/knowledge/character-animation/ik-and-locomotion/fade-a-gait-only-through-single-support.md).
+
+### The walk-run change keeps the planted foot's pace; no pelvis pops
+
+- **The change between walk and run** (`run::Gaits`, `run::Matched`):
+  - At one clock phase the run's planted foot sits ~160 mm behind the
+    walk's under the hips. Blended over the 16-frame change, the foot moved
+    ~10 mm a frame that neither gait moves it; the walk's root motion read
+    that as the body braking from 2.0 to 0.8 m/s, and the foot jumped
+    37 mm in a frame.
+  - Now the gait coming in is posed at the phase matching its planted toe
+    to the outgoing gait's (13-point tables per gait, worked out once per
+    change). The outgoing gait keeps the clock, stride and stance share,
+    and the clock moves onto the new gait as the change ends.
+  - From the run, the change opens a third of the way into its stance:
+    just after a landing the sprung leg braked the body to 0.3 m/s.
+  - Test `a_change_between_walk_and_run_keeps_the_planted_foots_pace`: the
+    planted toe keeps the body's pace within 10 % over the change both
+    ways (1.16 at one clock).
+- **A walk's speed is eased, not snapped** (`run::paced`): handed its asked
+  speed at once, the walk's pose (set by its speed) dropped the hips 37 mm
+  in a frame just after a run became a walk, and 23 mm when a walk was
+  asked to run. Once walking, speed changes at 2 m/s² up and 3 m/s² down;
+  a start and a stop are as before.
+- **The hips drop only for feet bearing weight** (`AnimFootIk::gait_bearing`,
+  `walker::BEARING` 0.85): a run's foot in its last frame on its toes,
+  pinned behind a body speeding up, dropped them 21 mm for a frame.
+- **Live** (every frame at 60 Hz, both run schedules):
+  - worst pelvis vertical acceleration 50-63 m/s² (137-145 before), no
+    vertical step;
+  - run to walk, travel holds at 28-40 mm a frame through the change;
+  - no ankle move over 3.6 mm near the floor (a 5.5 m/s landing moved one
+    13 mm before);
+  - in flight the pelvis falls at −8.3 to −9.7 m/s² from 2 to 6 m/s.
+- **Not a lag after all:** the "landing 6 frames late at speed" came from
+  judging feet by the ankle, ball and toe-tip joints, which all sit high
+  at a heel strike. Measured on the sole in the foot IK, a foot the clock
+  has down is on the floor from its first frame (0.4 mm on average, 10 mm
+  in its first frame at worst).
+- **Dead ends:**
+  - a straight-line phase match drifted 90 mm by the end of the stance
+    (the toe at 0.68 of the pace);
+  - goal-velocity leg springs (following the target's own velocity): a
+    running sole first down within 4.5 mm in 99 % of frames instead of
+    10, but walks slid more at their sharp events (5.8 mm against 0.6 at
+    0.6 m/s); reverted.
+- **Left:** the first walking toe-off after a run slides its toe tip ~10 mm
+  a frame for two frames (its ball ~5 mm nearer the tip's pin than the toe
+  is long).
+- **Cost** (`anim_bench --gait`, 100 characters): run 43.6 µs per character
+  per frame (41.7), walk 22.9 (24.1), both within noise of the last entry.
+- Notes: [two gaits at one clock](docs/knowledge/character-animation/ik-and-locomotion/two-gaits-blended-at-one-clock-disagree-on-the-planted-foot.md) (new),
+  [running](docs/knowledge/character-animation/ik-and-locomotion/running-replays-measured-strides-at-their-froude-number.md),
+  [the run's flight plan](docs/knowledge/character-animation/ik-and-locomotion/a-runs-flight-plan-bends-the-stance-legs-for-a-ballistic-flight.md).
+
+### The run leaves the ground rising; a first step's toe lifts with it
+
+- **The run's thigh and shank are from vertical now**
+  (`tools/extract_running_strides.py`, `standing_bones`):
+  - They were each cluster's change from the runner's standing trial,
+    replayed as angles from vertical. Standing, the runners' thighs lean
+    back 5.6° and shanks 3.1°, measured along the bones (Harrington's hip
+    centre, epicondyles, malleoli). So the rig ran with its legs that far
+    forward.
+  - That is the "4 cm the recorded legs and pelvis disagree", taken until
+    now for soft tissue: the hips came 43-50 mm lower at contact than at
+    toe-off. Re-extracted, 9 mm, against the recording's 11.
+- **The flight plan pushes and dips** (`run::FlightPlan`): one curve over
+  stance, from the landing's sink, to a mid-stance dip (≤ 30 mm, as deep
+  as makes the bob the recording's), to a push out of toe-off at the
+  recording's take-off rate, as far as the landing allows.
+  - Measured (`puppet_base`, headless), against the last entry:
+
+    | | Last entry | Now |
+    |---|---|---|
+    | Flight acceleration, 2.2-6 m/s | −10.7 to −7.8 m/s² | −10.0 to −9.3 |
+    | Take-off | level | rising 0.22-0.42 m/s |
+    | Landing | 0.8-1.2 m/s | 0.42-0.75 m/s |
+    | Bob | 75-98 mm, recording 92-96 | 71-97, recording 78-97 |
+    | Knee off the recording | 8-10° (17° at 4.5 m/s) | 7.5-10° (16-17° at 4.5-6) |
+
+  - Plans are worked out on a 0.1 m/s grid and blended (one costs
+    1.5-2 ms; at every speed of a speed-up, each frame).
+- **The hips drop only for feet on the ground:** the foot IK's pelvis drop
+  no longer serves a foot the gait has in the air. At 4.7 m/s the trailing
+  leg's lock release put its target out of reach, and the hips dropped
+  41 mm each flight. Live, the pelvis round each flight's top now
+  accelerates at −8.4 to −9.7 m/s² from 2 to 6 m/s (the build before: −24
+  to −29 at 4-4.5 m/s).
+- **Toe tips, the first step and every swing:** the tip lock took "swing"
+  from the foot's clearance, which is zero through a start's fade.
+  - A start's first swing never let its tip go; the next stance held it
+    12 mm up.
+  - In every steady step, the tip flickered 4 mm under and 12 mm over the
+    floor at the swing, moving 4-16 mm a frame. A 2 mm slide band had
+    missed it.
+  - Now the walker publishes which foot its clock swings
+    (`AnimFootIk::gait_swing`, fades included). The tip holds through
+    stance, eases out of its pin at the swing (`FootLock::let_go`,
+    `follow`) and rises with its foot. It is never aimed through the floor
+    (`aimed_off_the_floor`).
+  - Live, worst tip move within 5 mm of the floor, start and stop
+    included: 1.7 mm at 1.2 m/s (26 before; 19 in the first step), 5.4 at
+    1.85, 4.0 at 0.6. The tip never went under the floor (it went 9.8 mm
+    under before).
+- **Live run schedules:** speeds 4.07 / 5.58 m/s by displacement; pelvis
+  spans 99 / 75 / 100 mm at 3.2 / 4.7 / 2.6 m/s; planted balls at most
+  1.6 mm floor-to-floor.
+- **Seen** at 3 m/s, Left (gizmos, then mesh): a flight with both feet off
+  the floor, the trailing leg straight behind with the toes pointed, the
+  leading foot coming down under the body, no knee bent backwards. Front:
+  the legs under the hips, not crossing.
+- **Cost** (`anim_bench --gait`, 100 characters, per character per frame):
+  run 41.7 µs (38.9), walk 24.1 (23.9), no gait 4.1.
+- **Found, not fixed:**
+  - the change from a run to a walk moves the whole foot about 37 mm in a
+    frame and the pelvis about 24 (34 in the build before);
+  - above 4 m/s the sprung landing leg reaches the floor about 6 frames
+    after the pose's contact;
+  - one landing at 5.5 m/s moved the ankle 13 mm in a frame (7.5 before).
+- **Dead ends:**
+  - a pose sampled at 41 points per plan pass made each plan 1.5 ms;
+  - the push's knee rate carried into the swing left a foot 4.9 mm up;
+  - a tip lock let go only past 60 % of the toe's reach swung a tip 40 mm
+    under the floor when its foot jumped over its pin.
+- Notes: [an angle from standing is not from vertical](docs/knowledge/character-animation/ik-and-locomotion/an-angle-from-standing-is-not-an-angle-from-vertical.md) (new),
+  [the run's flight plan](docs/knowledge/character-animation/ik-and-locomotion/a-runs-flight-plan-bends-the-stance-legs-for-a-ballistic-flight.md) (new, split from the running note),
+  [running](docs/knowledge/character-animation/ik-and-locomotion/running-replays-measured-strides-at-their-froude-number.md),
+  [a toe tip pivots on the floor](docs/knowledge/character-animation/ik-and-locomotion/a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md).
+
+### A run flies at g; a running hand crosses; the walk's toe tips held
+
+- **The run's flight is ballistic** (`run::FlightPlan`):
+  - Each stance leg shortens a little (a two-link knee-and-thigh change,
+    the ankle kept in place): a bump through the first 40 % of stance (the
+    body keeps falling into the landing) and a ramp over the last 40 %.
+  - Their two amplitudes are solved in closed form so the toe-off state,
+    thrown under gravity, lands on the next contact's height and rate. The
+    solve is refined twice on the corrected legs and cached per speed.
+  - Measured (`puppet_base`, headless): flight acceleration −10.7 to
+    −7.8 m/s² at every speed from 2.2 to 6 m/s (before, −14 to −5, and −37
+    to +20 at 5.5). The best parabola at 3.5 m/s has 9.5 m/s², within
+    0.4 mm.
+  - Cost: the knee off the recording by 8-10° (17° at 4.5 m/s), the thigh
+    by at most 10°. The bob is 75-98 mm against the recording's 92-96 (it
+    was 88-91 with a non-physical flight).
+  - Above 4.5 m/s the fastest recorded stride now holds and only the
+    cadence rises: extrapolated, the landing would have had to come down
+    9 cm.
+- **A running hand comes in across the body** (`GaitParams::arm_inward`,
+  0.35 rad at the front of the swing, authored): from the front, 0.17 m
+  off the midline at the front of the swing, inside the shoulder (0.22),
+  where it was 0.24, outside it.
+- **The walk's toe tips:**
+  - They skimmed 60-75 mm along the floor at 1.2 m/s and 200 at 1.85, the
+    same on the build before running. The rigid toe went 25-31 mm under
+    the floor in pre-swing and was dragged out by the foot IK.
+  - Now a per-foot tip lock in the foot IK pins a tip that has come down
+    and aims the toe at it (`AnimFootIk::tips`, `legik::aim_toe_tip`). A
+    tip let go before its swing is held 5 mm up. A swinging toe is lifted
+    at once, on the pose (`WalkCycle::conform_toes`) and on the rendered
+    foot (`AnimFootIk::clear`).
+  - Live worst floor-to-floor tip move: 2.1 mm at 1.2 m/s, 4.3 at 1.85,
+    1.4 at 0.6. Up to 19 mm remains in the first swing from a stand (the
+    start's own lift; the whole foot sets off at 1.3 m/s in one frame).
+- **Live, both run schedules** (BRP): speeds as asked; pelvis spans 74 /
+  94 / 79 mm at 3.0 / 4.5 / 2.5 m/s; the planted balls moved at most
+  1.9 mm floor-to-floor.
+- **Cost** (`anim_bench --gait`, 100 characters, per character per frame):
+  run 38.9 µs (31.9 before), walk 23.9 (20.1), no gait 4.1.
+- **Seen** at 3.5 m/s: from the front the forward hand at the chest
+  inside the shoulder line and the back one by the hip; from the left, a
+  flight with both feet up, the rear foot just off its toes.
+- **Dead ends** (numbers in the notes):
+  - toes bent by the walk's foot pitch floated the foot 9.6 mm;
+  - bending inside the walk cycle broke its thigh correction (7 tests);
+  - toes conformed to the floor through stance stepped the root velocity
+    0.16 m/s;
+  - a one-sided Newton step for the bend overshot 7 mm;
+  - an unweighted least-squares flight plan piled 8-14 cm onto toe-off.
+- Notes: [running](docs/knowledge/character-animation/ik-and-locomotion/running-replays-measured-strides-at-their-froude-number.md),
+  [a toe tip pivots on the floor](docs/knowledge/character-animation/ik-and-locomotion/a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md).
+
+### Running at any speed, from measured strides
+
+- **What:** above Froude 0.5 (2.09 m/s on `puppet_base`) a walker runs
+  (`run.rs`, `LegCurves::Run`). The legs replay Fukuchi et al.'s (2017)
+  treadmill strides at 2.5 / 3.5 / 4.5 m/s, 28 runners, as segment
+  attitudes. `tools/extract_running_strides.py` reduces the raw markers and
+  force to `assets/anim/reference/fukuchi_running_*.csv`.
+  - Between speeds the curves are interpolated, retimed to the stance
+    share; outside them extrapolated, to 2-6 m/s.
+  - The pelvis rides the stance leg and arcs through flight.
+  - Toes bend at push-off (≤ 34°), the trunk leans 6-13° with speed, and
+    the step is 3.95 % of leg length wide.
+  - Arms are authored: elbow 68-106°.
+- **The walker:**
+  - speed above a walk is eased (2 m/s² up once the walk is in, 3 down);
+  - the change to and from the walk takes one step of single support
+    (`run::Gaits`), back to a walk below 0.9 of the changeover;
+  - while running, root motion is the gait's own velocity;
+  - the feet down come from the clock, gripped as they land
+    (`AnimFootIk::grip`) and lifted off on the rendered foot
+    (`AnimFootIk::clear`).
+- **`foot::Sole`** carries the toe tip in the toe bone's frame. This is
+  identical for every pose that leaves the toes alone.
+- **Measured, model** (`run::tests`, `puppet_base`):
+  - cadence 4.3-5.8 % quicker than the recordings at the same Froude number;
+  - pelvis bob within 6 % (88 mm at 3.5 m/s against 92 scaled);
+  - flight exactly `1 − 2·duty`;
+  - a stance foot within 1 mm of the floor, a swinging one never more than
+    1.5 mm into it;
+  - legs mirror within 2 mrad;
+  - knee fold 1.5-1.75 rad at 2.5 m/s and 1.95-2.2 at 4.5.
+- **Measured, live** (gallery over BRP, 1/60 s steps):
+  - speeds as asked: 3.04 / 4.57 / 2.54 / 4.06 / 5.54 m/s;
+  - pelvis spans 89 / 77 / 94 mm;
+  - the planted ball moved ≤ 2.1 mm floor-to-floor (1.7 running), toe tips
+    ≤ 5.3 mm while running, through walk → run → faster → slower → walk →
+    stop, a start straight into a run and a stop straight from one;
+  - a stop from 2.3 m/s is at rest 1.1 s after it is asked.
+- **Cost** (`anim_bench --gait`, new flag, synthetic rig, 100 characters):
+  run 31.9 µs per character per frame, walk 20.1, no gait 4.1. The p99 is
+  3.9 ms against 2.1 ms (flight frames pose the take-off and landing too).
+- **Seen** at 3 m/s, Left and Front, gizmos then mesh:
+  - a stance shank near vertical under forward-leaning hips;
+  - the swing heel kicked up behind, both feet up between steps;
+  - a narrow track with no crossing, elbows near a right angle.
+- **Dead ends and traps** (each with numbers in the note):
+  - rigid toes lifted the pelvis 65 mm at toe-off;
+  - root motion from the rendered contacts braked every landing (ran 15 %
+    slow);
+  - the planted flag alone never locks a landing foot (bobbed 20 mm);
+  - a grip lock at the pitch-following surface held the foot 21 mm up;
+  - the rendered toe stayed down five frames after toe-off;
+  - gathering speed through the start slid a foot 44 mm;
+  - shedding speed while running ran on at 0.2 m/s for 1.4 s.
+  - Imposing the recorded pelvis needed 4 % more leg than the rig has: the
+    recorded legs and pelvis disagree by about 4 cm even on human
+    proportions.
+- **Found, not fixed:** the walk's own toe tips dip 7 mm below standing at
+  toe-off and skim 60-75 mm at speed, the same on the build before this.
+- Note: [running replays measured strides at their Froude number](docs/knowledge/character-animation/ik-and-locomotion/running-replays-measured-strides-at-their-froude-number.md).
+
 ### A stop asked before a start is in finishes the start
 
 - **The skid:** walking 0.25 m/s and told to stop 1 s in, the stopping

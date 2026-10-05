@@ -8,8 +8,8 @@ tags:
   - biomechanics
   - ik
   - correctness
-updated: 2026-09-30
-verified: 2026-09-29
+updated: 2026-10-05
+verified: 2026-10-05
 code:
   - src/character/anim/foot.rs
   - src/character/anim/walk.rs
@@ -38,8 +38,11 @@ ankle still cannot roll, and a rolling foot then has to slide.
 
 ## The model
 
-`foot::Sole` carries three points rigidly in the ankle bone's frame,
-measured on the rig's bind pose standing on `y = 0`, or on the foot's lowest
+`foot::Sole` carries the heel and ball in the ankle bone's frame and the tip
+in the toe bone's, so the tip goes with the toes as they bend (a run's at
+push-off; see [running](./running-replays-measured-strides-at-their-froude-number.md));
+a pose that leaves the toes alone reads exactly the contacts of a rigid foot.
+All three are measured on the rig's bind pose standing on `y = 0`, or on the foot's lowest
 joint if one dips below it (the synthetic rig's toe does). The runtime foot
 IK plants the same sole (`plugin::toe_contact_offset`), so a standing foot
 rests at the asset's own bind height:
@@ -91,6 +94,8 @@ made the slow walk's root velocity step 0.15 m/s per heel strike, so it is
 ## Related
 
 - [Replay a recorded gait by segment attitudes](./replay-a-recorded-gait-by-segment-attitudes.md) — prerequisite: how the foot's recorded attitude is driven.
+- [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — applies: why the tip follows the toe bone (a run's toes bend at push-off).
+- [A toe tip pivots on the floor and needs its own lock](./a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md) — applies: the walk's rigid tip under the floor in pre-swing, and how the foot IK now holds it.
 - [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — applies: how the body is moved over these contacts.
 - [Recorded pelvis path and recorded leg angles cannot both be kept](./recorded-pelvis-path-and-leg-angles-conflict.md) — deeper: why the pelvis rides the legs.
 - [Foot IK on uneven ground has two feedback loops](./foot-ik-feedback-loops.md) — contrast: the runtime foot IK's own toe-joint contact offset.

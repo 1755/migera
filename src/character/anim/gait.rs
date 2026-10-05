@@ -132,6 +132,11 @@ pub struct GaitParams {
     /// swing. A relaxed arm is never a straight one, and a running arm stays
     /// bent all the way round.
     pub elbow_carry: f32,
+    /// How far the forearm turns in toward the body's midline at the front
+    /// of the swing, radians, about the vertical; none at the back. A
+    /// running hand comes across in front of the body; a walking arm swings
+    /// fore and aft (0).
+    pub arm_inward: f32,
     /// How far the hips drop at midstance, **as a fraction of leg length**.
     ///
     /// A real gait mechanic, and also what buys the stride its horizontal
@@ -183,6 +188,13 @@ pub enum LegCurves {
     /// rig's left, -1 its right), `ahead` of the way forward (0 straight
     /// across; a diagonal, up to ~0.7).
     Shuffle { step: f32, toward: f32, ahead: f32 },
+    /// A measured run (`super::run`), Fukuchi's strides at `speed`: the
+    /// speed, m/s, a runner proportioned like the recorded ones runs alike
+    /// at (`run::reference_speed`). The thigh, knee, stance and ankle fields
+    /// are unused, as for [`LegCurves::Measured`]. `pace` is how much
+    /// faster than that the run really goes: above the fastest recording the
+    /// stride holds and the cadence rises (1 within the recordings).
+    Run { speed: f32, pace: f32 },
 }
 
 /// The leg length the gait's fractional amplitudes were authored against.
@@ -267,6 +279,7 @@ impl GaitParams {
             // 41-69 degrees on top of the standing bend: a running arm stays
             // folded.
             elbow_carry: 0.6,
+            arm_inward: RUNNING_ARM_INWARD,
             // Fractions of leg length. `0.09 m` and `0.05 m` on the
             // synthetic rig's `0.49 m` leg, expressed so they scale — see
             // [`GaitParams::hip_dip`].
@@ -322,6 +335,56 @@ impl GaitParams {
     pub fn walking_on(speed: f32, rig: &super::rig::RigGeometry) -> Self {
         Self::walking_for(speed, leg_length_of(rig))
     }
+
+    /// A run at `speed` m/s for a body with legs `leg_length` long, driven
+    /// by the measured strides (`super::run`), at the Froude number they
+    /// were recorded at. The stance share is theirs at that speed; the
+    /// cadence, as a walk's, whatever carries the stride at `speed`.
+    ///
+    /// # The arms
+    ///
+    /// Authored to published ranges, not replayed: the recordings have no
+    /// arm markers. A running elbow stays bent near a right angle, folding
+    /// and opening by more as the pace rises (sprinting, the shoulder
+    /// sweeps 46-55 degrees and the elbow 54-67, as reviewed by Macadam et
+    /// al., *Strength Cond J* 40(5):14-23, 2018); the upper arm swings mostly behind the
+    /// shoulder, as walking (`ARM_SWING_CENTRE`). At the slowest run the
+    /// shoulder sweeps 36 degrees and the elbow 102 to 73; at the fastest 52
+    /// and 112 to 50.
+    pub fn running_for(speed: f32, leg_length: f32) -> Self {
+        let like = super::run::recorded_speed(speed, leg_length);
+        let reference = like.clamp(super::run::SLOWEST, super::run::FASTEST);
+        Self::running_paced(reference, like / reference)
+    }
+
+    /// [`Self::running_for`], given the speed a runner proportioned like
+    /// the recorded ones runs alike at (`run::reference_speed`).
+    pub fn running_like_recorded(reference: f32) -> Self {
+        let reference = reference.clamp(super::run::SLOWEST, super::run::FASTEST);
+        Self::running_paced(reference, 1.0)
+    }
+
+    /// A run on the recorded stride at `reference`, its cadence `pace` times
+    /// that stride's; the arms swinging as for `reference × pace`, to the
+    /// fastest run they are authored for (6 m/s on the recorded runners).
+    fn running_paced(reference: f32, pace: f32) -> Self {
+        const ARMS_FASTEST: f32 = 6.0;
+        let t = ((reference * pace - super::run::SLOWEST) / (ARMS_FASTEST - super::run::SLOWEST)).clamp(0.0, 1.0);
+        let between = |slow: f32, fast: f32| slow + (fast - slow) * t;
+        Self {
+            duty_factor: super::run::duty_at(reference),
+            curves: LegCurves::Run { speed: reference, pace },
+            arm_swing: between(0.31, 0.45),
+            elbow_bend: between(1.70, 1.95),
+            elbow_carry: between(0.70, 0.45),
+            ..Self::running()
+        }
+    }
+
+    /// [`Self::running_for`] on a specific rig.
+    pub fn running_on(speed: f32, rig: &super::rig::RigGeometry) -> Self {
+        Self::running_for(speed, leg_length_of(rig))
+    }
 }
 
 impl GaitParams {
@@ -362,6 +425,16 @@ impl GaitParams {
         }
     }
 }
+
+/// How far a running forearm turns in toward the midline at the front of
+/// its swing, radians ([`GaitParams::arm_inward`]). Authored: a runner's
+/// hand comes across in front of the body rather than straight ahead
+/// (Hinrichs 1987 on the arms' angular momentum about the vertical, which
+/// is what that crossing carries); the recordings have no arm markers to
+/// size it. Measured on `puppet_base` at 3.5 m/s, it brings the hand from
+/// 0.24 m off the midline at the front of the swing, outside the shoulder
+/// (0.22), to about 0.16.
+pub const RUNNING_ARM_INWARD: f32 = 0.35;
 
 /// A stride grows as speed to this power (`GaitParams::walking_for`).
 pub const STRIDE_GROWTH: f32 = 0.65;
@@ -446,6 +519,7 @@ impl Default for GaitParams {
             // front. On top of the standing pose's ~5 degrees, 12 to 42.
             elbow_bend: 0.73,
             elbow_carry: 0.29,
+            arm_inward: 0.0,
             // Fractions of leg length. `0.06 m` and `0.025 m` on the
             // synthetic rig's `0.49 m` leg, expressed so they scale — see
             // [`GaitParams::hip_dip`].
@@ -1145,7 +1219,7 @@ pub fn walk_pose_on(
 
     let mean = match params.curves {
         LegCurves::Authored => thigh_cycle_mean(params),
-        LegCurves::Measured { .. } | LegCurves::Shuffle { .. } => 0.0,
+        LegCurves::Measured { .. } | LegCurves::Shuffle { .. } | LegCurves::Run { .. } => 0.0,
     };
 
     // The measured stride: recorded angles, as deltas from the base pose's
@@ -1157,7 +1231,15 @@ pub fn walk_pose_on(
     // correction that keeps both feet planted through double support.
     let measured = match params.curves {
         LegCurves::Measured { amplitude } => {
-            pose = super::walk::walk_cycle(params, amplitude, base, rig).pose(base, rig, phase, facing);
+            let cycle = super::walk::walk_cycle(params, amplitude, base, rig);
+            pose = cycle.pose(base, rig, phase, facing);
+            cycle.conform_toes(&mut pose, base, rig, phase, facing);
+            true
+        }
+        // The measured run likewise, its pelvis riding the stance leg and
+        // arcing through flight (`run::RunCycle::pose`).
+        LegCurves::Run { speed, pace } => {
+            pose = super::run::run_cycle(base, rig).pose(base, rig, phase, speed, pace, facing);
             true
         }
         LegCurves::Authored | LegCurves::Shuffle { .. } => false,
@@ -1317,6 +1399,17 @@ pub fn walk_pose_on(
             elbow,
             Quat::from_axis_angle(axis, fold),
         );
+        // In toward the midline as the forearm comes forward (a run's,
+        // `GaitParams::arm_inward`), about the vertical: whichever way turns
+        // a forearm pointing forward toward the body's middle, the arm's
+        // side read off the posed shoulder.
+        if params.arm_inward != 0.0 {
+            let side = offset_from(&pose, rig, Bone::Hips, shoulder).dot(rig.left()).signum();
+            let toward_middle = Vec3::Y.cross(forward).dot(rig.left() * -side).signum();
+            let turn = params.arm_inward * (0.5 + 0.5 * at(ARM_LAG + ELBOW_FOLLOW)) * toward_middle;
+            pose.rotations[elbow] =
+                super::rig::delta_after_world_turn(&pose, rig, elbow, Quat::from_axis_angle(Vec3::Y, turn));
+        }
     }
 
     // A walk's height comes from its stance leg; a run's flight phase has
@@ -2550,6 +2643,7 @@ mod tests {
             arm_swing: 0.0,
             elbow_bend: 0.0,
             elbow_carry: 0.0,
+            arm_inward: 0.0,
             hip_dip: 0.0,
             vertical_bob: 0.0,
             // The measured curves hold the recording's mean posture even at

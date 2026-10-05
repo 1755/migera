@@ -54,6 +54,11 @@ So `Transition` places both fades in single support (`TransitionConfig::fade`,
     the weight reached zero near its landing (23 mm). A fade-out has to be
     placed in the stride, as the last step's is.
 
+The same holds for any input the walking pose depends on: a walk's speed,
+eased through double support, slid a trailing toe tip 28 mm, so it holds
+while both feet are down (see
+[two gaits at one clock](./two-gaits-blended-at-one-clock-disagree-on-the-planted-foot.md)).
+
 ## 2. Root motion must see the hips move
 
 Contacts are measured relative to the hips (`Sole::points`), so a pose that
@@ -130,6 +135,7 @@ on the floor. Tests:
 ## Related
 
 - [Foot locks need the body's travel](./foot-locks-need-the-bodys-travel.md) — context: the IK-side cause of the same first-step slide.
+- [Two gaits blended at one clock disagree on where the planted foot is](./two-gaits-blended-at-one-clock-disagree-on-the-planted-foot.md) — extends: single support is not enough when the two poses put the planted foot apart.
 - [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — prerequisite: the displacement this adds the hips term to.
 - [11.3.2 Gait initiation](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.3-dynamic-balance-during-walking/11.3.2-gait-initiation.md) — source: the release and first step.
 - [11.3.3 Gait termination](../../biomechanics-winter/ch11-biomechanical-movement-synergies/11.3-dynamic-balance-during-walking/11.3.3-gait-termination.md) — source: the half-length last step.

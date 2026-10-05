@@ -49,7 +49,15 @@ pub type Contacts = [Vec3; 3];
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sole {
     ankle: Bone,
+    /// Heel, ball and tip as the bind pose has them, all in the ankle's
+    /// frame.
     contacts: Contacts,
+    toe: Bone,
+    /// The tip in the TOE's frame, from the toe joint: it goes with the toe
+    /// as it bends. A runner's toes bend some 30 degrees up at push-off
+    /// (`run`), and a tip held rigid with the foot reached 5 cm below the
+    /// ball, lifting the pelvis to keep it on the floor.
+    tip: Vec3,
     /// The bind pose's up, in the ankle's frame: the sole's normal.
     up: Vec3,
 }
@@ -90,6 +98,9 @@ impl Sole {
         Self {
             ankle,
             contacts: [heel, ground(toe_at), ground(tip_at)].map(into_foot),
+            toe,
+            // In the frame `points` reads the toe in.
+            tip: frame_from(&rest, rig, Bone::Hips, toe).1.inverse() * (ground(tip_at) - toe_at),
             up: ankle_rotation.inverse() * Vec3::Y,
         }
     }
@@ -97,7 +108,43 @@ impl Sole {
     /// Heel, ball and tip, relative to the hips, under `pose`.
     pub fn points(&self, pose: &LocalPose, rig: &RigGeometry) -> Contacts {
         let (ankle, rotation): (Vec3, Quat) = frame_from(pose, rig, Bone::Hips, self.ankle);
-        self.contacts.map(|c| ankle + rotation * c)
+        let [heel, ball, _] = self.contacts.map(|c| ankle + rotation * c);
+        let (toe, toe_rotation) = frame_from(pose, rig, Bone::Hips, self.toe);
+        [heel, ball, toe + toe_rotation * self.tip]
+    }
+}
+
+/// The most a toe bends up at push-off, radians (34 degrees): peak
+/// metatarsophalangeal dorsiflexion running barefoot at 2.7 m/s, 34.2 ± 3.9
+/// degrees (30.1 shod), McDonald et al. 2016, *PLOS ONE* 11:e0152602.
+pub const TOE_BEND: f32 = 0.6;
+
+/// How long a bent toe takes to straighten after toe-off, of the cycle.
+pub const TOE_RELAX: f32 = 0.1;
+
+/// How far a gait's toes bend up at its cycle position `p` (0 at contact),
+/// radians, for a foot pitched `toe_up(p)` from flat with stance share
+/// `duty`: through stance as far as the foot pitches toe-down, so they stay
+/// on the floor as the heel rises, up to [`TOE_BEND`] (both ends rounded,
+/// so the bend has no corner); straightened over [`TOE_RELAX`] of early
+/// swing, leaving toe-off at the rate the stance was bending them — eased
+/// out flat instead, the toe's rate jumped at every toe-off
+/// (`gait::tests::the_cycle_closes_in_position_and_in_velocity`).
+pub fn toe_bend(toe_up: impl Fn(f32) -> f32, p: f32, duty: f32) -> f32 {
+    use super::gait::{hermite, soft_floor};
+    let bent = |q: f32| {
+        let down = -toe_up(q);
+        let up_to = |x: f32, most: f32| -soft_floor(-x, -most, 0.05);
+        up_to(soft_floor(down, 0.0, 0.03), TOE_BEND)
+    };
+    let p = p.rem_euclid(1.0);
+    if p < duty {
+        bent(p)
+    } else {
+        const STEP: f32 = 1.0e-3;
+        let (at, rate) = (bent(duty), (bent(duty) - bent(duty - STEP)) / STEP);
+        let u = ((p - duty) / TOE_RELAX).min(1.0);
+        hermite(at, 0.0, rate * TOE_RELAX, 0.0, u)
     }
 }
 
@@ -266,5 +313,30 @@ mod tests {
         // A rigid foot translating without turning: every point moves alike.
         let moved = contact_moved(&at([0.0, 0.0, 0.0]), &at([0.0, 0.0, 0.0]).map(|p| p + Vec3::X));
         assert!((moved - Vec3::X).length() < 1.0e-6);
+    }
+
+    /// The tip goes with the toe: bent up 30 degrees about its joint, it
+    /// rises by the toe's length times sin 30 and the heel and ball stay;
+    /// unbent, the three are where a rigid foot puts them, so every pose
+    /// that leaves the toes alone reads the same contacts as before.
+    #[test]
+    fn the_tip_goes_with_the_toe_as_it_bends() {
+        use crate::character::anim::stance::KNEE_AXIS;
+        let rig = puppet_base();
+        let sole = Sole::of(&rig, Bone::LeftFoot);
+        let rest = LocalPose::REST;
+        let [heel, ball, tip] = sole.points(&rest, &rig);
+        let rigid = sole.contacts.map(|c| {
+            let (ankle, rotation) = frame_from(&rest, &rig, Bone::Hips, Bone::LeftFoot);
+            ankle + rotation * c
+        });
+        assert!((tip - rigid[2]).length() < 1.0e-5 && (heel - rigid[0]).length() < 1.0e-5);
+        let facing = crate::character::anim::stance::facing_sign(&rig);
+        let mut bent = rest;
+        bent.set_rotation(Bone::LeftToeBase, Quat::from_axis_angle(KNEE_AXIS, facing * 30f32.to_radians()));
+        let [heel2, ball2, tip2] = sole.points(&bent, &rig);
+        assert!((heel2 - heel).length() < 1.0e-6 && (ball2 - ball).length() < 1.0e-6);
+        let toe = (tip - ball).length();
+        assert!((tip2.y - tip.y - toe * 0.5).abs() < 0.2 * toe * 0.5, "bent 30 degrees, the tip rose {} m of a {toe} m toe", tip2.y - tip.y);
     }
 }

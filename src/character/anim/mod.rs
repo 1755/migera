@@ -87,6 +87,7 @@ pub mod ragdoll_plugin;
 pub mod reference;
 pub mod retarget;
 pub mod rig;
+pub mod run;
 pub mod shuffle;
 pub mod sitting;
 pub mod stance;

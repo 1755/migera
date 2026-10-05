@@ -631,6 +631,32 @@ fn lift_toe_end_out_of_the_ground(
     );
 }
 
+/// Where `chain`'s toe tip (`RigGeometry::toe_end_offset`) is under `pose`,
+/// and its toe joint. `None` for a rig with no toe end.
+pub fn toe_tip(pose: &LocalPose, chain: LegChain, rig: &RigGeometry) -> Option<(Vec3, Vec3)> {
+    let offset = rig.toe_end_offset(chain.toe);
+    if offset.length_squared() < 1.0e-12 {
+        return None;
+    }
+    let toe = forward_kinematics_on(pose, rig)[chain.toe];
+    Some((toe + accumulate_world_rotations(pose, rig)[chain.toe] * offset, toe))
+}
+
+/// Turns `chain`'s toe about its joint so the tip points at `target`: where
+/// a toe pressed on the floor stays as the heel rises over it
+/// (`plugin::AnimFootIk`'s tip locks). The tip keeps the toe's length, so it
+/// lands on the line to the target, short of it or past it by however much
+/// the joint has moved toward or away from it.
+pub fn aim_toe_tip(pose: &mut LocalPose, chain: LegChain, target: Vec3, rig: &RigGeometry) {
+    let Some((tip, toe)) = toe_tip(pose, chain, rig) else { return };
+    let (from, to) = ((tip - toe).normalize_or_zero(), (target - toe).normalize_or_zero());
+    if from == Vec3::ZERO || to == Vec3::ZERO {
+        return;
+    }
+    let frame = world_correction_frame(pose, chain.toe, rig);
+    pose.set_rotation(chain.toe, frame.inverse() * look_rotation(from, to) * frame * pose.rotation(chain.toe));
+}
+
 // `rotation_frame_of` and `parent_frame_of` used to live here — two flavours of
 // change-of-basis for turning a world-space delta into a local one. Neither was
 // right, and they are deliberately gone rather than fixed: under the corrected
@@ -1747,5 +1773,31 @@ mod tests {
             (with_aim - target).length() < (without - target).length(),
             "aiming the foot should land the toe closer to its target",
         );
+    }
+
+    /// A toe tip aimed at a point within the toe's reach lands on it, the
+    /// toe joint and the rest of the leg unmoved; out of reach it lands on
+    /// the line to it, the toe's length kept (a tip lock's target).
+    #[test]
+    fn a_toe_tip_aimed_at_a_point_lands_on_it_or_on_the_line_to_it() {
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
+        let pose = stance(&LocalPose::REST);
+        let chain = LegChain::LEFT;
+        let (tip, toe) = toe_tip(&pose, chain, &rig).expect("puppet_base has toe ends");
+        let reach = (tip - toe).length();
+        // Turned 20 degrees up about the toe joint, sideways axis.
+        let up = toe + Quat::from_axis_angle(rig.left(), -0.35) * (tip - toe);
+        for target in [up, toe + (up - toe) * 1.3] {
+            let mut aimed = pose;
+            aim_toe_tip(&mut aimed, chain, target, &rig);
+            let (now, joint) = toe_tip(&aimed, chain, &rig).unwrap();
+            assert!((joint - toe).length() < 1.0e-6, "the toe joint moved");
+            assert!(((now - joint).length() - reach).abs() < 1.0e-5, "the toe changed length");
+            let on_line = (now - joint).normalize().dot((target - joint).normalize());
+            assert!(on_line > 1.0 - 1.0e-6, "the tip is off the line to its target");
+        }
+        let mut aimed = pose;
+        aim_toe_tip(&mut aimed, chain, up, &rig);
+        assert!((toe_tip(&aimed, chain, &rig).unwrap().0 - up).length() < 1.0e-5);
     }
 }

@@ -95,7 +95,7 @@ impl Periodic {
     /// Least-squares fit of `samples`, taken at equal spacing over one
     /// period starting at phase 0. With equal spacing this is exactly the
     /// discrete Fourier transform truncated to [`HARMONICS`].
-    fn fit(samples: &[f32]) -> Self {
+    pub(crate) fn fit(samples: &[f32]) -> Self {
         let n = samples.len() as f32;
         let mean = samples.iter().sum::<f32>() / n;
         let mut cos = [0.0; HARMONICS];

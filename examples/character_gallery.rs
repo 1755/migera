@@ -694,7 +694,9 @@ fn controls_panel(
             });
 
             ui.add(
-                egui::Slider::new(&mut idle_cfg.speed, 0.0..=3.0)
+                // Up to a fast run (`character::anim::run`): egui clamps a
+                // scheduled speed to the slider's range.
+                egui::Slider::new(&mut idle_cfg.speed, 0.0..=6.0)
                     .text("Gait speed (m/s)"),
             );
             ui.add(

@@ -311,6 +311,72 @@ impl WalkCycle {
         }
     }
 
+    /// Bends a swinging foot's toes up as far as lifts the tip
+    /// [`swing_clearance`] off the floor, and no further, on the finished
+    /// walking pose at `phase`, rising from wherever the tip left the floor.
+    ///
+    /// Held rigid, the tip was 25-31 mm under the floor through pre-swing
+    /// (the ball 8-10 mm up: the toes are bending, Winter's toe marker stays
+    /// down there) and still 22 mm under early in swing; the foot IK, holding
+    /// it out, dragged it 60-75 mm along the floor (200 mm at 1.85 m/s).
+    ///
+    /// In swing only. Conformed to the floor through stance as well, the
+    /// tip slid along it (7 mm a pre-swing at 1 m/s, 18 at 1.6) and root
+    /// motion, which follows the contacts, stepped 0.16 m/s as it left; the
+    /// support model is built on the rigid foot. In stance the foot IK lifts
+    /// the tip out of the floor and holds it where it came down
+    /// (`plugin::AnimFootIk::tips`). Not by the foot's pitch either
+    /// (`foot::toe_bend`, the run's): bent by the pitch, a tip carrying the
+    /// body rose off the floor and the foot floated 9.6 mm. On the finished
+    /// pose, not inside [`Self::pose_legs`]: the thigh correction and the
+    /// pelvis fit are built on the rigid foot's contacts, and rebuilt on a
+    /// bent one they moved. Solved by bisection between straight and
+    /// [`super::foot::TOE_BEND`]: a one-sided Newton step overshot and left
+    /// the tip 7 mm up.
+    pub fn conform_toes(&self, pose: &mut LocalPose, base: &LocalPose, rig: &RigGeometry, phase: f32, facing: f32) {
+        let risen = pose.root_translation.y - base.root_translation.y;
+        for (leg, &(shift, _, _, ankle)) in LEGS.iter().enumerate() {
+            let toes = super::foot::foot_bones(ankle).1;
+            let heights = |pose: &LocalPose| self.soles[leg].points(pose, rig).map(|p| risen + p.y - self.ground[leg]);
+            let [_, _, tip] = heights(pose);
+            let LegPhase::Swing { progress } = gait::leg_phase(phase + shift, self.duty_factor) else {
+                continue;
+            };
+            // Up to the clearance, rising from wherever the tip left the
+            // floor: at toe-off it may be well under it, and lifted there at
+            // once the toe would jump.
+            let x = (progress / TOE_LIFT_BY).min(1.0);
+            let target = swing_clearance(progress).min(tip + TOE_SWING_LIFT * x * (2.0 - x));
+            // Eased onto its least height rather than clamped at it, so the
+            // bend starts without a corner.
+            let wanted = gait::soft_floor(tip, target, TOE_CONFORM_SOFTNESS);
+            if wanted - tip < 1.0e-5 {
+                continue;
+            }
+            let start = pose.rotations[toes];
+            let tip_at = |bend: f32| {
+                let mut probe = *pose;
+                probe.rotations[toes] = start * Quat::from_axis_angle(KNEE_AXIS, facing * bend);
+                heights(&probe)[2]
+            };
+            let (mut low, mut high) = (0.0, super::foot::TOE_BEND);
+            if tip_at(high) <= wanted {
+                low = high;
+            } else {
+                for _ in 0..20 {
+                    let mid = 0.5 * (low + high);
+                    if tip_at(mid) < wanted {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+            }
+            let bend = 0.5 * (low + high);
+            pose.rotations[toes] = start * Quat::from_axis_angle(KNEE_AXIS, facing * bend);
+        }
+    }
+
     /// The thigh correction for `leg` at `phase`: periodic Catmull-Rom over
     /// the table, so the correction has no corner anywhere in the cycle.
     fn correction_at(&self, leg: usize, phase: f32) -> f32 {
@@ -426,6 +492,34 @@ impl WalkCycle {
         }
     }
 }
+
+/// Over how much height the tip is eased onto the floor by
+/// [`WalkCycle::conform_toes`], metres.
+const TOE_CONFORM_SOFTNESS: f32 = 0.0007;
+
+/// How far [`WalkCycle::conform_toes`] lifts a swinging tip at most over
+/// where it left the floor, by [`TOE_LIFT_BY`] of the swing, metres.
+const TOE_SWING_LIFT: f32 = 0.05;
+
+/// How far a walking foot's sole keeps off the floor at `progress` through
+/// its swing, at least, metres: off at once after toe-off, rising `x(2 - x)`
+/// to [`TOE_CLEARANCE`] over the first [`TOE_LIFT_BY`] of the swing, and
+/// down to the floor for the landing as `clear_swinging_feet` sets it.
+///
+/// Kept on the pose ([`WalkCycle::conform_toes`]) and again on the rendered
+/// foot (`plugin::AnimFootIk::clear`): the legs' springs trail a foot
+/// pitching fast at toe-off, as a run's do (`run::swing_clearance`).
+pub fn swing_clearance(progress: f32) -> f32 {
+    if progress < 0.5 {
+        let x = (progress / TOE_LIFT_BY).min(1.0);
+        TOE_CLEARANCE * x * (2.0 - x)
+    } else {
+        TOE_CLEARANCE * gait::smoothstep((1.0 - progress) / 0.2)
+    }
+}
+
+/// How much of the swing a walking foot takes to reach [`TOE_CLEARANCE`].
+const TOE_LIFT_BY: f32 = 0.15;
 
 /// The least a swinging foot clears the ground by, metres: Winter's measured
 /// minimum toe clearance, 1.52 cm (Problem 3.6-4 on Tables A.2(d)), late in
@@ -559,4 +653,43 @@ fn key_of(params: &GaitParams, amplitude: f32, base: &LocalPose, rig: &RigGeomet
         feed(&v.to_array());
     }
     hasher.finish()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character::anim::gait::walk_pose_on;
+
+    /// A walking toe tip leaves the floor at once after toe-off and keeps
+    /// [`swing_clearance`] off it through the swing ([`WalkCycle::conform_toes`]).
+    /// Rigid, it was 22 mm under the floor early in swing at 0.7 m/s.
+    /// Through stance the walk's own foot is untouched.
+    #[test]
+    fn a_walking_toe_swings_clear_of_the_floor() {
+        use crate::character::anim::stance::{stance_on_rig, DEFAULT_KNEE_FLEX};
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let sole = Sole::of(&rig, Bone::LeftFoot);
+        let ground = lowest(&sole.points(&stood, &rig));
+        for speed in [0.7f32, 1.2, 1.6] {
+            let params = GaitParams::walking_on(speed, &rig);
+            let gait::LegCurves::Measured { amplitude } = params.curves else { panic!("a measured walk") };
+            let cycle = walk_cycle(&params, amplitude, &stood, &rig);
+            let facing = crate::character::anim::stance::facing_sign(&rig);
+            for i in 0..200 {
+                let p = i as f32 / 200.0;
+                let pose = walk_pose_on(p, &params, &stood, &rig);
+                let tip = pose.root_translation.y - stood.root_translation.y + sole.points(&pose, &rig)[2].y - ground;
+                match gait::leg_phase(p, params.duty_factor) {
+                    LegPhase::Swing { progress } if (0.15..0.85).contains(&progress) => {
+                        assert!(tip > 0.9 * swing_clearance(progress) - 5.0e-4, "{speed} m/s, phase {p}: the swinging tip only {} mm up", tip * 1e3);
+                    }
+                    LegPhase::Stance { .. } => {
+                        let rigid = cycle.pose(&stood, &rig, p, facing);
+                        assert_eq!(pose.rotations[Bone::LeftToeBase], rigid.rotations[Bone::LeftToeBase], "{speed} m/s: a stance toe bent at {p}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
