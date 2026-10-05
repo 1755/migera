@@ -41,6 +41,69 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Jumping forward from a stand
+
+`Walker::jump` takes a `JumpAsk { height, distance }`. The gallery's Jump
+button has a distance slider, and `--jump-at T:H:D` schedules one.
+`anim_bench --gait jump --distance D` measures one. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md).
+
+- **The way forward** (`Jump::com_ahead_at`):
+  - pushed from rest over the last 0.5 s before take-off, from the second
+    half of the countermovement;
+  - one speed through the air;
+  - braked to rest over the landed feet.
+  - The flight speed and the braking are set by where the take-off and
+    touchdown shapes put the COM, so the path meets them exactly.
+  - Too far for a 3.43 m/s take-off, it jumps as far as that reaches.
+- **Root motion:** the COM's travel moves the entity through
+  `Stride::stepped`, and the pose is posed back by it. The landing pins add
+  the frame's travel, which the locks take off; without it the feet came
+  down 38 mm short at 2.3 m/s.
+- **A long jump's shape:**
+  - the trunk leans with the speed;
+  - the heels rise to 34° at 2.85 m/s (20° straight up);
+  - the arms and the crouch are sized by the take-off's kinetic height;
+  - in flight each foot is raised until its leg reaches it, so it lifts
+    behind and comes down onto its spot (the knees snapped straight).
+- **Against Wakai & Linthorne 2005** (their jumper of our build):
+  - leaving, the toe→COM line is 59° up (60° measured), the COM 0.54 m
+    ahead at 0.91 m up (0.57-0.72 at 0.92-1.04);
+  - landing, the COM is 0.11 m behind the heels (0.16-0.21).
+  - Pushed forward only from the bottom, it left at 77°.
+- **Dead ends:**
+  - Iterating the plan to agreement: the passes swung 7-36 mm, and the
+    landing knee jumped 15° → 49°.
+  - A crouch sized by height alone: a 0.14 s push at 2.6 body weights.
+  - The landing's depth limited below touchdown: knees at 135°, now 117°.
+- **Tests:**
+  - `a_jump_forward_lands_its_feet_as_far_as_asked`;
+  - `a_jump_forward_flies_on_at_one_speed_and_the_floor_can_hold_it`
+    (grip under 0.8, under 2.6 body weights, the root only ever forward);
+  - `a_jump_forwards_knees_fold_as_a_jumpers_do`;
+  - `a_long_jump_leaves_leaning_out_over_its_toes`;
+  - `too_far_is_planned_as_far_as_the_fastest_take_off_reaches`;
+  - the led and landing-pin tests also run forward.
+  - Sabotaged, three fail: unpinned travel (38 mm), the estimated speed
+    (knee 25° → 14°), and the root running backward.
+- **Live**, `--jump-at 2:0.25:1.5,7:0.1:0.5`:
+  - the feet land 1.507 and 0.503 m from where they left;
+  - nothing under the floor;
+  - the pelvis falls at −9.8 m/s² in flight;
+  - the feet slow from 46 to 10 mm a frame along the way as they come
+    down.
+- **Seen:** Left and Front, gizmos on:
+  - a deep crouch with the knees over the toes;
+  - take-off leaning out over the toes, heels up;
+  - the legs trail, fold and swing through;
+  - landing feet first ahead, then a deep squat;
+  - Front: legs symmetric and parallel throughout.
+- **Cost:** 57 µs a character a frame forward, 53 straight up. Over-stepped
+  up as well as across, the flight solve rang, at 60 µs.
+- **Known gap:** a long jumper lands in a deep pike, the COM 0.59 m up.
+  Ours touches down higher on the forefoot, so at their take-off speed it
+  jumps 1.97 m, not 2.33.
+
 ### The jump: take-off height, arms led ahead of their springs, bent elbows, clean landings
 
 - **Take-off height:** split on `puppet_base`, the heels carry 0.094 m of

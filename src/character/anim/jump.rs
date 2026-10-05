@@ -1,5 +1,6 @@
-//! Jumping from a stand, planned as the body's centre of mass moving under
-//! the forces a person can put through the floor.
+//! Jumping from a stand, up and forward ([`JumpAsk`]), planned as the
+//! body's centre of mass moving under the forces a person can put through
+//! the floor.
 //!
 //! A countermovement jump (McMahon et al. 2018: unweighting, braking,
 //! propulsion, flight, landing) is planned once, from the height asked, as
@@ -22,9 +23,15 @@
 //! raise the COM in the body, and the pelvis then rises less for it, as a
 //! real jumper's does (Lees et al. 2004).
 //!
-//! Feet that are down stay where they stood. Their heels rise about the
-//! toe tips only when the legs, straight, can no longer reach them, as in
-//! the end of a real push.
+//! Feet that are down stay where they stood, and land `distance` ahead.
+//! Their heels rise about the toe tips through the push and come down
+//! through the landing.
+//!
+//! Forward, the COM is pushed ahead with the rise along one straight line,
+//! flies on at one speed, and is braked to rest over the landed feet
+//! ([`Jump::com_ahead_at`]). Its travel is the character's root motion
+//! ([`Jump::travelled_at`]): the pose is posed that far back, so the COM
+//! stays over the root.
 
 use bevy::math::{Quat, Vec3};
 
@@ -93,6 +100,18 @@ pub const RECOVERY_ACCELERATION: f32 = (1.0 - LEAST_LOAD) * GRAVITY;
 /// of the measured COM.
 pub const HEEL_RISE: f32 = 0.35;
 
+/// How far the heels have risen leaving the floor in a long jump, radians
+/// (34°), at [`LONG_JUMP_SPEED`] forward; between that and [`HEEL_RISE`] in
+/// proportion to the speed. Leaning out over the toes at a vertical jump's
+/// 20°, the body reached 1.02 m from the toes to the COM against the 1.14 m
+/// of Wakai & Linthorne's jumper of our build, left 0.2 m below standing,
+/// and could not fly back up to its touchdown.
+pub const LONG_JUMP_HEEL_RISE: f32 = 0.6;
+
+/// A long jump's speed forward leaving the floor, m/s: Wakai & Linthorne
+/// 2005's jumper of our build, 3.4 m/s at 33°.
+pub const LONG_JUMP_SPEED: f32 = 2.85;
+
 /// How far short of straight the knees stay at take-off, radians: "near
 /// full extension".
 pub const KNEE_AT_TAKEOFF: f32 = 0.12;
@@ -144,6 +163,26 @@ pub const LANDING_KNEE: f32 = 0.26;
 /// height.
 pub const TUCK_PER_HEIGHT: f32 = 0.15;
 
+/// The fastest a jump leaves the floor, m/s, up and forward together: as
+/// fast as the highest jump ([`HIGHEST`]) goes up. Standing long jumps
+/// leave at 3.2-3.6 m/s (Wakai & Linthorne 2005); a farther jump than that
+/// allows is planned only as far as it does.
+pub const FASTEST: f32 = 3.43;
+
+/// How long the floor pushes the body forward, seconds, ending as it
+/// leaves: from the second half of the countermovement, the jumper rocking
+/// forward over the toes. Pushed forward only from the bottom, the COM left
+/// 0.3 m ahead of where it stood, the body near upright; standing long
+/// jumpers leave with it 0.57-0.72 m ahead of the toes, the line from the
+/// toes to it 60° from the floor (Wakai & Linthorne 2005). At their 2.85
+/// m/s forward this puts it 0.6 m ahead of the toes.
+pub const FORWARD_PUSH: f32 = 0.5;
+
+/// How far the whole body leans forward, radians per m/s it travels
+/// forward: about 30° leaving the floor at 2.5 m/s, the body near a line
+/// from the toes along the push.
+pub const LEAN_PER_SPEED: f32 = 0.2;
+
 /// The most a bone is led ahead of its spring, seconds: the trunk's and
 /// head's soft springs lag 0.4-0.5 s, and led that far they would turn
 /// ahead of the jump's own phases.
@@ -157,6 +196,21 @@ pub fn lead_of(spring: &SpringParams) -> f32 {
     (2.0 * spring.damping_ratio / spring.decay_rate()).min(MOST_LEAD)
 }
 
+/// A jump asked for: how high, metres of the COM's rise above take-off, and
+/// how far, metres the feet land ahead of where they stood (0 straight up).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct JumpAsk {
+    pub height: f32,
+    pub distance: f32,
+}
+
+impl JumpAsk {
+    /// Straight up, `height` metres.
+    pub fn up(height: f32) -> Self {
+        Self { height, distance: 0.0 }
+    }
+}
+
 /// Where a jump is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JumpPhase {
@@ -167,13 +221,14 @@ pub enum JumpPhase {
     Recover,
 }
 
-/// The legs of a pose: down on the feet where they stood, the heels risen
-/// `heel` about the toe tips, and further if the knees need it to stay
-/// `knee` short of straight; or free in the air with each ankle
-/// hips-relative and the feet pitched toe-down by an angle.
+/// The legs of a pose: down on the feet where they stood (or `on` metres
+/// ahead, landed), the heels risen `heel` about the toe tips, and further
+/// if the knees need it to stay `knee` short of straight; or free in the
+/// air with each ankle hips-relative and the feet pitched toe-down by an
+/// angle.
 #[derive(Debug, Clone, Copy)]
 enum Legs {
-    Down { knee: f32, heel: f32 },
+    Down { knee: f32, heel: f32, on: f32 },
     Free { ankles: [Vec3; 2], pitch: f32 },
 }
 
@@ -192,10 +247,11 @@ enum Aim {
 /// proximal-to-distal order of a jump): the heels rise over its last 60 %.
 /// Risen only once the legs were straight, they rose in the push's last
 /// two frames, and the sprung legs hitched the pelvis at take-off (357 m/s²
-/// live). Landing, they come down over its first 40 %.
-fn heel_at(phase: JumpPhase, u: f32) -> f32 {
+/// live). Landing, they come down over its first 40 %. `rise` is how far
+/// they have risen leaving ([`Jump::rise`]).
+fn heel_at(phase: JumpPhase, u: f32, rise: f32) -> f32 {
     match phase {
-        JumpPhase::Push => HEEL_RISE * smoothstep((u - 0.4) / 0.6),
+        JumpPhase::Push => rise * smoothstep((u - 0.4) / 0.6),
         JumpPhase::Land => LANDING_HEEL * (1.0 - smoothstep(u / 0.4)),
         _ => 0.0,
     }
@@ -237,8 +293,26 @@ pub struct Jump {
     leaving_at: [Vec3; 2],
     meeting_at: [Vec3; 2],
     tuck: f32,
+    /// How far the heels have risen about the toe tips leaving, radians:
+    /// [`HEEL_RISE`], further the faster it goes forward
+    /// ([`LONG_JUMP_HEEL_RISE`]).
+    rise: f32,
     /// How much of the full arm swing it takes, 0-1 ([`FULL_ARMS`]).
     arms: f32,
+    /// The COM's speed forward through the air, m/s, and how far ahead the
+    /// feet land, metres.
+    speed: f32,
+    distance: f32,
+    /// The speed the shapes were leant and swung for (the plan's estimate
+    /// of `speed`): the poses lean as the take-off and touchdown shapes
+    /// were solved, or the legs, solved to just reach, come up short.
+    pace: f32,
+    /// The COM along the rig's forward as it leaves the floor and as it
+    /// touches down, in the standing hips' frame; and how long the landing
+    /// brakes it to rest over the feet, seconds.
+    left: f32,
+    touched: f32,
+    braking: f32,
     feet: Feet,
 }
 
@@ -297,14 +371,25 @@ fn com_of(pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
 }
 
 impl Jump {
-    /// A jump `height` metres high (the COM's rise above take-off), from
-    /// standing in `stood`. Clamped to [`HIGHEST`].
-    pub fn plan(height: f32, stood: &LocalPose, rig: &RigGeometry) -> Self {
-        let height = height.clamp(0.02, HIGHEST);
+    /// A jump as `ask`ed, from standing in `stood`: its height clamped to
+    /// [`HIGHEST`], and its distance to what leaving at [`FASTEST`] reaches.
+    ///
+    /// Forward, the COM is pushed ahead at constant acceleration along with
+    /// the rise, so the push is one straight line, the floor's force one
+    /// direction; it flies at constant speed, and the landing brakes it to
+    /// rest over the feet as it absorbs the fall. The feet land `distance`
+    /// ahead, the COM leaving ahead of where it stood by half the push's
+    /// travel and touching down behind where it stands landed by half the
+    /// landing's: `distance = speed·(push/2 + flight + land/2)`. The times
+    /// hang on the shapes the body leaves and meets the floor in, which
+    /// hang on the speed, so the plan is worked out a few times over.
+    pub fn plan(ask: JumpAsk, stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let height = ask.height.clamp(0.02, HIGHEST);
         let feet = Feet::of(stood, rig);
         let com = com_of(stood, stood, rig);
         let stand = (com.dot(rig.forward()), com.y);
-        let depth = (height * DEPTH_PER_HEIGHT).clamp(DEPTHS.0, DEPTHS.1);
+        let mut depth = (height * DEPTH_PER_HEIGHT).clamp(DEPTHS.0, DEPTHS.1);
+        let up = (2.0 * GRAVITY * height).sqrt();
         let mut jump = Self {
             t: 0.0,
             ends: [0.0; 5],
@@ -313,57 +398,114 @@ impl Jump {
             takeoff: stand.1,
             touchdown: stand.1,
             lowest: stand.1 - depth,
-            up: (2.0 * GRAVITY * height).sqrt(),
+            up,
             down: 0.0,
             leaving: feet.ankles,
             meeting: feet.ankles,
             leaving_at: feet.ankles,
             meeting_at: feet.ankles,
             tuck: height * TUCK_PER_HEIGHT,
-            arms: (height / FULL_ARMS).min(1.0).powi(2),
+            rise: HEEL_RISE,
+            arms: 0.0,
+            speed: 0.0,
+            distance: 0.0,
+            pace: 0.0,
+            left: stand.0,
+            touched: stand.0,
+            braking: 0.0,
             feet,
         };
+        let asked = ask.distance.max(0.0);
+        let passes = if asked > 0.0 { 6 } else { 1 };
+        for pass in 0..passes {
+            // The arms swing as hard as the body leaves: up and forward.
+            let effort = height + jump.pace * jump.pace / (2.0 * GRAVITY);
+            jump.arms = (effort / FULL_ARMS).min(1.0).powi(2);
+            // And crouches as deep: sized by its height alone, a long jump,
+            // leaving low over its toes, had 0.15 m to push through and
+            // pushed in 0.14 s at 2.6 body weights, its arms 26° behind.
+            depth = (effort * DEPTH_PER_HEIGHT).clamp(DEPTHS.0, DEPTHS.1);
+            jump.bottom = stand.1 - depth;
+            let land = jump.ends[3] - jump.ends[2];
+            let (ahead, behind) = (0.5 * jump.pace * jump.pushing_forward(), 0.5 * jump.pace * land);
+            let pace = jump.pace;
+            let lean = move |below: f32| (LEAN_PER_DEPTH * below.max(0.0) + LEAN_PER_SPEED * pace).min(MOST_LEAN);
 
-        // Take-off: on the toes, legs all but straight, arms up.
-        let leaving = jump.upper(stood, rig, 0.0, jump.arm_shape(ARMS_UP));
-        let leaving = jump.solved(&leaving, stood, rig, stand.0, Aim::Reach { heel: HEEL_RISE, knee: KNEE_AT_TAKEOFF });
-        jump.takeoff = com_of(&leaving, stood, rig).y;
-        jump.leaving = LEGS.map(|(_, _, ankle)| offset_from(&leaving, rig, Bone::Hips, ankle));
-        jump.leaving_at = jump.leaving.map(|ankle| ankle + hips_of(&leaving, stood));
-        // Touchdown: on the forefoot, knees a little bent, arms ahead; its
-        // trunk leaning as its COM's height asks, should that be below
-        // standing.
-        let mut lean = 0.0;
-        for _ in 0..2 {
-            let meeting = jump.upper(stood, rig, lean, jump.arm_shape(ARMS_LANDING));
-            let meeting = jump.solved(&meeting, stood, rig, stand.0, Aim::Reach { heel: LANDING_HEEL, knee: LANDING_KNEE });
-            jump.touchdown = com_of(&meeting, stood, rig).y;
-            jump.meeting = LEGS.map(|(_, _, ankle)| offset_from(&meeting, rig, Bone::Hips, ankle));
-            jump.meeting_at = jump.meeting.map(|ankle| ankle + hips_of(&meeting, stood));
-            lean = (LEAN_PER_DEPTH * (stand.1 - jump.touchdown).max(0.0)).min(MOST_LEAN);
+            // Take-off: on the toes, legs all but straight, arms up.
+            let leaving = jump.upper(stood, rig, lean(0.0), jump.arm_shape(ARMS_UP));
+            jump.rise = HEEL_RISE + (LONG_JUMP_HEEL_RISE - HEEL_RISE) * (jump.pace / LONG_JUMP_SPEED).min(1.0);
+            let leaving = jump.solved(&leaving, stood, rig, stand.0 + ahead, Aim::Reach { heel: jump.rise, knee: KNEE_AT_TAKEOFF }, 0.0);
+            jump.takeoff = com_of(&leaving, stood, rig).y;
+            jump.left = com_of(&leaving, stood, rig).dot(rig.forward());
+            jump.leaving = LEGS.map(|(_, _, ankle)| offset_from(&leaving, rig, Bone::Hips, ankle));
+            jump.leaving_at = jump.leaving.map(|ankle| ankle + hips_of(&leaving, stood));
+            // Touchdown: on the forefoot, knees a little bent, arms ahead;
+            // its trunk leaning as its COM's height asks, should that be
+            // below standing. Settled to the lean the landing then poses:
+            // a few millimetres apart, the landing's first frame asked the
+            // COM higher than the legs reach, and its knees snapped straight.
+            let mut leaning = lean(0.0);
+            for _ in 0..5 {
+                let meeting = jump.upper(stood, rig, leaning, jump.arm_shape(ARMS_LANDING));
+                let aim = Aim::Reach { heel: LANDING_HEEL, knee: LANDING_KNEE };
+                let meeting = jump.solved(&meeting, stood, rig, stand.0 + jump.distance - behind, aim, jump.distance);
+                jump.touchdown = com_of(&meeting, stood, rig).y;
+                jump.touched = com_of(&meeting, stood, rig).dot(rig.forward());
+                jump.meeting = LEGS.map(|(_, _, ankle)| offset_from(&meeting, rig, Bone::Hips, ankle));
+                jump.meeting_at = jump.meeting.map(|ankle| ankle + hips_of(&meeting, stood));
+                leaning = lean(stand.1 - jump.touchdown);
+            }
+
+            // Down: Hermite at rest both ends; its steepest acceleration is
+            // 6·depth/T² at the start, held to unloading the floor to LEAST_LOAD.
+            let down_time = QUICKEST_DOWN.max((6.0 * depth / ((1.0 - LEAST_LOAD) * GRAVITY)).sqrt());
+            // Push: from rest at constant acceleration to `up` over the path.
+            let path = jump.takeoff - jump.bottom;
+            let push_time = 2.0 * path / jump.up;
+            // Flight: from take-off height to touchdown height.
+            let drop = jump.takeoff - jump.touchdown;
+            // Touching down at the apex at the most: a take-off lower than
+            // the touchdown by more than it rises has no way down to it.
+            let flight_time = (jump.up + (jump.up * jump.up + 2.0 * GRAVITY * drop).max(0.0).sqrt()) / GRAVITY;
+            jump.down = GRAVITY * flight_time - jump.up;
+            // Land: constant deceleration to rest, no deeper than
+            // DEEPEST_LANDING below where it touched down, nor below
+            // standing: a jump forward touches down with its feet ahead,
+            // already low, and taken the whole depth below that, its knees
+            // folded to 135°.
+            let deepest = DEEPEST_LANDING - (stand.1 - jump.touchdown).max(0.0);
+            let absorb = (jump.down * jump.down / (2.0 * LANDING_DECELERATION)).min(deepest);
+            jump.lowest = jump.touchdown - absorb;
+            let land_time = 2.0 * absorb / jump.down;
+            // Recover: Hermite at rest both ends, steepest at its start.
+            let rise = stand.1 - jump.lowest;
+            let recover_time = QUICKEST_DOWN.max((6.0 * rise / RECOVERY_ACCELERATION).sqrt());
+            let mut end = 0.0;
+            for (slot, span) in [down_time, push_time, flight_time, land_time, recover_time].into_iter().enumerate() {
+                end += span;
+                jump.ends[slot] = end;
+            }
+
+            // The speed that covers the distance in these times, for the
+            // next pass's shapes.
+            if pass + 1 < passes {
+                let span = 0.5 * jump.pushing_forward() + flight_time + 0.5 * land_time;
+                jump.pace = (asked / span).min((FASTEST * FASTEST - up * up).max(0.0).sqrt());
+                jump.distance = jump.pace * span;
+            }
         }
-
-        // Down: Hermite at rest both ends; its steepest acceleration is
-        // 6·depth/T² at the start, held to unloading the floor to LEAST_LOAD.
-        let down_time = QUICKEST_DOWN.max((6.0 * depth / ((1.0 - LEAST_LOAD) * GRAVITY)).sqrt());
-        // Push: from rest at constant acceleration to `up` over the path.
-        let path = jump.takeoff - jump.bottom;
-        let push_time = 2.0 * path / jump.up;
-        // Flight: from take-off height to touchdown height.
-        let drop = jump.takeoff - jump.touchdown;
-        let flight_time = (jump.up + (jump.up * jump.up + 2.0 * GRAVITY * drop).sqrt()) / GRAVITY;
-        jump.down = GRAVITY * flight_time - jump.up;
-        // Land: constant deceleration to rest.
-        let absorb = (jump.down * jump.down / (2.0 * LANDING_DECELERATION)).min(DEEPEST_LANDING);
-        jump.lowest = jump.touchdown - absorb;
-        let land_time = 2.0 * absorb / jump.down;
-        // Recover: Hermite at rest both ends, steepest at its start.
-        let rise = stand.1 - jump.lowest;
-        let recover_time = QUICKEST_DOWN.max((6.0 * rise / RECOVERY_ACCELERATION).sqrt());
-        let mut end = 0.0;
-        for (slot, span) in [down_time, push_time, flight_time, land_time, recover_time].into_iter().enumerate() {
-            end += span;
-            jump.ends[slot] = end;
+        // The last pass's shapes are the plan's, and the way forward is made
+        // to meet them exactly: the speed through the air is where they put
+        // the COM, and the landing brakes it to rest over the feet in its
+        // own time. Worked out to agree only by the passes, the landing's
+        // first frame had the COM 19 mm off the shape it was solved in, and
+        // the knees jumped from 15° to 49°.
+        if asked > 0.0 {
+            jump.speed = (jump.touched - jump.left) / (jump.ends[2] - jump.ends[1]);
+            let behind = (stand.0 + jump.distance - jump.touched).max(1.0e-3);
+            jump.braking = 2.0 * behind / jump.speed.max(1.0e-3);
+        } else {
+            (jump.left, jump.touched) = (stand.0, stand.0);
         }
         jump
     }
@@ -424,6 +566,60 @@ impl Jump {
         }
     }
 
+    /// The COM's planned way forward `t` seconds in, in the standing hips'
+    /// frame (along the rig's forward): still through the countermovement,
+    /// pushed ahead from rest to its speed in the air (at constant
+    /// acceleration, as near as the shapes allow), at constant speed in the
+    /// air, and braked at constant deceleration from touchdown to rest over
+    /// the landed feet.
+    pub fn com_ahead_at(&self, t: f32) -> f32 {
+        let [_, push, flight, ..] = self.ends;
+        let speed = self.speed;
+        match self.phase_at(t) {
+            JumpPhase::Down | JumpPhase::Push => {
+                // From rest to `speed`, `left` ahead, over the last
+                // [`FORWARD_PUSH`] before take-off: Hermite, which is
+                // constant acceleration when `left` is half that time's
+                // travel at that speed.
+                let span = self.pushing_forward();
+                hermite(self.stand.0, self.left, 0.0, speed * span, ((t - (push - span)) / span).clamp(0.0, 1.0))
+            }
+            JumpPhase::Flight => self.left + speed * (t - push).max(0.0),
+            JumpPhase::Land | JumpPhase::Recover => {
+                let s = (t - flight).clamp(0.0, self.braking);
+                self.touched + speed * s - 0.5 * (speed / self.braking.max(1.0e-6)) * s * s
+            }
+        }
+    }
+
+    /// How long the floor pushes the body forward before it leaves, seconds:
+    /// [`FORWARD_PUSH`], or from the start if the jump leaves sooner.
+    fn pushing_forward(&self) -> f32 {
+        FORWARD_PUSH.min(self.ends[1])
+    }
+
+    /// How far forward the COM has gone `t` seconds in, metres: the travel
+    /// handed to root motion. The pose is posed that far back from its plan,
+    /// so its COM stays over the character's root.
+    pub fn travelled_at(&self, t: f32) -> f32 {
+        self.com_ahead_at(t) - self.stand.0
+    }
+
+    /// [`Self::travelled_at`] now.
+    pub fn travelled(&self) -> f32 {
+        self.travelled_at(self.t)
+    }
+
+    /// How far ahead the feet land, metres.
+    pub fn distance(&self) -> f32 {
+        self.distance
+    }
+
+    /// The COM's speed forward in the air, m/s.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
     /// Whether both feet are in the air.
     pub fn airborne(&self) -> bool {
         self.phase() == JumpPhase::Flight
@@ -440,8 +636,16 @@ impl Jump {
     /// `t` seconds in.
     fn shape_at(&self, t: f32) -> (f32, (f32, f32)) {
         let below = (self.stand.1 - self.com_height_at(t)).max(0.0);
-        let lean = (LEAN_PER_DEPTH * below).min(MOST_LEAN);
         let u = self.progress_at(t);
+        // Going forward, the body leans along the push from the bottom of
+        // the countermovement until the landing has braked it.
+        let along = match self.phase_at(t) {
+            JumpPhase::Down => smoothstep(u),
+            JumpPhase::Push | JumpPhase::Flight => 1.0,
+            JumpPhase::Land => 1.0 - smoothstep(u),
+            JumpPhase::Recover => 0.0,
+        };
+        let lean = (LEAN_PER_DEPTH * below + LEAN_PER_SPEED * self.speed * along).min(MOST_LEAN);
         // Each pair is (swing, elbow), from one held arm shape to the next.
         let between = |from: (f32, f32), to: (f32, f32), s: f32| (from.0 + (to.0 - from.0) * s, from.1 + (to.1 - from.1) * s);
         let arms = match self.phase_at(t) {
@@ -466,10 +670,11 @@ impl Jump {
         let u = self.progress_at(t);
         let (lean, arms) = self.shape_at(t);
         let upper = self.upper(stood, rig, lean, arms);
-        if self.phase_at(t) == JumpPhase::Flight {
+        let ahead = self.com_ahead_at(t);
+        let mut pose = if self.phase_at(t) == JumpPhase::Flight {
             let blend = smoothstep(u);
             let tuck = Vec3::Y * self.tuck * (std::f32::consts::PI * u).sin();
-            let pitch = HEEL_RISE + (LANDING_HEEL - HEEL_RISE) * blend;
+            let pitch = self.rise + (LANDING_HEEL - self.rise) * blend;
             // Each ankle's height under the hips from its shape, but its
             // way across the floor held in the world, from where it left to
             // where it lands: the pelvis moves under the arms' swing to keep
@@ -479,28 +684,51 @@ impl Jump {
             let ways = [0, 1].map(|i| across(self.leaving_at[i].lerp(self.meeting_at[i], blend)));
             let mut root = upper.root_translation;
             let mut pose = upper;
-            for _ in 0..6 {
+            for _ in 0..8 {
                 let mut trial = upper;
                 trial.root_translation = root;
                 let hips = hips_of(&trial, stood);
+                // Going forward the hips fly on over feet whose way starts
+                // and ends at rest: just after take-off a foot trails out of
+                // the leg's reach, and just before touchdown it is out of
+                // reach ahead. Raised until the leg reaches it (its knee as
+                // bent as it leaves or meets the floor), it lifts behind
+                // and comes down onto its spot, as a jumper's does.
+                let knee = KNEE_AT_TAKEOFF + (LANDING_KNEE - KNEE_AT_TAKEOFF) * blend;
                 let ankles = [0, 1].map(|i| {
                     let shape = self.leaving[i].lerp(self.meeting[i], blend) + tuck;
-                    ways[i] - across(hips) + Vec3::Y * shape.y
+                    let ankle = ways[i] - across(hips) + Vec3::Y * shape.y;
+                    let socket = offset_from(&trial, rig, Bone::Hips, LEGS[i].0);
+                    let (reach, out) = (self.feet.reach(i, knee), ankle - socket);
+                    let level = across(out).length_squared();
+                    if out.length_squared() > reach * reach && level < reach * reach {
+                        socket + across(out) - Vec3::Y * (reach * reach - level).sqrt()
+                    } else {
+                        ankle
+                    }
                 });
                 pose = self.legs(&trial, stood, rig, Legs::Free { ankles, pitch });
-                // Nothing holds it: the whole body moves with the COM.
+                // Nothing holds it: the whole body moves with the COM, all
+                // but the feet's way across, held in the world. Stepped
+                // across by the miss alone, a jump forward's COM left 1.7 mm
+                // off its path, the lifted legs staying behind; stepped up
+                // by more, the feet riding with the hips, it rang.
                 let com = com_of(&pose, stood, rig);
-                let miss = rig.forward() * (self.stand.0 - com.dot(rig.forward())) + Vec3::Y * (height - com.y);
-                if miss.length() < 1.0e-6 {
+                let (across_miss, up_miss) = (ahead - com.dot(rig.forward()), height - com.y);
+                if across_miss.hypot(up_miss) < 1.0e-5 {
                     break;
                 }
-                root += miss;
+                root += rig.forward() * (across_miss / 0.85) + Vec3::Y * up_miss;
             }
             pose
         } else {
             let phase = self.phase_at(t);
-            self.solved(&upper, stood, rig, self.stand.0, Aim::Height { height, knee: least_knee(phase), heel: heel_at(phase, u) })
-        }
+            let on = if matches!(phase, JumpPhase::Land | JumpPhase::Recover) { self.distance } else { 0.0 };
+            self.solved(&upper, stood, rig, ahead, Aim::Height { height, knee: least_knee(phase), heel: heel_at(phase, u, self.rise) }, on)
+        };
+        // Its travel is the root's ([`Self::travelled_at`]).
+        pose.root_translation -= rig.forward() * (ahead - self.stand.0);
+        pose
     }
 
     /// Where its plan has each foot now, in the pose's frame: its ball
@@ -604,10 +832,10 @@ impl Jump {
         pose
     }
 
-    /// `upper` standing on its feet with its COM at `ahead` along the
-    /// rig's forward and at `aim`'s height, the knees kept at least `knee`
-    /// short of straight.
-    fn solved(&self, upper: &LocalPose, stood: &LocalPose, rig: &RigGeometry, ahead: f32, aim: Aim) -> LocalPose {
+    /// `upper` standing on its feet (`on` metres ahead of where they stood)
+    /// with its COM at `ahead` along the rig's forward and at `aim`'s
+    /// height, the knees kept at least `knee` short of straight.
+    fn solved(&self, upper: &LocalPose, stood: &LocalPose, rig: &RigGeometry, ahead: f32, aim: Aim, on: f32) -> LocalPose {
         let forward = rig.forward();
         let (knee, heel) = match aim {
             Aim::Height { knee, heel, .. } | Aim::Reach { knee, heel } => (knee, heel),
@@ -620,9 +848,9 @@ impl Jump {
             let mut trial = *upper;
             trial.root_translation += shift;
             if let Aim::Reach { heel, knee } = aim {
-                trial.root_translation.y += self.highest(&trial, stood, rig, heel, knee);
+                trial.root_translation.y += self.highest(&trial, stood, rig, heel, knee, on);
             }
-            pose = self.legs(&trial, stood, rig, Legs::Down { knee, heel });
+            pose = self.legs(&trial, stood, rig, Legs::Down { knee, heel, on });
             let com = com_of(&pose, stood, rig);
             let up = match aim {
                 Aim::Height { height, .. } => height - com.y,
@@ -639,13 +867,14 @@ impl Jump {
 
     /// How far `pose`'s root may rise for its legs to just reach their
     /// ankles with the heels risen `heel` about the toe tips and the knees
-    /// `knee` short of straight.
-    fn highest(&self, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry, heel: f32, knee: f32) -> f32 {
+    /// `knee` short of straight, the feet `on` metres ahead of where they
+    /// stood.
+    fn highest(&self, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry, heel: f32, knee: f32, on: f32) -> f32 {
         let hips = hips_of(pose, stood);
         (0..2)
             .map(|i| {
                 let socket = hips + offset_from(pose, rig, Bone::Hips, LEGS[i].0);
-                let ankle = self.feet.ankle(i, heel);
+                let ankle = self.feet.ankle(i, heel) + rig.forward() * on;
                 let across = Vec3::new(ankle.x - socket.x, 0.0, ankle.z - socket.z).length_squared();
                 ankle.y + (self.feet.reach(i, knee).powi(2) - across).max(0.0).sqrt() - socket.y
             })
@@ -659,24 +888,26 @@ impl Jump {
         let hips = hips_of(&pose, stood);
         for (i, &(socket, _, ankle)) in LEGS.iter().enumerate() {
             let (target, pitch) = match legs {
-                Legs::Down { knee, heel } => {
+                Legs::Down { knee, heel, on } => {
                     let at = hips + offset_from(&pose, rig, Bone::Hips, socket);
-                    let short = |angle: f32| (self.feet.ankle(i, angle) - at).length() - self.feet.reach(i, knee);
+                    let ankle_at = |angle: f32| self.feet.ankle(i, angle) + rig.forward() * on;
+                    let short = |angle: f32| (ankle_at(angle) - at).length() - self.feet.reach(i, knee);
                     // The least heel rise from `heel` that brings the ankle
-                    // into reach.
+                    // into reach, up to as far as they rise leaving.
+                    let most = self.rise.max(heel);
                     let angle = if short(heel) <= 0.0 {
                         heel
-                    } else if short(HEEL_RISE) > 0.0 {
-                        HEEL_RISE
+                    } else if short(most) > 0.0 {
+                        most
                     } else {
-                        let (mut low, mut high) = (heel, HEEL_RISE);
+                        let (mut low, mut high) = (heel, most);
                         for _ in 0..20 {
                             let middle = 0.5 * (low + high);
                             if short(middle) > 0.0 { low = middle } else { high = middle }
                         }
                         high
                     };
-                    (self.feet.ankle(i, angle) - hips, angle)
+                    (ankle_at(angle) - hips, angle)
                 }
                 Legs::Free { ankles, pitch } => (ankles[i], pitch),
             };
@@ -716,7 +947,7 @@ mod tests {
     #[test]
     fn the_pose_carries_its_com_on_the_planned_path() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::up(0.35), &stood, &rig);
         let forward = rig.forward();
         for (t, phase, planned, com) in sampled(&jump, &stood, &rig) {
             assert!(
@@ -733,7 +964,7 @@ mod tests {
     fn it_flies_at_g_to_the_height_asked() {
         let (stood, rig) = real_stood();
         for height in [0.1, 0.35, 0.5] {
-            let jump = Jump::plan(height, &stood, &rig);
+            let jump = Jump::plan(JumpAsk::up(height), &stood, &rig);
             let apex = sampled(&jump, &stood, &rig).iter().map(|s| s.3.y).fold(f32::MIN, f32::max);
             assert!((apex - jump.takeoff - height).abs() < 2.0e-3, "{height} m asked: rose {}", apex - jump.takeoff);
             // The COM's acceleration over flight, from the pose.
@@ -757,7 +988,7 @@ mod tests {
     #[test]
     fn the_floor_pushes_as_a_person_can() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::up(0.35), &stood, &rig);
         let h = 1.0e-3;
         let y = |t: f32| jump.com_height_at(t);
         let mut t = h;
@@ -787,7 +1018,7 @@ mod tests {
     #[test]
     fn the_feet_stay_where_they_stood_and_never_go_through_the_floor() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::up(0.35), &stood, &rig);
         let soles = LEGS.map(|(_, _, ankle)| Sole::of(&rig, ankle));
         let points = |pose: &LocalPose| [0, 1].map(|i| soles[i].points(pose, &rig).map(|p| p + hips_of(pose, &stood)));
         let standing = points(&stood);
@@ -828,7 +1059,7 @@ mod tests {
     fn the_knees_bend_as_a_jumpers_do() {
         use crate::character::anim::rig::{forward_kinematics_on, Side};
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::up(0.35), &stood, &rig);
         let flexion = |t: f32| {
             let p = forward_kinematics_on(&jump.pose_at(t, &stood, &rig), &rig);
             180.0 - (p[Bone::LeftUpLeg] - p[Bone::LeftLeg]).angle_between(p[Bone::LeftFoot] - p[Bone::LeftLeg]).to_degrees()
@@ -854,12 +1085,12 @@ mod tests {
     /// gap between the rendered and planned COM, the upper arm's angle at
     /// take-off off the plan's, and the feet's worst horizontal gap from the
     /// plan's over the flight's last frames.
-    fn rendered_gaps(led: bool) -> (f32, f32) {
+    fn rendered_gaps(ask: JumpAsk, led: bool) -> (f32, f32) {
         use crate::character::anim::dho::{default_springs, DhoState};
         use crate::character::anim::rig::forward_kinematics_on;
         let (stood, rig) = real_stood();
         let springs = default_springs();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(ask, &stood, &rig);
         let dt = 1.0 / 60.0;
         let mut dho = DhoState::settled_on(&stood);
         let (mut com_gap, mut arm_gap) = (0.0f32, 0.0f32);
@@ -888,13 +1119,20 @@ mod tests {
     /// arms at take-off. (Down, the foot IK re-solves the legs onto the
     /// feet from the unsprung pelvis.) Measured: the COM 6.6 mm off the
     /// parabola (30.4 unled, the legs still straightening), the upper arm
-    /// 3.7° off at take-off (16.9).
+    /// 3.7° off at take-off (16.9); jumping 1.8 m forward, 15.5 mm and 4.2°
+    /// (61.3 and 17.9).
     #[test]
     fn led_ahead_of_its_springs_the_rendered_body_keeps_to_the_plan() {
-        let (com, arm) = rendered_gaps(true);
-        let (com_unled, arm_unled) = rendered_gaps(false);
-        assert!(com < 0.015 && arm < 6.0, "led: COM {:.1} mm off in flight, arm {arm:.1}° at take-off", com * 1e3);
-        assert!(com_unled > 1.5 * com && arm_unled > 2.0 * arm, "unled no worse: COM {com_unled}, arm {arm_unled}");
+        // Jumping forward, the plan turns harder as the feet leave and
+        // land, where the lead stops: the COM is 15.5 mm off the first frame
+        // in the air, 6-11 mm for 0.1 s after, 1-3 mm on, 8.6 the frame
+        // before touchdown (6.6 at worst going straight up).
+        for (ask, most_com) in [(JumpAsk::up(0.35), 0.015), (FORWARD[2], 0.02)] {
+            let (com, arm) = rendered_gaps(ask, true);
+            let (com_unled, arm_unled) = rendered_gaps(ask, false);
+            assert!(com < most_com && arm < 6.0, "{ask:?} led: COM {:.1} mm off in flight, arm {arm:.1}° at take-off", com * 1e3);
+            assert!(com_unled > 1.5 * com && arm_unled > 2.0 * arm, "{ask:?} unled no worse: COM {com_unled}, arm {arm_unled}");
+        }
     }
 
     /// In flight each foot keeps its way across the floor, from where it
@@ -904,7 +1142,7 @@ mod tests {
     #[test]
     fn in_flight_the_feet_come_straight_down_onto_their_spots() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::up(0.35), &stood, &rig);
         let (start, end) = (jump.ends(JumpPhase::Push), jump.ends(JumpPhase::Flight));
         let ankles = |t: f32| {
             let pose = jump.pose_at(t, &stood, &rig);
@@ -937,7 +1175,7 @@ mod tests {
         let hanging = upper_arm(&stood);
         // How far the upper arm has swung from hanging as it leaves the floor.
         let swung = |height: f32| {
-            let jump = Jump::plan(height, &stood, &rig);
+            let jump = Jump::plan(JumpAsk::up(height), &stood, &rig);
             upper_arm(&jump.pose_at(jump.ends(JumpPhase::Push) - 1.0e-4, &stood, &rig)).angle_between(hanging)
         };
         let (hop, half, jump, high) = (swung(0.1), swung(0.2), swung(FULL_ARMS), swung(0.5));
@@ -948,15 +1186,169 @@ mod tests {
         assert!((high - jump).abs() < 1.0e-3, "higher than FULL_ARMS they swing no further: {high} against {jump}");
     }
 
+    /// Jumps forward from a hop to a long jump.
+    const FORWARD: [JumpAsk; 3] = [
+        JumpAsk { height: 0.1, distance: 0.5 },
+        JumpAsk { height: 0.2, distance: 1.2 },
+        JumpAsk { height: 0.25, distance: 1.8 },
+    ];
+
+    /// `pose`'s sole points (heel, ball, tip) `t` seconds into `jump`, in
+    /// the frame it began in: the pose's frame travels with the character.
+    fn soles_from_the_start(jump: &Jump, pose: &LocalPose, t: f32, stood: &LocalPose, rig: &RigGeometry) -> [[Vec3; 3]; 2] {
+        let shift = hips_of(pose, stood) + rig.forward() * jump.travelled_at(t);
+        LEGS.map(|(_, _, ankle)| Sole::of(rig, ankle).points(pose, rig).map(|p| p + shift))
+    }
+
+    /// The feet stay where they stood until they leave, and land as far
+    /// ahead as asked and stay there; never through the floor. The COM
+    /// keeps to its path the whole way, up and forward.
+    #[test]
+    fn a_jump_forward_lands_its_feet_as_far_as_asked() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        for ask in FORWARD {
+            let jump = Jump::plan(ask, &stood, &rig);
+            assert!((jump.distance() - ask.distance).abs() < 1.0e-4, "{ask:?}: planned {} m", jump.distance());
+            let standing = soles_from_the_start(&jump, &stood, 0.0, &stood, &rig);
+            let floor = standing.iter().flatten().map(|p| p.y).fold(f32::MAX, f32::min);
+            for (t, phase, planned, com) in sampled(&jump, &stood, &rig) {
+                let ahead = com.dot(forward) + jump.travelled_at(t);
+                assert!(
+                    (com.y - planned).abs() < 1.0e-3 && (ahead - jump.com_ahead_at(t)).abs() < 1.0e-3,
+                    "{ask:?} at {t:.3} s ({phase:?}): the COM is {:.4} up, {ahead:.4} ahead; planned {planned:.4}, {:.4}",
+                    com.y,
+                    jump.com_ahead_at(t)
+                );
+                let feet = soles_from_the_start(&jump, &jump.pose_at(t, &stood, &rig), t, &stood, &rig);
+                for i in 0..2 {
+                    for p in feet[i] {
+                        assert!(p.y > floor - 1.0e-3, "{ask:?} at {t:.3} s foot {i} is {:.1} mm under the floor", (floor - p.y) * 1e3);
+                    }
+                    let spot = match phase {
+                        JumpPhase::Down | JumpPhase::Push => standing[i][2],
+                        JumpPhase::Land | JumpPhase::Recover => standing[i][2] + forward * ask.distance,
+                        JumpPhase::Flight => continue,
+                    };
+                    let off = (feet[i][2] - spot).length();
+                    assert!(off < 1.0e-3, "{ask:?} at {t:.3} s ({phase:?}) foot {i}'s tip is {:.1} mm off its spot", off * 1e3);
+                }
+            }
+        }
+    }
+
+    /// Through the air the COM goes on at one speed forward and falls at g;
+    /// the floor's push and the landing's brake stay inside what a shoe's
+    /// grip holds (horizontal over vertical force under 0.8), the push and
+    /// the landing under 2.6 body weights; and the travel handed to the
+    /// root only ever goes forward, never in a step.
+    #[test]
+    fn a_jump_forward_flies_on_at_one_speed_and_the_floor_can_hold_it() {
+        let (stood, rig) = real_stood();
+        for ask in FORWARD {
+            let jump = Jump::plan(ask, &stood, &rig);
+            // f32 second differences at 1 ms were noisy to 0.3 m/s² a metre
+            // out; at 10 ms, the phases' few frames either side skipped.
+            let h = 1.0e-2;
+            let (x, y) = (|t: f32| jump.com_ahead_at(t), |t: f32| jump.com_height_at(t));
+            let accel = |f: &dyn Fn(f32) -> f32, t: f32| (f(t + h) - 2.0 * f(t) + f(t - h)) / (h * h);
+            let mut t = h;
+            while t < jump.duration() - h {
+                let phase = jump.phase_at(t);
+                if jump.phase_at(t - h) == phase && jump.phase_at(t + h) == phase && (t - jump.ends(JumpPhase::Flight) - jump.braking).abs() > h {
+                    let (across, up) = (accel(&x, t), accel(&y, t) + GRAVITY);
+                    if phase == JumpPhase::Flight {
+                        assert!(across.abs() < 0.05 && up.abs() < 0.05, "{ask:?} at {t:.3} s in flight the COM accelerates {across} across, {up} up off g");
+                    } else {
+                        assert!(across.abs() < 0.8 * up, "{ask:?} at {t:.3} s ({phase:?}) the floor pushes {across} across against {up} up");
+                        assert!(up < 2.6 * GRAVITY, "{ask:?} at {t:.3} s ({phase:?}) the floor carries {} body weights", up / GRAVITY);
+                    }
+                }
+                let step = jump.travelled_at(t + h) - jump.travelled_at(t);
+                assert!((-1.0e-6..h * FASTEST).contains(&step), "{ask:?} at {t:.3} s the root moves {step} m in {h} s");
+                t += h;
+            }
+            assert!(jump.speed() > 0.5 && (jump.travelled_at(jump.duration()) - ask.distance).abs() < 1.0e-4);
+        }
+    }
+
+    /// The knees fold forward all through, never snap straight landing
+    /// (the touchdown shape's knee to the landing's first frame) and fold
+    /// no deeper than a soft landing's 125°.
+    #[test]
+    fn a_jump_forwards_knees_fold_as_a_jumpers_do() {
+        use crate::character::anim::rig::{forward_kinematics_on, Side};
+        let (stood, rig) = real_stood();
+        for ask in FORWARD {
+            let jump = Jump::plan(ask, &stood, &rig);
+            let flexion = |t: f32| {
+                let p = forward_kinematics_on(&jump.pose_at(t, &stood, &rig), &rig);
+                180.0 - (p[Bone::LeftUpLeg] - p[Bone::LeftLeg]).angle_between(p[Bone::LeftFoot] - p[Bone::LeftLeg]).to_degrees()
+            };
+            let mut deepest = 0.0f32;
+            for (t, phase, _, _) in sampled(&jump, &stood, &rig) {
+                let pose = jump.pose_at(t, &stood, &rig);
+                for side in [Side::Left, Side::Right] {
+                    let fold = rig.knee_fold_direction(&pose, side);
+                    assert!(fold < 0.0, "{ask:?} at {t:.3} s ({phase:?}) the {side:?} knee folds backward ({fold})");
+                }
+                deepest = deepest.max(flexion(t));
+            }
+            let touchdown = jump.ends(JumpPhase::Flight);
+            let (meeting, landing) = (flexion(touchdown - 1.0e-4), flexion(touchdown + 1.0e-4));
+            assert!((meeting - landing).abs() < 6.0, "{ask:?}: the knee meets the floor at {meeting}° and lands at {landing}°");
+            assert!(deepest < 125.0, "{ask:?}: the knee folds to {deepest}°");
+        }
+    }
+
+    /// A long jump leaves leaning out over its toes and lands with its
+    /// feet ahead: the line from the toe tips to the COM 60° from the floor
+    /// leaving (0.57-0.72 m ahead at 0.92-1.04 m up), the COM 0.16-0.21 m
+    /// behind the heels landing (Wakai & Linthorne 2005: their jumper of
+    /// our build, 2.33 m leaving at 3.4 m/s 33° up). Measured: 59°, 0.54 m
+    /// ahead at 0.91 m up; landing 0.11 m behind. Pushed forward only from
+    /// the bottom of the countermovement, it left at 77°.
+    #[test]
+    fn a_long_jump_leaves_leaning_out_over_its_toes() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let up = 3.4 * 33.0f32.to_radians().sin();
+        let jump = Jump::plan(JumpAsk { height: up * up / (2.0 * GRAVITY), distance: 2.3 }, &stood, &rig);
+        let standing = soles_from_the_start(&jump, &stood, 0.0, &stood, &rig);
+        let floor = standing.iter().flatten().map(|p| p.y).fold(f32::MAX, f32::min);
+        let (toes, heels) = ((standing[0][2] + standing[1][2]) * 0.5, (standing[0][0] + standing[1][0]) * 0.5);
+        let com_at = |t: f32| com_of(&jump.pose_at(t, &stood, &rig), &stood, &rig) + forward * jump.travelled_at(t);
+        let leaving = com_at(jump.ends(JumpPhase::Push) - 1.0e-4) - toes;
+        let angle = leaving.y.atan2(leaving.dot(forward)).to_degrees();
+        assert!((55.0..68.0).contains(&angle), "the COM leaves {angle}° up from the toes, {:.2} m ahead", leaving.dot(forward));
+        let high = leaving.y + toes.y - floor;
+        assert!((0.85..1.05).contains(&high), "the COM leaves {high} m up");
+        let landing = (heels + forward * jump.distance()) - com_at(jump.ends(JumpPhase::Flight) + 1.0e-4);
+        assert!((0.1..0.3).contains(&landing.dot(forward)), "the COM lands {:.2} m behind the heels", landing.dot(forward));
+    }
+
+    /// Asked farther than leaving at [`FASTEST`] reaches, it jumps as far
+    /// as that does, at the height asked.
+    #[test]
+    fn too_far_is_planned_as_far_as_the_fastest_take_off_reaches() {
+        let (stood, rig) = real_stood();
+        let jump = Jump::plan(JumpAsk { height: 0.35, distance: 4.0 }, &stood, &rig);
+        let leaving = (jump.speed().powi(2) + jump.up.powi(2)).sqrt();
+        assert!((1.5..2.2).contains(&jump.distance()), "planned {} m", jump.distance());
+        assert!((leaving - FASTEST).abs() < 0.15 * FASTEST, "leaves at {leaving} m/s");
+    }
+
     #[test]
     fn it_starts_and_ends_standing() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(0.35, &stood, &rig);
-        for t in [0.0, jump.duration()] {
-            let pose = jump.pose_at(t, &stood, &rig);
-            assert!((pose.root_translation - stood.root_translation).length() < 1.0e-3, "root moved at {t}");
-            for bone in crate::character::skeleton::Bone::ALL {
-                assert!(1.0 - pose.rotations[bone].dot(stood.rotations[bone]).abs() < 1.0e-6, "{bone:?} turned at {t}");
+        for ask in [JumpAsk::up(0.35), FORWARD[2]] {
+            let jump = Jump::plan(ask, &stood, &rig);
+            for t in [0.0, jump.duration()] {
+                let pose = jump.pose_at(t, &stood, &rig);
+                assert!((pose.root_translation - stood.root_translation).length() < 1.0e-3, "{ask:?}: root moved at {t}");
+                for bone in crate::character::skeleton::Bone::ALL {
+                    assert!(1.0 - pose.rotations[bone].dot(stood.rotations[bone]).abs() < 1.0e-6, "{ask:?}: {bone:?} turned at {t}");
+                }
             }
         }
     }

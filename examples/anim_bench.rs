@@ -31,14 +31,14 @@ use migera::character::anim::rig::forward_kinematics;
 use migera::character::anim::{default_springs, poses};
 
 /// The gait posed each frame, if any (`--gait`), and its speed; or a jump
-/// (`--gait jump`, `--speed` its height in metres), posed through its whole
-/// length on each character's clock.
+/// (`--gait jump`, `--speed` its height and `--distance` how far forward,
+/// metres), posed through its whole length on each character's clock.
 #[derive(Clone, Copy)]
 enum Gait {
     None,
     Walk(f32),
     Run(f32),
-    Jump(f32),
+    Jump(f32, f32),
 }
 
 fn main() {
@@ -76,10 +76,14 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(_) => None,
+        Gait::None | Gait::Jump(..) => None,
     };
     let jump = match gait {
-        Gait::Jump(height) => Some(migera::character::anim::jump::Jump::plan(height, &stood, &rig)),
+        Gait::Jump(height, distance) => Some(migera::character::anim::jump::Jump::plan(
+            migera::character::anim::jump::JumpAsk { height, distance },
+            &stood,
+            &rig,
+        )),
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
@@ -110,7 +114,7 @@ fn main() {
         Gait::None => String::new(),
         Gait::Walk(speed) => format!("   walk {speed} m/s"),
         Gait::Run(speed) => format!("   run {speed} m/s"),
-        Gait::Jump(height) => format!("   jump {height} m"),
+        Gait::Jump(height, distance) => format!("   jump {height} m up, {distance} m forward"),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -164,7 +168,7 @@ fn step(
 fn parse_args() -> (usize, usize, Gait) {
     let mut characters = 100;
     let mut frames = 600;
-    let (mut gait, mut speed) = (None::<String>, 1.4);
+    let (mut gait, mut speed, mut distance) = (None::<String>, 1.4, 0.0);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -177,6 +181,7 @@ fn parse_args() -> (usize, usize, Gait) {
             }
             "--gait" => gait = args.next(),
             "--speed" => speed = args.next().and_then(|v| v.parse().ok()).unwrap_or(speed),
+            "--distance" => distance = args.next().and_then(|v| v.parse().ok()).unwrap_or(distance),
             _ => {}
         }
     }
@@ -184,7 +189,7 @@ fn parse_args() -> (usize, usize, Gait) {
     let gait = match gait.as_deref() {
         Some("walk") => Gait::Walk(speed),
         Some("run") => Gait::Run(speed),
-        Some("jump") => Gait::Jump(speed),
+        Some("jump") => Gait::Jump(speed, distance),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

@@ -32,6 +32,7 @@ use migera::character::anim::asset::AnimAssetPlugin;
 use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
 use migera::character::anim::plugin::{AnimFootIk, AnimGround};
+use migera::character::anim::jump::JumpAsk;
 use migera::character::anim::walker;
 use migera::character::anim::obstacles::{AnimObstacles, Footprints};
 use migera::character::anim::{approach, sitting};
@@ -694,13 +695,14 @@ fn controls_panel(
                 }
             });
 
-            // Jumping up from a stand (`character::anim::jump`).
+            // Jumping from a stand, up and forward (`character::anim::jump`).
             ui.horizontal(|ui| {
                 if ui.button("Jump").clicked() {
                     jumps.pressed = true;
                 }
-                ui.add(egui::Slider::new(&mut jumps.height, 0.05..=0.6).text("Jump height (m)"));
+                ui.add(egui::Slider::new(&mut jumps.button.height, 0.05..=0.6).text("Jump height (m)"));
             });
+            ui.add(egui::Slider::new(&mut jumps.button.distance, 0.0..=2.5).text("Jump distance (m)"));
 
             ui.add(
                 // Up to a fast run (`character::anim::run`): egui clamps a
@@ -1157,26 +1159,46 @@ impl StepAsideSchedule {
     }
 }
 
-/// Jumping: `--jump-at T:HEIGHT,...` jumps up HEIGHT metres at T seconds
-/// (`walker::Walker::jump`), e.g. `2:0.35,6:0.15`; and the panel's Jump
-/// button, at its height slider's.
+/// Jumping: `--jump-at T:HEIGHT[:DISTANCE],...` jumps HEIGHT metres up
+/// and DISTANCE metres forward (0 if left out) at T seconds
+/// (`walker::Walker::jump`), e.g. `2:0.35,6:0.15:1.2`; and the panel's
+/// Jump button, at its sliders'.
 #[derive(Resource, Debug, Clone, Default)]
 struct JumpSchedule {
-    due: StepAsideSchedule,
-    /// The button's height, metres, and whether it was pressed.
-    height: f32,
+    due: Vec<(f32, JumpAsk)>,
+    /// How many of `due` have been asked for.
+    asked: usize,
+    /// The button's jump, and whether it was pressed.
+    button: JumpAsk,
     pressed: bool,
 }
 
 impl JumpSchedule {
     fn from_args() -> Self {
-        Self { due: StepAsideSchedule(AsideSchedule::parse("--jump-at"), 0), height: 0.35, pressed: false }
+        let mut due = Vec::new();
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--jump-at" {
+                for entry in args.next().unwrap_or_default().split(',') {
+                    let numbers: Vec<f32> = entry.split(':').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, height, ref rest @ ..] = numbers[..] {
+                        due.push((at, JumpAsk { height, distance: rest.first().copied().unwrap_or(0.0) }));
+                    }
+                }
+            }
+        }
+        due.sort_by(|a: &(f32, JumpAsk), b| a.0.total_cmp(&b.0));
+        Self { due, asked: 0, button: JumpAsk::up(0.35), pressed: false }
     }
 
     /// The jump falling due by `elapsed` seconds, scheduled or pressed.
-    fn due(&mut self, elapsed: f32) -> Option<f32> {
-        let pressed = std::mem::take(&mut self.pressed).then_some(self.height);
-        self.due.due(elapsed).or(pressed)
+    fn due(&mut self, elapsed: f32) -> Option<JumpAsk> {
+        let pressed = std::mem::take(&mut self.pressed).then_some(self.button);
+        let scheduled = self.due.get(self.asked).filter(|(at, _)| elapsed >= *at).map(|&(_, ask)| ask);
+        if scheduled.is_some() {
+            self.asked += 1;
+        }
+        scheduled.or(pressed)
     }
 }
 

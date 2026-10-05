@@ -906,11 +906,14 @@ fn solve_foot_ik(
             };
             // A landing: pinned where the landing has the ball, at the flat
             // foot's height; the ground below keeps the ball up while the
-            // heel comes down.
+            // heel comes down. Pinned ahead by this frame's travel, which the
+            // lock takes off it at once: a jump forward still travels as it
+            // lands.
             if let Some(Touchdown { toes, .. }) = touchdown
                 && planted
             {
-                lock.pin(Vec3::new(toes[slot].x, hit.height + toe_contact_offset(&LocalPose::REST, chain, &rig) + toes[slot].y, toes[slot].z));
+                let at = Vec3::new(toes[slot].x, hit.height + toe_contact_offset(&LocalPose::REST, chain, &rig) + toes[slot].y, toes[slot].z);
+                lock.pin(at + turn.travel);
             }
             let mut target = lock.update_gripped(animated, surface, &lock_config, dt, turn, planted, grip);
 
@@ -1007,11 +1010,12 @@ fn solve_foot_ik(
             };
             let Some((tip, toe)) = super::legik::toe_tip(&solved, chain, &rig) else { continue };
             let flat = hit.height + toe_tip_height(chain, &rig);
-            // A landing: pinned where it has the tip (`AnimFootIk::touchdown`).
+            // A landing: pinned where it has the tip (`AnimFootIk::touchdown`),
+            // ahead by the travel the lock takes off it.
             if let Some(Touchdown { tips, .. }) = foot_ik.touchdown
                 && foot_ik.planted[slot]
             {
-                foot_ik.tips[slot].pin(Vec3::new(tips[slot].x, flat, tips[slot].z));
+                foot_ik.tips[slot].pin(Vec3::new(tips[slot].x, flat, tips[slot].z) + travel.travel);
             }
             let gait = foot_ik.gait_swing;
             let swinging = gait.is_some_and(|swing| swing[slot]);
@@ -1975,12 +1979,16 @@ mod tests {
         // A jump's landing folds the legs faster than their springs follow:
         // live, the rendered toe was 13.8 mm off its spot its first frame
         // down, and pinned there it stayed there. Pinned on its spot
-        // (`AnimFootIk::touchdown`), the solved toe is on the spot.
-        let feet_after = |touchdown: Option<Touchdown>| {
+        // (`AnimFootIk::touchdown`), the solved toe is on the spot; and so
+        // while the body travels, as a jump forward lands: pinned where the
+        // pose has it, the lock took the frame's travel off it, and the feet
+        // came down a frame's travel short (38 mm at 2.3 m/s).
+        let feet_after = |touchdown: Option<Touchdown>, travel: Vec3| {
             let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
             let ik = &mut app.world_mut().get_mut::<AnimFootIk>(rig).unwrap();
             ik.planted = [true; 2];
             ik.touchdown = touchdown;
+            ik.turn = crate::character::anim::footlock::Turn { travel, ..crate::character::anim::footlock::Turn::NONE };
             step(&mut app, 1);
             let ik = app.world().get::<AnimFootIk>(rig).unwrap();
             let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
@@ -1988,14 +1996,16 @@ mod tests {
             let tips = [LegChain::LEFT, LegChain::RIGHT].map(|chain| crate::character::anim::legik::toe_tip(&pose, chain, &geometry).unwrap().0);
             (toes, tips)
         };
-        let (toes, tips) = feet_after(None);
+        let (toes, tips) = feet_after(None, Vec3::ZERO);
         let by = Vec3::new(0.0, 0.0, 0.014);
         let spots = Touchdown { toes: toes.map(|toe| Vec3::new(toe.x, 0.0, toe.z) + by), tips: tips.map(|tip| tip + by) };
-        let (toes, tips) = feet_after(Some(spots));
-        for side in 0..2 {
-            for (name, at, spot) in [("toe", toes[side], spots.toes[side]), ("tip", tips[side], spots.tips[side])] {
-                let off = Vec3::new(at.x - spot.x, 0.0, at.z - spot.z).length();
-                assert!(off < 1.0e-3, "foot {side}'s {name} landed {:.1} mm off its spot", off * 1e3);
+        for travel in [Vec3::ZERO, Vec3::new(0.0, 0.0, 0.038)] {
+            let (toes, tips) = feet_after(Some(spots), travel);
+            for side in 0..2 {
+                for (name, at, spot) in [("toe", toes[side], spots.toes[side]), ("tip", tips[side], spots.tips[side])] {
+                    let off = Vec3::new(at.x - spot.x, 0.0, at.z - spot.z).length();
+                    assert!(off < 1.0e-3, "travelling {travel}, foot {side}'s {name} landed {:.1} mm off its spot", off * 1e3);
+                }
             }
         }
     }

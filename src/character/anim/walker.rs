@@ -117,11 +117,12 @@ pub struct Walker {
     /// (`balance::Balance::step_aside`). Taken when read; a walk asked for
     /// meanwhile starts once the feet have closed.
     pub step_aside: f32,
-    /// Jump up this high, metres of the centre of mass's rise above
-    /// take-off (`jump`), from a stand. Taken when read; asked while
-    /// moving, sitting or already jumping, it is dropped. A walk asked
-    /// meanwhile starts once the jump has landed and stood.
-    pub jump: Option<f32>,
+    /// Jump this high, metres of the centre of mass's rise above take-off,
+    /// and this far, metres the feet land ahead (`jump`), from a stand.
+    /// Taken when read; asked while moving, sitting or already jumping, it
+    /// is dropped. A walk asked meanwhile starts once the jump has landed
+    /// and stood.
+    pub jump: Option<super::jump::JumpAsk>,
 }
 
 impl Default for Walker {
@@ -1040,14 +1041,18 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 && state.shuffle.is_none()
                 && !fallen
                 && balance.is_settled(1.0e-5);
-            if let Some(height) = asked_jump
+            if let Some(ask) = asked_jump
                 && state.jump.is_none()
                 && standing
             {
-                state.jump = Some(super::jump::Jump::plan(height, &stood, &rig));
+                state.jump = Some(super::jump::Jump::plan(ask, &stood, &rig));
             }
             if let Some(jump) = state.jump.as_mut() {
+                // The COM's way forward moves the character, like root
+                // motion; the pose keeps it over the root.
+                let before = jump.travelled();
                 jump.advance(time.delta_secs());
+                state.stride.stepped += rig.forward() * (jump.travelled() - before);
                 // Each bone led ahead of its spring, so the body rendered
                 // is the plan's.
                 target.pose = match springs {
