@@ -616,6 +616,7 @@ fn controls_panel(
     mut camera_cfg: ResMut<CameraConfig>,
     mut idle_cfg: ResMut<AnimIdleConfig>,
     mut sit: ResMut<SitConfig>,
+    mut jumps: ResMut<JumpSchedule>,
     mut characters: Query<(&mut AnimTarget, &mut AnimSprings)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -691,6 +692,14 @@ fn controls_panel(
                 if ui.button("Stand").clicked() {
                     sit.live = Some(false);
                 }
+            });
+
+            // Jumping up from a stand (`character::anim::jump`).
+            ui.horizontal(|ui| {
+                if ui.button("Jump").clicked() {
+                    jumps.pressed = true;
+                }
+                ui.add(egui::Slider::new(&mut jumps.height, 0.05..=0.6).text("Jump height (m)"));
             });
 
             ui.add(
@@ -1085,6 +1094,7 @@ fn follow_speed_schedule(time: Res<Time>, schedule: Res<SpeedSchedule>, mut idle
 /// ask: the speed and turn (`--anim-speed`, the slider, the speed
 /// schedule, `--anim-turn`), the look and reach, and the pushes due. The
 /// walk itself is `character::anim::walker`'s.
+#[allow(clippy::too_many_arguments)]
 fn steer_the_walker(
     time: Res<Time>,
     idle: Res<AnimIdleConfig>,
@@ -1092,16 +1102,21 @@ fn steer_the_walker(
     sit: Res<SitConfig>,
     aside: Res<AsideSchedule>,
     mut steps: ResMut<StepAsideSchedule>,
+    mut jumps: ResMut<JumpSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
     let due = pushes.due(time.elapsed_secs());
     let sitting = sit.wanted(time.elapsed_secs());
     let step = steps.due(time.elapsed_secs());
+    let jump = jumps.due(time.elapsed_secs());
     for mut walker in &mut walkers {
         walker.speed = idle.speed;
         walker.aside = aside.at(time.elapsed_secs());
         if let Some(length) = step {
             walker.step_aside = length;
+        }
+        if jump.is_some() {
+            walker.jump = jump;
         }
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
@@ -1139,6 +1154,29 @@ impl StepAsideSchedule {
             self.1 += 1;
             length
         })
+    }
+}
+
+/// Jumping: `--jump-at T:HEIGHT,...` jumps up HEIGHT metres at T seconds
+/// (`walker::Walker::jump`), e.g. `2:0.35,6:0.15`; and the panel's Jump
+/// button, at its height slider's.
+#[derive(Resource, Debug, Clone, Default)]
+struct JumpSchedule {
+    due: StepAsideSchedule,
+    /// The button's height, metres, and whether it was pressed.
+    height: f32,
+    pressed: bool,
+}
+
+impl JumpSchedule {
+    fn from_args() -> Self {
+        Self { due: StepAsideSchedule(AsideSchedule::parse("--jump-at"), 0), height: 0.35, pressed: false }
+    }
+
+    /// The jump falling due by `elapsed` seconds, scheduled or pressed.
+    fn due(&mut self, elapsed: f32) -> Option<f32> {
+        let pressed = std::mem::take(&mut self.pressed).then_some(self.height);
+        self.due.due(elapsed).or(pressed)
     }
 }
 
@@ -1962,6 +2000,7 @@ fn main() {
         .insert_resource(SitConfig::from_args())
         .insert_resource(AsideSchedule::from_args())
         .insert_resource(StepAsideSchedule::from_args())
+        .insert_resource(JumpSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
         .add_systems(Update, place_chair.after(WalkerSet::Drive));

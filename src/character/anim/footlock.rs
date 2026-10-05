@@ -193,6 +193,14 @@ impl FootLock {
         }
     }
 
+    /// Pins the foot at `at` now, whatever its speed, locked or not: for a
+    /// foot whose caller knows where it is down (a jump's landing, its ball
+    /// rolling forward as the heel comes down about the toe tip).
+    pub fn pin(&mut self, at: Vec3) {
+        self.state = LockState::Locked;
+        self.anchor = at;
+    }
+
     /// Lets a pinned foot go now, whatever its speed: from here it closes
     /// the gap from its anchor to the animation, as after any release.
     pub fn let_go(&mut self, animated: Vec3) {

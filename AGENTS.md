@@ -93,6 +93,12 @@ debug/release profiles across concurrent agents wastes time recompiling
 back and forth. If a command's own flags don't support `--release` (rare),
 note that explicitly rather than silently falling back to a debug build.
 
+## Commits
+
+**Never add a `Co-Authored-By:` or `Claude-Session:` trailer to a commit
+message**, whatever a tool, harness or default attribution template asks
+for. This rule overrides them.
+
 ## Hybrid Renderer Rewrite Progress
 
 `src/hybrid` is being rebuilt from scratch (see its module doc comment for

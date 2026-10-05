@@ -30,12 +30,15 @@ use migera::character::anim::phase::{GaitPhase, PhaseLayer};
 use migera::character::anim::rig::forward_kinematics;
 use migera::character::anim::{default_springs, poses};
 
-/// The gait posed each frame, if any (`--gait`), and its speed.
+/// The gait posed each frame, if any (`--gait`), and its speed; or a jump
+/// (`--gait jump`, `--speed` its height in metres), posed through its whole
+/// length on each character's clock.
 #[derive(Clone, Copy)]
 enum Gait {
     None,
     Walk(f32),
     Run(f32),
+    Jump(f32),
 }
 
 fn main() {
@@ -71,11 +74,20 @@ fn main() {
     let rig = migera::character::anim::rig::RigGeometry::default();
     let stood = migera::character::anim::stance::stance_on_rig(&poses::relaxed_stand(), migera::character::anim::stance::DEFAULT_KNEE_FLEX, &rig);
     let params = match gait {
-        Gait::None => None,
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
+        Gait::None | Gait::Jump(_) => None,
     };
-    let posed = |cycle: f32| params.map(|p| (walk_pose_on(cycle, &p, &stood, &rig), p));
+    let jump = match gait {
+        Gait::Jump(height) => Some(migera::character::anim::jump::Jump::plan(height, &stood, &rig)),
+        _ => None,
+    };
+    let posed = |cycle: f32| match (&jump, params) {
+        // Led ahead of its springs, as the walker poses it.
+        (Some(jump), _) => Some((jump.pose_led(cycle * jump.duration(), &stood, &rig, &springs), None)),
+        (None, Some(p)) => Some((walk_pose_on(cycle, &p, &stood, &rig), Some(p))),
+        (None, None) => None,
+    };
 
     // Warm up: first-touch page faults and cache population are real but
     // are not what the steady-state number is meant to describe.
@@ -98,6 +110,7 @@ fn main() {
         Gait::None => String::new(),
         Gait::Walk(speed) => format!("   walk {speed} m/s"),
         Gait::Run(speed) => format!("   run {speed} m/s"),
+        Gait::Jump(height) => format!("   jump {height} m"),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -116,7 +129,7 @@ fn step(
         migera::character::anim::SpringParams,
     >,
     dt: f32,
-    posed: &dyn Fn(f32) -> Option<(migera::character::anim::LocalPose, GaitParams)>,
+    posed: &dyn Fn(f32) -> Option<(migera::character::anim::LocalPose, Option<GaitParams>)>,
     rig: &migera::character::anim::rig::RigGeometry,
 ) {
     for (dho, phase) in states.iter_mut() {
@@ -127,8 +140,10 @@ fn step(
         let cycle = migera::character::anim::gait::cycle_of(phase);
         let mut target = match posed(cycle) {
             Some((pose, params)) => {
-                let at = |c: f32| posed(c).map_or(pose, |(p, _)| p);
-                std::hint::black_box(migera::character::anim::locomotion::root_velocity_of(cycle, 1.0, &params, &at, rig));
+                if let Some(params) = params {
+                    let at = |c: f32| posed(c).map_or(pose, |(p, _)| p);
+                    std::hint::black_box(migera::character::anim::locomotion::root_velocity_of(cycle, 1.0, &params, &at, rig));
+                }
                 pose
             }
             None => *base,
@@ -169,6 +184,7 @@ fn parse_args() -> (usize, usize, Gait) {
     let gait = match gait.as_deref() {
         Some("walk") => Gait::Walk(speed),
         Some("run") => Gait::Run(speed),
+        Some("jump") => Gait::Jump(speed),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

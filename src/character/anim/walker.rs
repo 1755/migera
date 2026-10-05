@@ -117,6 +117,11 @@ pub struct Walker {
     /// (`balance::Balance::step_aside`). Taken when read; a walk asked for
     /// meanwhile starts once the feet have closed.
     pub step_aside: f32,
+    /// Jump up this high, metres of the centre of mass's rise above
+    /// take-off (`jump`), from a stand. Taken when read; asked while
+    /// moving, sitting or already jumping, it is dropped. A walk asked
+    /// meanwhile starts once the jump has landed and stood.
+    pub jump: Option<f32>,
 }
 
 impl Default for Walker {
@@ -136,6 +141,7 @@ impl Default for Walker {
             chair: None,
             aside: 0.0,
             step_aside: 0.0,
+            jump: None,
         }
     }
 }
@@ -323,6 +329,8 @@ pub struct WalkerState {
     /// Walking or running (`run`), and the one step that changes between
     /// them.
     pub gaits: super::run::Gaits,
+    /// A jump under way ([`Walker::jump`]), until it has landed and stood.
+    pub jump: Option<super::jump::Jump>,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound and whether it shuffles: measuring it
     /// costs a cycle of root-motion samples, so it is redone only when one
@@ -352,6 +360,7 @@ impl WalkerState {
             strafe: 0.0,
             pace: 0.0,
             gaits: Default::default(),
+            jump: None,
             measured: None,
         }
     }
@@ -497,12 +506,14 @@ type WalkingRig = (
     Option<&'static Ragdoll>,
     // What it walks round, going to a chair.
     Option<&'static super::obstacles::RouteObstacles>,
+    // The springs a jump's pose is led ahead of (`jump::Jump::pose_led`).
+    Option<&'static super::plugin::AnimSprings>,
 );
 
 /// Drives each walker's gait from its clock, in `AnimSet::Target`, so the
 /// phase layer composes on top and the springs smooth the result.
 pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
-    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll, route_obstacles) in
+    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll, route_obstacles, springs) in
         &mut rigs
     {
         let state = &mut *state;
@@ -638,7 +649,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Seated, sitting down or asked to, it asks no speed either: it stops
         // first, and stands up before it walks again.
         // Walking to a chair, it walks.
-        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived);
+        // Jumping, it asks no speed until it has landed and stood.
+        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || state.jump.is_some();
         // Asked to go aside (`Walker::aside`), with or without forward, and
         // not to sit. Mostly across (45° or more off forward): the side
         // shuffle (`shuffle`), a walk of its own on the same clock, forward
@@ -834,8 +846,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // sway runs only at rest, eased back in after a stop (switched on
         // at once it ticked the pelvis 6 mm sideways in a frame).
         let mut wanted = PhaseLayer::between(&PhaseLayer::standing_idle(), &PhaseLayer::locomotion(), weight);
-        // Sitting, no standing weight shift: it breathes.
-        if !state.transition.is_at_rest() || !state.posture.is_standing() {
+        // Sitting or jumping, no standing weight shift: it breathes.
+        if !state.transition.is_at_rest() || !state.posture.is_standing() || state.jump.is_some() {
             wanted.sway = None;
         } else if let Some(sway) = wanted.sway.as_mut() {
             const SETTLE_SECONDS: f32 = 1.5;
@@ -879,6 +891,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // A walk's too, fully walking (the start's and stop's fades lift and
         // set down their own swings), not shuffling.
         foot_ik.grip = running >= 0.5;
+        foot_ik.touchdown = None;
         let walking = weight >= 1.0 && state.shuffle.is_none();
         foot_ik.clear = [0.0, 0.5].map(|shift| match super::gait::leg_phase(cycle + shift, params.duty_factor) {
             super::gait::LegPhase::Swing { progress } if foot_ik.grip => super::run::swing_clearance(progress),
@@ -1011,6 +1024,49 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let floor_seated = matches!(state.posture, Posture::Seated { how, .. } if !how.on_chair());
                 let kneeling = matches!(state.posture, Posture::Seated { how, .. } | Posture::Moving { how, .. } if how == sitting::Sitting::Floor(sitting::FloorPose::Kneeling));
                 legs_free = !(planted[0] && planted[1]) || floor_seated || kneeling;
+            }
+        }
+        // A jump (`jump`), from a stand: its pose instead, the feet told to
+        // the foot IK from its plan. Down, the locks hold them whatever the
+        // sprung legs do; in flight they are in the air, no hips dropped to
+        // reach them and the toe tips free; landing, each locks as it
+        // touches.
+        let asked_jump = walker.jump.take();
+        if let Some(rig) = foot_ik.rig.clone() {
+            let standing = weight <= 0.0
+                && state.transition.is_at_rest()
+                && state.posture.is_standing()
+                && !state.stepping_aside
+                && state.shuffle.is_none()
+                && !fallen
+                && balance.is_settled(1.0e-5);
+            if let Some(height) = asked_jump
+                && state.jump.is_none()
+                && standing
+            {
+                state.jump = Some(super::jump::Jump::plan(height, &stood, &rig));
+            }
+            if let Some(jump) = state.jump.as_mut() {
+                jump.advance(time.delta_secs());
+                // Each bone led ahead of its spring, so the body rendered
+                // is the plan's.
+                target.pose = match springs {
+                    Some(springs) => jump.pose_now_led(&stood, &rig, &springs.0),
+                    None => jump.pose(&stood, &rig),
+                };
+                let down = !jump.airborne();
+                foot_ik.planted = [down; 2];
+                foot_ik.grip = matches!(jump.phase(), super::jump::JumpPhase::Land | super::jump::JumpPhase::Recover);
+                foot_ik.touchdown = foot_ik.grip.then(|| jump.touchdown(&stood, &rig));
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = Some([!down; 2]);
+                foot_ik.gait_bearing = Some([down; 2]);
+                foot_ik.landing = None;
+                legs_free = false;
+                if jump.is_done() {
+                    state.jump = None;
+                    state.stood_hold = STOOD_HOLD;
+                }
             }
         }
         if foot_ik.legs_free != legs_free {

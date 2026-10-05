@@ -41,6 +41,128 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### The jump: take-off height, arms led ahead of their springs, bent elbows, clean landings
+
+- **Take-off height:** split on `puppet_base`, the heels carry 0.094 m of
+  the COM's rise at 0.5 rad, the arms 0.035 m, straight knees almost none.
+  `HEEL_RISE` 0.5 → 0.35 rad: the COM leaves 0.11 m above standing (0.14
+  before; 0.09-0.11 m measured).
+- **Elbows:** the arms swing with them bent (each `ARMS_*` now a swing and
+  an elbow): 35° in the backswing, 17° at take-off, 46-69° guarding on the
+  landing. They swung straight before.
+- **Arms as hard as the jump** (`FULL_ARMS`): the full swing from 0.35 m,
+  below it by the square of the height's share.
+  - Seen at take-off: a 0.1 m hop's arms hang by the thighs, a 0.2 m
+    jump's swing 45° forward, a 0.35 m jump's go overhead.
+  - Scaled in proportion, the hop still swung them 40°.
+  - Test `the_arms_swing_as_hard_as_the_jump`.
+- **Led ahead of the springs (`Jump::pose_led`):**
+  - a critical spring trails a steady target by `2ζ/ω`, 0.043 s for the
+    legs and 0.087 s for the arms;
+  - each bone now takes its rotation from the plan that far ahead, never
+    past the phase it is in (led across touchdown, the feet swung 16 mm
+    the frame before they landed);
+  - headless through the springs, the arms are 3.7° off the plan at
+    take-off (16.9° unled), and the rendered COM is 6.6 mm off the
+    parabola in flight (30.4);
+  - a whole pose per lead cost 91 µs a character a frame, so the trunk and
+    arms are led from their shape alone and the legs with one more pelvis
+    solve.
+- **Touchdown, live 9.8 → 0.3 mm:**
+  - in flight each ankle keeps its way across the floor while the pelvis
+    moves under the arms (the feet drifted up to 3.9 mm a frame);
+  - every landing frame the foot IK pins each ball and tip where the plan
+    has them (`plugin::Touchdown`): the ball at the plan's height as it
+    rolls about the tip, and the tip at the toe's end joint, the point the
+    tip lock holds.
+  - Three wrong pins on the way: the flat foot's ball (the foot shifted the
+    5 mm the ball rolls); at the flat foot's height (the tip went 5.5 mm
+    past its pin and crept back); and the sole's tip under the toe (the
+    tip lock holds the toe's end).
+- **Tests:**
+  - `led_ahead_of_its_springs_the_rendered_body_keeps_to_the_plan`, which
+    also asserts the unled body is worse;
+  - `in_flight_the_feet_come_straight_down_onto_their_spots`, which fails
+    at 3.86 mm a frame with the feet carried by the pelvis;
+  - the landing pin test now checks tips too.
+
+  All 1171 pass.
+- **Live**, `--jump-at 2:0.35,6:0.15`:
+  - pelvis at −9.5 m/s² on average in flight;
+  - worst vertical acceleration 28.6 m/s²;
+  - feet back within 2.3 mm;
+  - toe ends within 1.7 mm a frame on the floor (the toe's end joint rolls
+    about 5 mm as the heel comes down).
+- **Seen:** Left and Front, gizmos on:
+  - crouch: arms back, elbows bent;
+  - take-off: hands above the shoulders, elbows a little bent, on the toes;
+  - landing: arms forward, elbows ~90°;
+  - Front: arms and legs symmetric.
+- **Cost:** 53 µs per character per frame (`anim_bench --gait jump`, led),
+  against a walk's 23 and a run's 41.
+- Note: [a jump is planned as its centre of mass's path](docs/knowledge/character-animation/ik-and-locomotion/a-jump-is-planned-as-its-centre-of-mass-path.md).
+
+### Jumping up from a stand
+
+- **`jump::Jump`** plans a countermovement jump from the height asked (the
+  COM's rise above take-off) as the COM's path:
+  - crouch at rest both ends, never unloading the floor below 0.43 body
+    weight;
+  - push at constant acceleration to `√(2gh)`;
+  - parabola at g;
+  - landing at constant deceleration (2 body weights);
+  - recovery to standing.
+
+  Each frame poses the trunk lean, the arm swing and the legs, then solves
+  the pelvis so the pose's real COM is on the path. Durations and depths
+  come from measured jumps.
+- **Asked through `Walker::jump`** from a stand. The walker holds its speed
+  at zero meanwhile, and tells the foot IK which feet are down: locked
+  through the crouch and push, in the air in flight (no pelvis drop, tips
+  free), and pinned where they land (`AnimFootIk::touchdown`,
+  `FootLock::pin`).
+- **Gallery:** `--jump-at T:HEIGHT,...` and a Jump button with a height
+  slider. `anim_bench --gait jump --speed H`.
+- **Tests:**
+  - `jump::tests`: the pose's COM on the planned path within 1 mm; flight
+    at g to the height asked (0.1, 0.35, 0.5 m); floor load 0.43-2.6 body
+    weights with durations in the measured ranges; feet never through the
+    floor; tips fixed while down; heels up at take-off; knees folding
+    forward; starts and ends standing.
+  - `plugin::tests::a_jumps_landing_pins_each_foot_where_it_lands_not_where_the_sprung_foot_is`
+    fails at 14 mm without the pin.
+- **Plan (`puppet_base`, 0.35 m):**
+  - down 0.57 s, push 0.34 s, flight 0.56 s, landing 0.29 s, recovery
+    0.61 s;
+  - knee flexion 103° at the bottom and 105° landing;
+  - the COM leaves 0.14 m above standing (0.09-0.11 m measured).
+- **Live**, `--jump-at 2:0.35,6:0.15`, every frame:
+  - flight 0.567 and 0.38 s (planned 0.56 and 0.39), pelvis at −9.1 m/s²;
+  - worst vertical pelvis acceleration 33 m/s²;
+  - feet back within 2 mm, no foot point under the floor, and on the
+    floor no move over 2.5 mm a frame;
+  - the toe's last move onto its spot, from 10 mm up, is 9.9 mm.
+- **Fixed on the way:**
+  - heels rising only once the legs were straight (the push's last two
+    frames) hitched the take-off at 357 m/s², so they now rise over the
+    push's last 60 %;
+  - landing feet pinned where the sprung foot was were 13.8 mm off, so
+    they are now pinned where the plan lands them;
+  - a flat-footed touchdown made a 10 cm hop absorb 0.29 m, so it now
+    lands on the forefoot.
+- **Seen:** Left and Front, gizmos on, real mesh off:
+  - the crouch with the knees forward, the trunk leaning and the arms
+    back;
+  - take-off straight, on the toes;
+  - the apex with the legs under the hips, symmetric;
+  - a deep landing squat with the feet flat.
+
+  The arms reach shoulder height at take-off, where 25° above was planned:
+  the springs lag the fast swing.
+- **Cost:** 26.2 µs per character per frame (`anim_bench --gait jump`,
+  100 characters), against a walk's 24.3.
+- Note: [a jump is planned as its centre of mass's path](docs/knowledge/character-animation/ik-and-locomotion/a-jump-is-planned-as-its-centre-of-mass-path.md).
+
 ### A walk changes its speed only with one foot down
 
 - **The cause, measured, not the one guessed.** The first walking toe-off

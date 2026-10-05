@@ -178,6 +178,22 @@ pub struct AnimFootIk {
     /// Whether a [`Self::planted`] foot locks as soon as it touches the
     /// ground, whatever its speed ([`FootLock::update_gripped`]): a run's.
     pub grip: bool,
+    /// Where a landing pins each [`Self::planted`] foot this frame
+    /// ([`Touchdown`], [`FootLock::pin`]): a jump's, which knows when and
+    /// where its feet are down. Each frame, as its ball rolls forward the
+    /// ~5 mm a forefoot landing's heel coming down carries it: pinned once at
+    /// the flat foot's ball, the foot shifted by that the frame it landed.
+    /// Its tip too, the point the foot rolls about: left to the tip lock's
+    /// speed test, it crept 0.4-2.2 mm a frame as the sprung foot's pitch
+    /// caught up.
+    ///
+    /// Pinned where the sprung foot was, it was pinned in the wrong place:
+    /// the plan folds the legs fast to take the landing, the springs lag,
+    /// and the rendered toe was already 13.8 mm off and 42 mm under the
+    /// floor its first frame down. Gripped by height instead (within
+    /// [`super::footlock::GRIP_HEIGHT`] of the flat foot) it was not pinned
+    /// at all, the forefoot landing's ball still 26 mm up.
+    pub touchdown: Option<Touchdown>,
     /// How far each foot's (left, right) sole must keep off the ground,
     /// metres, judged on the rendered foot: a running foot just off the
     /// floor (`run::swing_clearance`), which its sprung leg would leave down
@@ -194,6 +210,20 @@ pub struct AnimFootIk {
     /// keeps each knee in its leg's plane, so a cross-legged pose's knees,
     /// turned 55° out, came back pointing straight ahead.
     pub legs_free: bool,
+}
+
+/// Where a landing has each foot down this frame, in the pose's frame
+/// (left, right). See [`AnimFootIk::touchdown`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Touchdown {
+    /// Each toe joint (the ball): across the floor, and up as how far
+    /// above where it stands with the foot flat. Pinned at the flat foot's
+    /// height while the heel was still 0.35 rad up, the ball came 5.5 mm
+    /// nearer the tip's pin than the toe is long, and the tip, put past
+    /// it on the floor, crept back 1-2 mm a frame.
+    pub toes: [Vec3; 2],
+    /// Each toe tip, across the floor (it is on it).
+    pub tips: [Vec3; 2],
 }
 
 /// A foot being set down onto a spot. See [`AnimFootIk::landing`].
@@ -869,10 +899,19 @@ fn solve_foot_ik(
             // Where the toe joint stands with the foot flat on this ground:
             // a gripping foot locks once it is down there.
             let grip = foot_ik.grip.then(|| hit.height + toe_contact_offset(&LocalPose::REST, chain, &rig));
+            let touchdown = foot_ik.touchdown;
             let lock = match side {
                 Side::Left => &mut foot_ik.left,
                 _ => &mut foot_ik.right,
             };
+            // A landing: pinned where the landing has the ball, at the flat
+            // foot's height; the ground below keeps the ball up while the
+            // heel comes down.
+            if let Some(Touchdown { toes, .. }) = touchdown
+                && planted
+            {
+                lock.pin(Vec3::new(toes[slot].x, hit.height + toe_contact_offset(&LocalPose::REST, chain, &rig) + toes[slot].y, toes[slot].z));
+            }
             let mut target = lock.update_gripped(animated, surface, &lock_config, dt, turn, planted, grip);
 
             // Kept clear of what the feet must not stand in or swing through
@@ -968,6 +1007,12 @@ fn solve_foot_ik(
             };
             let Some((tip, toe)) = super::legik::toe_tip(&solved, chain, &rig) else { continue };
             let flat = hit.height + toe_tip_height(chain, &rig);
+            // A landing: pinned where it has the tip (`AnimFootIk::touchdown`).
+            if let Some(Touchdown { tips, .. }) = foot_ik.touchdown
+                && foot_ik.planted[slot]
+            {
+                foot_ik.tips[slot].pin(Vec3::new(tips[slot].x, flat, tips[slot].z));
+            }
             let gait = foot_ik.gait_swing;
             let swinging = gait.is_some_and(|swing| swing[slot]);
             let lock = &mut foot_ik.tips[slot];
@@ -1923,6 +1968,36 @@ mod tests {
         // Over its spot: down.
         let (landed, _) = toe_after(Some(Landing { left: true, spot: animated, strength: 1.0, place: false }));
         assert!((landed.y - planted.y).abs() < 1.0e-4, "over its spot the toe stayed {:.2} mm up", (landed.y - planted.y) * 1e3);
+    }
+
+    #[test]
+    fn a_jumps_landing_pins_each_foot_where_it_lands_not_where_the_sprung_foot_is() {
+        // A jump's landing folds the legs faster than their springs follow:
+        // live, the rendered toe was 13.8 mm off its spot its first frame
+        // down, and pinned there it stayed there. Pinned on its spot
+        // (`AnimFootIk::touchdown`), the solved toe is on the spot.
+        let feet_after = |touchdown: Option<Touchdown>| {
+            let (mut app, rig) = app_with_grounded_rig(FlatGround { height: 0.0 });
+            let ik = &mut app.world_mut().get_mut::<AnimFootIk>(rig).unwrap();
+            ik.planted = [true; 2];
+            ik.touchdown = touchdown;
+            step(&mut app, 1);
+            let ik = app.world().get::<AnimFootIk>(rig).unwrap();
+            let (pose, geometry) = (ik.corrected.unwrap(), ik.rig.clone().unwrap());
+            let toes = [Bone::LeftToeBase, Bone::RightToeBase].map(|toe| forward_kinematics_on(&pose, &geometry)[toe]);
+            let tips = [LegChain::LEFT, LegChain::RIGHT].map(|chain| crate::character::anim::legik::toe_tip(&pose, chain, &geometry).unwrap().0);
+            (toes, tips)
+        };
+        let (toes, tips) = feet_after(None);
+        let by = Vec3::new(0.0, 0.0, 0.014);
+        let spots = Touchdown { toes: toes.map(|toe| Vec3::new(toe.x, 0.0, toe.z) + by), tips: tips.map(|tip| tip + by) };
+        let (toes, tips) = feet_after(Some(spots));
+        for side in 0..2 {
+            for (name, at, spot) in [("toe", toes[side], spots.toes[side]), ("tip", tips[side], spots.tips[side])] {
+                let off = Vec3::new(at.x - spot.x, 0.0, at.z - spot.z).length();
+                assert!(off < 1.0e-3, "foot {side}'s {name} landed {:.1} mm off its spot", off * 1e3);
+            }
+        }
     }
 
     #[test]
