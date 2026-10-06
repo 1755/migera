@@ -344,11 +344,16 @@ pub struct WalkerState {
     /// The crouch it is in or on its way to ([`Walker::sneak`]).
     pub crouching: super::sneak::Crouching,
     /// The stride the current gait really takes, keyed by its speed,
-    /// whether the real rig has bound and whether it shuffles: measuring it
-    /// costs a cycle of root-motion samples, so it is redone only when one
-    /// changes.
-    measured: Option<(u32, bool, bool, f32)>,
+    /// whether the real rig has bound, whether it shuffles and the crouch
+    /// it sneaks in: measuring it costs a cycle of root-motion samples, so
+    /// it is redone only when one changes.
+    measured: Option<(StrideKey, f32)>,
 }
+
+/// What [`WalkerState::measured`]'s stride is keyed by: the speed's bits,
+/// whether the real rig has bound, whether it shuffles, and the crouch's
+/// drop and toes' bits.
+type StrideKey = (u32, bool, bool, [u32; 2]);
 
 impl WalkerState {
     /// A walker standing at `position`, facing `yaw`.
@@ -599,7 +604,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let stride_speeds = super::gait::stride_speeds_with_steps(super::gait::leg_length_of(&gait_rig), super::gait::SHORT_STEPS);
                 let gait = approach::Gait {
                     cycle: cycle_of(&phase),
-                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, _, _, distance)| distance), stride_speeds),
+                    stride: state.walked.stride(speed_now, state.measured.map_or(0.0, |(_, distance)| distance), stride_speeds),
                     speed: speed_now,
                     stopped: !walking && state.transition.is_at_rest(),
                     stride_speeds,
@@ -694,9 +699,58 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Jumping, it asks no speed until it has landed and stood; leaping
         // from a run to run on, the run goes on under it.
         let jumping = state.jump.as_ref().is_some_and(|jump| jump.resumes().is_none());
-        // Crouched (`sneak`), it stands up before anything else.
+
+        // The standing knee bend, from the rig's own measured geometry, so
+        // it bends the right way on any rig (baked into a pose file it bent
+        // backward on a rig facing the other way).
+        let stood = match &foot_ik.rig {
+            Some(rig) => stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig),
+            None => stance_on(&base, DEFAULT_KNEE_FLEX),
+        };
+        let stood = match (walker.pose.strip_prefix("getup:"), &foot_ik.rig) {
+            (Some(name), Some(rig)) => {
+                use super::getup::Key;
+                let key = match name {
+                    "sit" => Key::Sit,
+                    "squat" => Key::Squat,
+                    "quadruped" => Key::Quadruped,
+                    "side_sit_left" => Key::SideSit { left_down: true },
+                    "side_sit_right" => Key::SideSit { left_down: false },
+                    _ => Key::HalfKneel,
+                };
+                key.pose(rig)
+            }
+            _ => stood,
+        };
+
+        // Asked to sneak (`sneak`), it crouches, standing or walking; walking,
+        // the walk eases into the crouch's (`sneak::SneakGait`), and asked to
+        // stop sneaking it stands up on the move. Not running: asked to sneak,
+        // a run slows to a walk first. Asked to go aside, sit, jump or step
+        // aside, it stands up first.
+        let busy = walker.aside != 0.0
+            || walker.step_aside != 0.0
+            || walker.sit.is_some()
+            || walker.jump.is_some()
+            || fallen
+            || !state.posture.is_standing()
+            || state.jump.is_some()
+            || state.gaits.running > 0.0;
+        let sneak = if busy { super::sneak::Sneak::STANDING } else { walker.sneak };
+        let mut footing = None;
+        if sneak.is_sneaking() || !state.crouching.is_standing() {
+            let crouch_on = super::sneak::Footing::of(&stood, &gait_rig);
+            state.crouching.ask(sneak.crouch_on(super::gait::leg_length_of(&gait_rig)), crouch_on.rise());
+            state.crouching.advance(time.delta_secs());
+            footing = Some(crouch_on);
+        }
         let crouched = !state.crouching.is_standing();
-        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || jumping || crouched;
+        // From a stand it sets off once its crouch is still.
+        let still = fallen
+            || !state.posture.is_standing()
+            || (walker.sit.is_some() && arrived)
+            || jumping
+            || (!state.crouching.is_still() && state.transition.is_at_rest());
         // Asked to go aside (`Walker::aside`), with or without forward, and
         // not to sit. Mostly across (45° or more off forward): the side
         // shuffle (`shuffle`), a walk of its own on the same clock, forward
@@ -732,6 +786,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         } else {
             going + walk_balance.surge
         };
+        // Sneaking, or asked to, no faster than a sneak walks.
+        let asked = if crouched || walker.sneak.is_sneaking() { asked.min(super::sneak::FASTEST) } else { asked };
         // Above a walk the speed is eased toward (`run::ACCELERATION`): up
         // to the changeover at once, as a walk always took its speed, then
         // gathered; coming down, shed until the gait is a walk again, which
@@ -769,8 +825,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.shuffle_ahead += (ahead - state.shuffle_ahead).clamp(-most, most);
             }
         }
+        // Crouched, the sneak's walk: the one its crouch is going to, blended
+        // from the one it set off from while the crouch changes.
+        let sneak_gait = footing
+            .filter(|_| crouched && state.shuffle.is_none())
+            .map(|footing| super::sneak::SneakGait::of(&state.crouching, &footing, speed, &stood, &gait_rig));
+        // What the walk is measured on (the crouch it is going to), and what
+        // a stand blends with (the crouch it is in), else standing.
+        let gait_target = sneak_gait.as_ref().map_or(stood, |gait| gait.target().0);
+        let gait_base = match footing {
+            Some(footing) if crouched && !state.crouching.is_still() => footing.pose(state.crouching.now(), &stood, &gait_rig),
+            _ => gait_target,
+        };
         let walk_params = if let Some(toward) = state.shuffle {
             super::shuffle::shuffling(state.shuffle_speed, toward, state.shuffle_ahead)
+        } else if let Some(gait) = sneak_gait.as_ref() {
+            gait.target().1
         } else if placing {
             GaitParams::walking_with_steps(speed, leg, super::gait::SHORT_STEPS)
         } else {
@@ -778,35 +848,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         };
         let run_params = GaitParams::running_for(speed, leg);
 
-        // The standing knee bend, from the rig's own measured geometry, so
-        // it bends the right way on any rig (baked into a pose file it bent
-        // backward on a rig facing the other way).
-        let stood = match &foot_ik.rig {
-            Some(rig) => stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig),
-            None => stance_on(&base, DEFAULT_KNEE_FLEX),
-        };
-        let stood = match (walker.pose.strip_prefix("getup:"), &foot_ik.rig) {
-            (Some(name), Some(rig)) => {
-                use super::getup::Key;
-                let key = match name {
-                    "sit" => Key::Sit,
-                    "squat" => Key::Squat,
-                    "quadruped" => Key::Quadruped,
-                    "side_sit_left" => Key::SideSit { left_down: true },
-                    "side_sit_right" => Key::SideSit { left_down: false },
-                    _ => Key::HalfKneel,
-                };
-                key.pose(rig)
-            }
-            _ => stood,
-        };
-
         // A run above the changeover speed, a walk again below a tenth less,
         // changed in one step (`run::Gaits`); only walking fully and not
         // shuffling. Through the change the gait coming in is posed where
         // its planted foot matches the one going out's
         // (`run::Matched::feet`), and the clock moves onto it at the end.
-        if still || state.shuffle.is_some() || state.transition.weight < 1.0 {
+        if still || state.shuffle.is_some() || state.transition.weight < 1.0 || crouched {
             state.gaits.walk();
         } else {
             let previous_cycle = state.stride.cycle;
@@ -847,13 +894,17 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // and the planted feet slid by the difference.
         // Keyed by the speed the stride is for: a shuffle's, the one asked.
         let stride_for = if state.shuffle.is_some() { state.shuffle_speed } else { speed };
-        let key = (stride_for.to_bits(), foot_ik.rig.is_some(), state.shuffle.is_some());
+        // And by the crouch a sneak is going to, on whose walk it is measured.
+        // Keyed by the crouch it is in, it was measured afresh, a cycle built,
+        // every frame of a crouch going down or up.
+        let crouch_to = if sneak_gait.is_some() { state.crouching.target() } else { super::sneak::Crouch::default() };
+        let key = (stride_for.to_bits(), foot_ik.rig.is_some(), state.shuffle.is_some(), [crouch_to.drop.to_bits(), crouch_to.toes.to_bits()]);
         let walked = match state.measured {
-            Some((speed, bound, shuffle, distance)) if (speed, bound, shuffle) == key => distance,
+            Some((measured, distance)) if measured == key => distance,
             _ if running >= 1.0 => 0.0,
             _ => {
-                let distance = locomotion::distance_per_cycle(&walk_params, &stood, &gait_rig);
-                state.measured = Some((key.0, key.1, key.2, distance));
+                let distance = locomotion::distance_per_cycle(&walk_params, &gait_target, &gait_rig);
+                state.measured = Some((key, distance));
                 distance
             }
         };
@@ -910,27 +961,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // The pose as a function of phase, ONE definition, used both to pose
         // the character and to derive its root motion, so the two cannot
         // disagree. Blended from `stood`, so the standing knee bend does not
-        // pop as a walk begins or ends.
-        // Standing still and asked to sneak, it crouches (`sneak`); asked
-        // anything else, it stands up first.
-        let busy = walker.speed > 0.0
-            || walker.aside != 0.0
-            || walker.step_aside != 0.0
-            || walker.sit.is_some()
-            || walker.jump.is_some()
-            || fallen
-            || !state.posture.is_standing()
-            || state.jump.is_some()
-            || weight > 0.0
-            || !state.transition.is_at_rest();
-        let sneak = if busy { super::sneak::Sneak::STANDING } else { walker.sneak };
-        let mut prepared = stood;
-        if sneak.is_sneaking() || !state.crouching.is_standing() {
-            let footing = super::sneak::Footing::of(&stood, &gait_rig);
-            state.crouching.ask(sneak.crouch_on(leg), footing.rise());
-            state.crouching.advance(time.delta_secs());
-            prepared = footing.pose(state.crouching.now(), &stood, &gait_rig);
-        }
+        // pop as a walk begins or ends; crouched, from the crouch.
+        let mut prepared = gait_base;
         state.transition.apply_release(&mut prepared, &gait_rig);
         // A stop's last swing is set down onto where it will stand.
         foot_ik.landing = state.transition.landing(&prepared, &gait_rig);
@@ -988,9 +1020,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             // cannot fool their speed test, and let go at toe-off, so the
             // lock does not hold a foot that has left.
             [0.0, 0.5].map(|shift| super::gait::leg_phase(cycle + shift, params.duty_factor).is_stance())
-        } else if !state.crouching.is_standing() {
-            // Crouching or crouched, both feet stay where they stood, as a
-            // jump's do going down into its countermovement.
+        } else if weight <= 0.0 && !state.crouching.is_standing() {
+            // Crouching or crouched standing, both feet stay where they
+            // stood, as a jump's do going down into its countermovement.
             [true; 2]
         } else {
             [false; 2]
@@ -1037,7 +1069,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             } else {
                 // Walking, running, or the one step changing between them,
                 // each gait at its own phase (`run::Gaits::phases`).
-                let walking = if running <= 0.0 {
+                let walking = if let Some(gait) = sneak_gait.as_ref() {
+                    gait.pose(cycle, &gait_rig)
+                } else if running <= 0.0 {
                     walk_pose_on(cycle, &walk_params, &stood, &gait_rig)
                 } else if running >= 1.0 {
                     walk_pose_on(cycle, &run_params, &stood, &gait_rig)

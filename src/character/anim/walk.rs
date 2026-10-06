@@ -75,6 +75,13 @@ const LEGS: [(f32, Bone, Bone, Bone); 2] = [
 pub struct WalkCycle {
     amplitude: f32,
     duty_factor: f32,
+    /// A sneak's crouch on the recorded stride (none for a walk): see
+    /// [`WalkCycle::pose_legs`]. Each leg's thigh and shank lengths in the
+    /// sagittal plane, and how far the crouch moves the ankle from the
+    /// socket, (forward, up), against standing.
+    crouch: gait::CrouchAngles,
+    limbs: [(f32, f32); 2],
+    shift: [(f32, f32); 2],
     /// Each leg's hip and foot rotations with the feet brought in to the
     /// walk's step width (`stance::narrow_feet`). The recorded stride is
     /// composed onto these, not onto the base's standing width.
@@ -129,9 +136,27 @@ impl WalkCycle {
         });
         let soles = [Sole::of(rig, LEGS[0].3), Sole::of(rig, LEGS[1].3)];
         let ground = [0, 1].map(|leg| lowest(&soles[leg].points(base, rig)));
+        // Each leg's thigh and shank in the sagittal plane, and how far the
+        // crouch moves its ankle from where standing has it (base_angles are
+        // the crouch's; standing is them less the crouch's extra flexion).
+        let limbs = [0, 1].map(|leg| {
+            let (socket, knee, ankle, _) = gait::leg_joints(LEGS[leg].3);
+            let at = |bone| super::rig::offset_from(&narrow, rig, Bone::Hips, bone);
+            let flat = |v: bevy::math::Vec3| v.dot(rig.forward()).hypot(v.y);
+            (flat(at(knee) - at(socket)), flat(at(ankle) - at(knee)))
+        });
+        let crouch = params.crouch;
+        let shift = [0, 1].map(|leg| {
+            let [thigh, _, knee, _] = base_angles[leg];
+            let (crouched, standing) = (sagittal_ankle(limbs[leg], thigh, knee), sagittal_ankle(limbs[leg], thigh - crouch.thigh, knee - crouch.knee));
+            (crouched.0 - standing.0, crouched.1 - standing.1)
+        });
         let mut cycle = Self {
             amplitude,
             duty_factor: params.duty_factor,
+            crouch,
+            limbs,
+            shift,
             narrowed,
             base_angles,
             bind_shank,
@@ -270,13 +295,26 @@ impl WalkCycle {
     /// knee, the foot at its recorded attitude on the ground.
     pub fn pose_legs(&self, pose: &mut LocalPose, phase: f32, facing: f32) {
         let reference = &*WINTER;
-        let gentle = self.amplitude.sqrt();
         for (leg, &(shift, hip, knee, ankle)) in LEGS.iter().enumerate() {
             let at = gait::reference_phase(phase + shift, self.duty_factor);
             let about_mean = |c: &Periodic, k: f32| c.mean() + k * (c.at(at) - c.mean());
-            let thigh_angle = about_mean(&reference.thigh, self.amplitude) + self.correction_at(leg, phase);
-            let knee_angle =
-                gait::soft_floor(gentle * reference.knee.at(at), gait::KNEE_FLOOR, gait::KNEE_FLOOR_SOFTNESS);
+            let mut thigh_angle = about_mean(&reference.thigh, self.amplitude) + self.correction_at(leg, phase);
+            let mut knee_angle = Self::walking_knee(self.amplitude, at);
+            // A sneak (`sneak`): the ankle where the walk has it from the
+            // socket, moved as the crouch moves it from standing, and the
+            // thigh and knee solved to reach it, the knee forward. The hips
+            // then ride the walk's path lowered by the crouch, and a swinging
+            // foot clears the floor as the walk's does. Crouched by adding the
+            // crouch's extra flexion to the walk's angles instead, the thigh
+            // swept about 46° from vertical, where the hips' height changes
+            // four times as fast with it as a walk's: the pelvis bobbed 72 mm
+            // a step (the walk's 32) at 6.9 m/s², and the toe tips skimmed
+            // the floor leaving it.
+            if self.crouch != gait::CrouchAngles::NONE {
+                let walked = sagittal_ankle(self.limbs[leg], thigh_angle, knee_angle);
+                let (forward, up) = self.shift[leg];
+                (thigh_angle, knee_angle) = sagittal_leg(self.limbs[leg], (walked.0 + forward, walked.1 + up));
+            }
             // The FOOT is placed by its absolute attitude, like the thigh, and
             // the ankle is whatever joins the shank to it: in the sagittal
             // plane the foot's toe-up angle is `thigh - knee + ankle`.
@@ -293,6 +331,9 @@ impl WalkCycle {
             // the body forward, and scaled more gently it dominated a short
             // slow stride.
             let toe_up = -self.amplitude * reference.foot_pitch.at(at);
+            // On the toes, the foot never flatter than the heels risen: it
+            // comes down on the forefoot, the heel up through stance.
+            let toe_up = if self.crouch.heel > 0.0 { -gait::soft_floor(-toe_up, self.crouch.heel, HEEL_SOFTNESS) } else { toe_up };
             let shank = thigh_angle - knee_angle;
             let wanted = [thigh_angle, knee_angle, toe_up - shank + self.bind_shank[leg]];
             let [thigh_now, _, knee_now, ankle_now] = self.base_angles[leg];
@@ -309,6 +350,12 @@ impl WalkCycle {
             gait::compose(pose, knee, turn(-(wanted[1] - knee_now)));
             gait::compose(pose, ankle, turn(wanted[2] - ankle_now));
         }
+    }
+
+    /// The recorded knee at reference phase `at`, its excursion scaled by
+    /// the square root of `amplitude`, held off straight ([`gait::KNEE_FLOOR`]).
+    fn walking_knee(amplitude: f32, at: f32) -> f32 {
+        gait::soft_floor(amplitude.sqrt() * WINTER.knee.at(at), gait::KNEE_FLOOR, gait::KNEE_FLOOR_SOFTNESS)
     }
 
     /// Bends a swinging foot's toes up as far as lifts the tip
@@ -446,9 +493,15 @@ impl WalkCycle {
             // 8 cm of forward travel before it took weight bent the whole
             // stance leg back 5.5 degrees; counted by height alone, a heel
             // that had reached the floor but not yet the load bent it 4.2.
+            // On the toes (a sneak's) the tip is down from the moment the
+            // stance starts, and lands on the floor before it bears the body:
+            // counted only as it took the weight, it landed moving 8.9 mm a
+            // frame at 0.8 m/s, its ankle carried forward by the recorded
+            // heel's roll. All its stance counts.
+            let toes = self.crouch.heel > 0.0;
             for leg in 0..2 {
                 if let Some(step) = moved[leg] {
-                    slide[leg][i] = (step + body) * borne[leg];
+                    slide[leg][i] = (step + body) * if toes { 1.0 } else { borne[leg] };
                 }
             }
         }
@@ -492,6 +545,32 @@ impl WalkCycle {
         }
     }
 }
+
+/// Where a leg of `(thigh, shank)` lengths puts its ankle from the socket,
+/// (forward, up), with the thigh `thigh` radians forward of hanging and the
+/// knee flexed `knee` (`gait::sagittal_angles`' angles).
+fn sagittal_ankle((thigh_length, shank_length): (f32, f32), thigh: f32, knee: f32) -> (f32, f32) {
+    let shank = thigh - knee;
+    (thigh_length * thigh.sin() + shank_length * shank.sin(), -thigh_length * thigh.cos() - shank_length * shank.cos())
+}
+
+/// The thigh and knee angles that put a leg's ankle at `ankle` from the
+/// socket (forward, up), the knee folded forward; out of reach, as near
+/// straight as [`gait::KNEE_FLOOR`] allows, toward it.
+fn sagittal_leg((thigh_length, shank_length): (f32, f32), (forward, up): (f32, f32)) -> (f32, f32) {
+    let most = (thigh_length * thigh_length + shank_length * shank_length + 2.0 * thigh_length * shank_length * gait::KNEE_FLOOR.cos()).sqrt();
+    let reach = forward.hypot(up).clamp(1.0e-4, most);
+    // The knee's interior angle, and the thigh's off the socket-to-ankle
+    // line, by the law of cosines.
+    let cosine = |a: f32, b: f32, opposite: f32| ((a * a + b * b - opposite * opposite) / (2.0 * a * b)).clamp(-1.0, 1.0);
+    let knee = std::f32::consts::PI - cosine(thigh_length, shank_length, reach).acos();
+    let off_line = cosine(thigh_length, reach, shank_length).acos();
+    (forward.atan2(-up) + off_line, knee)
+}
+
+/// Over how much a foot's toe-down angle is eased onto a sneak's heel rise,
+/// radians (~3°), so the foot meets it without a corner.
+const HEEL_SOFTNESS: f32 = 0.05;
 
 /// Over how much height the tip is eased onto the floor by
 /// [`WalkCycle::conform_toes`], metres.
@@ -643,7 +722,7 @@ pub fn walk_cycle(
 fn key_of(params: &GaitParams, amplitude: f32, base: &LocalPose, rig: &RigGeometry) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut feed = |values: &[f32]| values.iter().for_each(|v| v.to_bits().hash(&mut hasher));
-    feed(&[amplitude, params.duty_factor]);
+    feed(&[amplitude, params.duty_factor, params.crouch.thigh, params.crouch.knee, params.crouch.heel]);
     for q in base.rotations.0.iter().chain(rig.bind_rotations.0.iter()) {
         feed(&q.to_array());
     }

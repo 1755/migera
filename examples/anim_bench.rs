@@ -35,11 +35,14 @@ use migera::character::anim::{default_springs, poses};
 /// metres; `--from-run V [--run-on]` from a run), posed through its whole
 /// length on each character's clock; or a crouch (`--gait crouch`, `--speed`
 /// its depth 0-1, `--on-toes`), going down and up through it on each
-/// character's clock, posed from its feet every frame as the walker poses it.
+/// character's clock, posed from its feet every frame as the walker poses it;
+/// or a sneak's walk (`--gait sneak`, `--speed`, `--crouch` 0-1,
+/// `--on-toes`), the crouch it walks from posed every frame too.
 #[derive(Clone, Copy)]
 enum Gait {
     None,
     Walk(f32),
+    Sneak(f32, f32, bool),
     Run(f32),
     Jump(f32, f32),
     Crouch(f32, bool),
@@ -80,7 +83,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) => None,
     };
     let jump = match gait {
         Gait::Jump(height, distance) => {
@@ -95,7 +98,34 @@ fn main() {
         }
         _ => None,
     };
+    // A sneak's walk, as the walker sets it once a frame (the crouch posed
+    // each frame is costed by `--gait crouch`); with `--crouch-from C`, half
+    // way through changing from crouch C, two walks blended
+    // (`sneak::SneakGait`).
+    let sneaking = match gait {
+        Gait::Sneak(speed, crouch, on_toes) => {
+            use migera::character::anim::sneak::{Crouching, Footing, Sneak, SneakGait};
+            let footing = Footing::of(&stood, &rig);
+            let leg = migera::character::anim::gait::leg_length_of(&rig);
+            let mut crouching = Crouching::default();
+            if let Some(from) = crouch_from() {
+                crouching.ask(Sneak { crouch: from, on_toes }.crouch_on(leg), footing.rise());
+                crouching.advance(10.0);
+            }
+            crouching.ask(Sneak { crouch, on_toes }.crouch_on(leg), footing.rise());
+            if crouch_from().is_some() {
+                while crouching.gone() < 0.5 {
+                    crouching.advance(1.0 / 240.0);
+                }
+            } else {
+                crouching.advance(10.0);
+            }
+            Some(SneakGait::of(&crouching, &footing, speed, &stood, &rig))
+        }
+        _ => None,
+    };
     let posed = |cycle: f32| match (&jump, params) {
+        _ if let Some(sneak) = &sneaking => Some((sneak.pose(cycle, &rig), Some(sneak.target().1))),
         _ if let Gait::Crouch(depth, on_toes) = gait => {
             use migera::character::anim::sneak::{Footing, Sneak};
             let crouch = depth * 0.5 * (1.0 - (std::f32::consts::TAU * cycle).cos());
@@ -131,6 +161,7 @@ fn main() {
         Gait::Run(speed) => format!("   run {speed} m/s"),
         Gait::Jump(height, distance) => format!("   jump {height} m up, {distance} m forward"),
         Gait::Crouch(depth, on_toes) => format!("   crouch {depth}{}", if on_toes { " on the toes" } else { "" }),
+        Gait::Sneak(speed, crouch, on_toes) => format!("   sneak {speed} m/s, crouch {crouch}{}", if on_toes { " on the toes" } else { "" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -181,6 +212,12 @@ fn step(
     }
 }
 
+/// `--crouch-from C`: a sneak's crouch changing from C, half-way.
+fn crouch_from() -> Option<f32> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == "--crouch-from").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok())
+}
+
 /// `--from-run V`: the jump taken from a run at V m/s (`jump::Jump::from_run`),
 /// and with `--run-on`, landing on the other foot to run on.
 fn from_run() -> (f32, bool) {
@@ -192,7 +229,7 @@ fn from_run() -> (f32, bool) {
 fn parse_args() -> (usize, usize, Gait) {
     let mut characters = 100;
     let mut frames = 600;
-    let (mut gait, mut speed, mut distance) = (None::<String>, 1.4, 0.0);
+    let (mut gait, mut speed, mut distance, mut crouch) = (None::<String>, 1.4, 0.0, 1.0);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -206,6 +243,7 @@ fn parse_args() -> (usize, usize, Gait) {
             "--gait" => gait = args.next(),
             "--speed" => speed = args.next().and_then(|v| v.parse().ok()).unwrap_or(speed),
             "--distance" => distance = args.next().and_then(|v| v.parse().ok()).unwrap_or(distance),
+            "--crouch" => crouch = args.next().and_then(|v| v.parse().ok()).unwrap_or(crouch),
             _ => {}
         }
     }
@@ -215,6 +253,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("run") => Gait::Run(speed),
         Some("jump") => Gait::Jump(speed, distance),
         Some("crouch") => Gait::Crouch(speed, std::env::args().any(|a| a == "--on-toes")),
+        Some("sneak") => Gait::Sneak(speed, crouch, std::env::args().any(|a| a == "--on-toes")),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

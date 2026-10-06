@@ -45,6 +45,116 @@ pub const CROUCH_ACCELERATION: f32 = 2.0;
 /// toes, or a small change of depth.
 pub const QUICKEST: f32 = 0.4;
 
+/// The fastest a sneak walks, m/s: a walk asked faster is held to it, and a
+/// sneak never runs. Authored: a crouched walk is slow.
+pub const FASTEST: f32 = 1.0;
+
+/// How much of a walk's arm swing the deepest sneak holds back: the arms
+/// are carried ahead of the body, not swung. In proportion to the depth.
+pub const ARMS_HELD: f32 = 0.7;
+
+/// A sneak's walk at `speed` m/s (at most [`FASTEST`]) on `rig`, from the
+/// crouch `crouched` (posed by [`Footing::pose`], `depth` 0-1 of the deepest,
+/// `toes` 0-1 onto them) against standing in `stood`: Winter's stride,
+/// replayed with the thigh and knee as much further flexed as the crouch's
+/// ([`super::gait::CrouchAngles`]), and the arms held.
+///
+/// Its stride is the walk's at the same speed, so every crouch walks its
+/// feet along the same path over the floor: not crouched, it is the walk,
+/// and a crouch changing while walking blends two of them without moving
+/// the feet ([`SneakGait`]).
+pub fn sneaking_on(speed: f32, crouched: &LocalPose, stood: &LocalPose, rig: &RigGeometry, depth: f32, toes: f32) -> super::gait::GaitParams {
+    use super::gait::{leg_joints, sagittal_angles, CrouchAngles, GaitParams};
+    let walk = GaitParams::walking_on(speed.clamp(0.0, FASTEST), rig);
+    // Each leg's extra flexion over standing, their mean: the crouch is
+    // posed square, so the two agree.
+    let extra = |i: usize| {
+        let joints = leg_joints([Bone::LeftFoot, Bone::RightFoot][i]);
+        let (now, then) = (sagittal_angles(crouched, rig, joints), sagittal_angles(stood, rig, joints));
+        (now[0] - then[0], now[2] - then[2])
+    };
+    let (left, right) = (extra(0), extra(1));
+    GaitParams {
+        crouch: CrouchAngles {
+            thigh: 0.5 * (left.0 + right.0),
+            knee: 0.5 * (left.1 + right.1),
+            heel: TOES_HEEL * toes.clamp(0.0, 1.0),
+        },
+        arm_swing: walk.arm_swing * (1.0 - ARMS_HELD * depth.clamp(0.0, 1.0)),
+        ..walk
+    }
+}
+
+impl Footing {
+    /// How deep `crouch` is, 0-1 of the deepest.
+    pub fn depth_of(&self, crouch: Crouch) -> f32 {
+        (crouch.drop / self.deepest).clamp(0.0, 1.0)
+    }
+
+    /// The crouched pose `crouch` walks from, and its walk at `speed`.
+    pub fn walk(&self, crouch: Crouch, speed: f32, stood: &LocalPose, rig: &RigGeometry) -> (LocalPose, super::gait::GaitParams) {
+        let crouched = self.pose(crouch, stood, rig);
+        let params = sneaking_on(speed, &crouched, stood, rig, self.depth_of(crouch), crouch.toes.clamp(0.0, 1.0));
+        (crouched, params)
+    }
+}
+
+/// A sneak's walk while its crouch changes ([`Crouching`]): the walk of the
+/// crouch it set off from and the one it is going to, at one clock, blended
+/// by how far it has gone. Each is cached (`walk::walk_cycle`), so a change
+/// builds two cycles at most, where one for each crouch passed through
+/// would build one a frame. Still, the one walk.
+#[derive(Debug, Clone)]
+pub struct SneakGait {
+    from: (LocalPose, super::gait::GaitParams),
+    to: (LocalPose, super::gait::GaitParams),
+    weight: f32,
+}
+
+impl SneakGait {
+    /// The walk `crouching` is in at `speed`, from standing in `stood`.
+    pub fn of(crouching: &Crouching, footing: &Footing, speed: f32, stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let to = footing.walk(crouching.to, speed, stood, rig);
+        let weight = crouching.gone();
+        let from = if weight >= 1.0 { to } else { footing.walk(crouching.from, speed, stood, rig) };
+        Self { from, to, weight }
+    }
+
+    /// The pose at `cycle`: the two walks blended, and each leg then put
+    /// where the two have it.
+    ///
+    /// Both walks put a foot at the same place over the floor, so the ankle
+    /// from the hips, blended in proportion as the hips' height is, keeps it
+    /// there; its world attitude is blended too. The legs' joints blended
+    /// instead (a knee from 15° to 75°, the hips lerped) pressed the planted
+    /// foot 52 mm into the floor half-way from standing to the deepest.
+    pub fn pose(&self, cycle: f32, rig: &RigGeometry) -> LocalPose {
+        use super::gait::walk_pose_on;
+        use super::rig::{accumulate_world_rotations, delta_after_world_turn, offset_from};
+        let to = walk_pose_on(cycle, &self.to.1, &self.to.0, rig);
+        if self.weight >= 1.0 {
+            return to;
+        }
+        let from = walk_pose_on(cycle, &self.from.1, &self.from.0, rig);
+        let w = self.weight;
+        let mut pose = super::clip::blend(&from, &to, w);
+        let (turned_from, turned_to) = (accumulate_world_rotations(&from, rig), accumulate_world_rotations(&to, rig));
+        for ankle in [Bone::LeftFoot, Bone::RightFoot] {
+            let target = offset_from(&from, rig, Bone::Hips, ankle).lerp(offset_from(&to, rig, Bone::Hips, ankle), w);
+            super::stance::place_ankle(&mut pose, rig, ankle, target);
+            let wanted = turned_from[ankle].slerp(turned_to[ankle], w);
+            let now = accumulate_world_rotations(&pose, rig)[ankle];
+            pose.rotations[ankle] = delta_after_world_turn(&pose, rig, ankle, wanted * now.inverse());
+        }
+        pose
+    }
+
+    /// The walk it is going to: its params, and the crouch it walks from.
+    pub fn target(&self) -> &(LocalPose, super::gait::GaitParams) {
+        &self.to
+    }
+}
+
 /// A sneak asked for: how deep to crouch, 0 (standing) to 1 ([`DEEPEST`]),
 /// and whether on the toes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -177,6 +287,19 @@ impl Crouching {
     /// Where it is going.
     pub fn target(&self) -> Crouch {
         self.to
+    }
+
+    /// How far it has gone from where it set off toward where it is going,
+    /// 0-1: along the COM's height (the drop, less the toes' rise at a
+    /// nominal 7 cm), else the toes alone.
+    pub fn gone(&self) -> f32 {
+        if self.is_still() {
+            return 1.0;
+        }
+        let along = |c: Crouch| (c.drop - 0.07 * c.toes, c.toes);
+        let (from, now, to) = (along(self.from), along(self.now()), along(self.to));
+        let fraction = if (to.0 - from.0).abs() > 1.0e-4 { (now.0 - from.0) / (to.0 - from.0) } else { (now.1 - from.1) / (to.1 - from.1) };
+        if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 1.0 }
     }
 
     /// Asks it for `to`: from where it is now, at the rate it is going. The
@@ -327,6 +450,206 @@ mod tests {
         let deepest = Sneak { crouch: 1.0, on_toes: false }.crouch_on(leg_length_of(&rig));
         let (flexion, tilt) = knee_and_shank(&footing.pose(deepest, &stood, &rig), &rig);
         assert!((60.0..80.0).contains(&flexion), "the deepest sneak folds the knees {flexion}°, the shanks leaning {tilt}°");
+    }
+
+    /// A sneak's walk at `speed`, `crouch` deep and `on_toes`: its params,
+    /// the crouch it walks from, and the pose at a phase.
+    fn sneak_walk(stood: &LocalPose, rig: &RigGeometry, speed: f32, crouch: f32, on_toes: bool) -> (super::super::gait::GaitParams, LocalPose) {
+        let footing = Footing::of(stood, rig);
+        let asked = Sneak { crouch, on_toes }.crouch_on(leg_length_of(rig));
+        let crouched = footing.pose(asked, stood, rig);
+        (sneaking_on(speed, &crouched, stood, rig, footing.depth_of(asked), asked.toes), crouched)
+    }
+
+    const SNEAKS: [(f32, bool); 4] = [(0.5, false), (1.0, false), (0.5, true), (1.0, true)];
+    const SPEEDS: [f32; 3] = [0.4, 0.7, 1.0];
+
+    /// Every phase of a sneak's walk: the knees fold forward, and through
+    /// stance the least knee flexion is a crouch gait's (Steele et al.
+    /// 2010: past 50° severe), the hips riding lower than the walk's.
+    #[test]
+    fn a_sneak_walks_on_bent_knees_lower_than_a_walk() {
+        use crate::character::anim::gait::{leg_phase, walk_pose_on, GaitParams, SHORT_STEPS};
+        let (stood, rig) = real_stood();
+        for (crouch, on_toes) in SNEAKS {
+            for speed in SPEEDS {
+                let (params, crouched) = sneak_walk(&stood, &rig, speed, crouch, on_toes);
+                let walk = GaitParams::walking_with_steps(speed, leg_length_of(&rig), SHORT_STEPS);
+                let (mut least, mut lower) = (f32::MAX, 0.0f32);
+                for i in 0..64 {
+                    let phase = i as f32 / 64.0;
+                    let pose = walk_pose_on(phase, &params, &crouched, &rig);
+                    for side in [Side::Left, Side::Right] {
+                        let fold = rig.knee_fold_direction(&pose, side);
+                        assert!(fold < 0.0, "{crouch} {on_toes} at {speed} m/s, phase {phase}: the {side:?} knee folds backward");
+                    }
+                    if leg_phase(phase, params.duty_factor).is_stance() {
+                        least = least.min(knee_and_shank(&pose, &rig).0);
+                    }
+                    lower += (walk_pose_on(phase, &walk, &stood, &rig).root_translation.y - pose.root_translation.y) / 64.0;
+                }
+                // The crouch's own hips below standing's.
+                let drop = stood.root_translation.y - crouched.root_translation.y;
+                let floor = if crouch >= 1.0 { 50.0 } else { 30.0 };
+                assert!(least > floor, "{crouch} {on_toes} at {speed} m/s: the stance knee straightens to {least}°");
+                // Flat, within 0.2 mm measured. On the toes 10-21 mm lower,
+                // more the faster: the walk it is measured against rides up
+                // over its heel, which a toe walk never comes down on.
+                let within = if on_toes { (-0.002, 0.025) } else { (-0.002, 0.002) };
+                assert!((within.0..within.1).contains(&(lower - drop)), "{crouch} {on_toes} at {speed} m/s: the hips ride {lower} m below the walk's, the crouch's COM {drop}");
+            }
+        }
+    }
+
+    /// Through single support the planted foot is on the floor, as a walk's
+    /// is (`locomotion`'s `a_planted_foot_stays_on_the_ground`: never floating, pressed in
+    /// no more than the foot IK lifts out); through swing it clears it.
+    /// On the toes, the heel stays up through stance.
+    #[test]
+    fn a_sneaks_feet_stay_on_the_floor_and_swing_clear_of_it() {
+        use crate::character::anim::foot::lowest;
+        use crate::character::anim::gait::{leg_phase, walk_pose_on, LegPhase};
+        let (stood, rig) = real_stood();
+        let sole = Sole::of(&rig, Bone::LeftFoot);
+        let ground = lowest(&sole.points(&stood, &rig));
+        for (crouch, on_toes) in [(0.0, false)].into_iter().chain(SNEAKS) {
+            for speed in SPEEDS {
+                let (params, crouched) = sneak_walk(&stood, &rig, speed, crouch, on_toes);
+                let (mut floating, mut pressed, mut dipped, mut mid, mut flattest) = (0.0f32, 0.0f32, f32::MAX, f32::MAX, f32::MAX);
+                for i in 0..200 {
+                    let phase = i as f32 / 200.0;
+                    let pose = walk_pose_on(phase, &params, &crouched, &rig);
+                    let risen = pose.root_translation.y - stood.root_translation.y;
+                    let points = sole.points(&pose, &rig);
+                    let height = risen + lowest(&points) - ground;
+                    match leg_phase(phase, params.duty_factor) {
+                        LegPhase::Stance { progress } => {
+                            if (0.25..=0.75).contains(&progress) {
+                                floating = floating.max(height);
+                                pressed = pressed.max(-height);
+                            }
+                            if (0.1..=0.9).contains(&progress) {
+                                flattest = flattest.min(points[0].y - points[2].y);
+                            }
+                        }
+                        LegPhase::Swing { progress } => {
+                            dipped = dipped.min(height);
+                            if (0.3..0.7).contains(&progress) {
+                                mid = mid.min(height);
+                            }
+                        }
+                    }
+                }
+                let what = format!("{crouch} {on_toes} at {speed} m/s");
+                assert!(floating < 0.002, "{what}: a planted foot floated {} mm", floating * 1e3);
+                // The walk's own (the uncrouched case, 14-15 mm): the sneak's
+                // feet go as the walk's do under its hips.
+                assert!(pressed < 0.016, "{what}: a planted foot sank {} mm", pressed * 1e3);
+                assert!(dipped > -0.002, "{what}: a swinging foot dipped {} mm into the floor", -dipped * 1e3);
+                assert!(mid > 0.01, "{what}: mid-swing clears the floor by {} mm", mid * 1e3);
+                if on_toes {
+                    assert!(flattest > 0.04, "{what}: the heel came down to {} mm over the tip", flattest * 1e3);
+                }
+            }
+        }
+    }
+
+    /// On the toes the tip is the foot's contact from touchdown to toe-off,
+    /// and stays where it landed in the world: its motion under the hips
+    /// and the body's travel (`locomotion::root_velocity_of`) cancel, frame
+    /// by frame at 60 Hz. Before its whole stance counted toward the thigh
+    /// correction (`walk::WalkCycle::refine`), it landed moving 8.9 mm a
+    /// frame at 0.8 m/s, the recorded heel's roll carrying its ankle on.
+    #[test]
+    fn on_the_toes_a_planted_tip_stays_where_it_landed() {
+        use crate::character::anim::gait::{leg_phase, walk_pose_on, LegPhase};
+        use crate::character::anim::locomotion::{distance_per_cycle, root_velocity_of};
+        let (stood, rig) = real_stood();
+        let sole = Sole::of(&rig, Bone::LeftFoot);
+        for crouch in [0.5, 1.0] {
+            for speed in SPEEDS {
+                let (params, crouched) = sneak_walk(&stood, &rig, speed, crouch, true);
+                let at = |p: f32| walk_pose_on(p, &params, &crouched, &rig);
+                let cycles_a_frame = speed / distance_per_cycle(&params, &crouched, &rig) / 60.0;
+                let (n, mut worst, mut worst_at) = (600, 0.0f32, 0.0);
+                for i in 0..n {
+                    let (from, to) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                    // Not as it leaves the floor at toe-off, the last 3 %.
+                    let LegPhase::Stance { progress } = leg_phase(from, params.duty_factor) else { continue };
+                    if progress > 0.97 {
+                        continue;
+                    }
+                    let under = (sole.points(&at(to), &rig)[2] - sole.points(&at(from), &rig)[2]).dot(rig.forward());
+                    let body = root_velocity_of(0.5 * (from + to), 1.0, &params, &at, &rig).dot(rig.forward()) * (to - from);
+                    let per_frame = (under + body).abs() / (to - from) * cycles_a_frame;
+                    if per_frame > worst {
+                        (worst, worst_at) = (per_frame, progress);
+                    }
+                }
+                // Measured at most 0.11 mm.
+                assert!(worst < 3.0e-4, "{crouch} at {speed} m/s: the planted tip moves {} mm a frame at {worst_at} through stance", worst * 1e3);
+            }
+        }
+    }
+
+    /// Not crouched, a sneak's walk is the walk.
+    #[test]
+    fn uncrouched_a_sneak_walks_as_a_walk() {
+        use crate::character::anim::gait::GaitParams;
+        let (stood, rig) = real_stood();
+        let (params, crouched) = sneak_walk(&stood, &rig, 0.8, 0.0, false);
+        assert_eq!(params, GaitParams::walking_on(0.8, &rig));
+        assert_eq!(crouched.root_translation, stood.root_translation);
+    }
+
+    /// Changing its crouch on the move, part way between two walks
+    /// ([`SneakGait`]): through single support the planted foot stays on
+    /// the floor as the walk's does (pressed in no more than its 16 mm,
+    /// never floating). The legs' joints blended instead of their ankles,
+    /// it was pressed 52 mm in half-way from standing to the deepest.
+    ///
+    /// Not its slip: root motion is read off the same blended pose, so the
+    /// planted contact holds still by construction.
+    #[test]
+    fn a_crouch_changing_on_the_move_keeps_the_planted_foot_on_the_floor() {
+        use crate::character::anim::foot::lowest;
+        use crate::character::anim::gait::{leg_phase, LegPhase};
+        let (stood, rig) = real_stood();
+        let footing = Footing::of(&stood, &rig);
+        let leg = leg_length_of(&rig);
+        let sole = Sole::of(&rig, Bone::LeftFoot);
+        let ground = lowest(&sole.points(&stood, &rig));
+        let speed = 0.8;
+        let changes = [
+            (Sneak::STANDING, Sneak { crouch: 1.0, on_toes: false }),
+            (Sneak { crouch: 1.0, on_toes: false }, Sneak { crouch: 0.6, on_toes: true }),
+            (Sneak::STANDING, Sneak { crouch: 1.0, on_toes: true }),
+        ];
+        for (from, to) in changes {
+            for weight in [0.25, 0.5, 0.75] {
+                let gait = SneakGait {
+                    from: footing.walk(from.crouch_on(leg), speed, &stood, &rig),
+                    to: footing.walk(to.crouch_on(leg), speed, &stood, &rig),
+                    weight,
+                };
+                let duty = gait.to.1.duty_factor;
+                let (mut floating, mut pressed) = (0.0f32, 0.0f32);
+                for i in 0..200 {
+                    let phase = i as f32 / 200.0;
+                    let LegPhase::Stance { progress } = leg_phase(phase, duty) else { continue };
+                    if !(0.25..=0.75).contains(&progress) {
+                        continue;
+                    }
+                    let pose = gait.pose(phase, &rig);
+                    let height = pose.root_translation.y - stood.root_translation.y + lowest(&sole.points(&pose, &rig)) - ground;
+                    floating = floating.max(height);
+                    pressed = pressed.max(-height);
+                }
+                let what = format!("{from:?} to {to:?}, {weight} of the way");
+                assert!(floating < 0.002, "{what}: the planted foot floats {} mm", floating * 1e3);
+                assert!(pressed < 0.016, "{what}: the planted foot is pressed {} mm into the floor", pressed * 1e3);
+            }
+        }
     }
 
     /// Down at rest, up at rest, and asked again half-way it turns without

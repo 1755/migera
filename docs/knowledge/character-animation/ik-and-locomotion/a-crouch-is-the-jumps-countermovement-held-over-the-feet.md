@@ -1,6 +1,6 @@
 ---
 title: A crouch is the jump's countermovement held over the feet, eased by its COM's whole rise
-description: "sneak::Footing poses a crouch (depth 0-1, flat or on the toes) with the jump's foot-bound solver: trunk leant and arms forward by depth, pelvis solved so the COM is lowered over the feet, or over the balls with the heels up. Trap: an ease timed by depth alone ignored the toes' 7 cm rise and accelerated at 3.3 m/s² where 2 was planned."
+description: "sneak::Footing poses a crouch (depth 0-1, flat or on the toes) with the jump's foot-bound solver: trunk leant and arms forward by depth, the COM lowered over the feet, or over the balls with the heels up. Trap: an ease timed by depth alone ignored the toes' 7 cm rise: 3.3 m/s² where 2 was planned."
 type: decision
 status: current
 tags:
@@ -73,8 +73,11 @@ scaled to the rig like the gait's fractions. At the deepest:
 **In the walker.**
 - The crouch replaces the standing pose at rest, and both feet are held
   planted.
-- Asked to walk, sit, jump or step aside, it stands up first. The jump and
-  the step stay asked until then.
+- Asked to walk while sneaking, it walks from the crouch, and the crouch
+  can change on the move
+  ([the sneak's walk](./a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md)).
+- Asked to sit, jump or step aside, it stands up first. The jump and the
+  step stay asked until then.
 
 ## Trap: time the ease by the COM, not the depth
 
@@ -114,11 +117,10 @@ standing, deep again, then asked to walk):
 
 ## Revisit when
 
-- The sneak walks: the gait poses its strides from this crouch, and the
-  walker's "stand up first" gives way.
 - Many characters crouch at once: cache the `Footing` per standing pose.
 
 ## Related
 
 - [A jump is planned as its centre of mass's path](./a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the foot-bound pelvis solve and lean this reuses.
+- [A sneak walks the walk's foot path moved by its crouch](./a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md) — next: the walk from this crouch.
 - [Bind-pose zero leg slack is normal](./bind-pose-zero-leg-slack-is-normal.md) — context: the standing knee bend a crouch starts from.

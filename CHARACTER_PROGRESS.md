@@ -41,6 +41,90 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Sneaking: toe touchdowns held, the crouch changing on the move
+
+Two items left open by step 2, closed. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md).
+
+- **Toe touchdowns.** A toe walker's tip is down from touchdown, before it
+  bears the body, so its whole stance now counts toward the walk's thigh
+  correction (`WalkCycle::refine`), not only as it takes the weight.
+  - Before: it landed moving 8.9 mm a frame, the recorded heel's roll
+    carrying the rigid foot on.
+  - After: it moves at most 0.11 mm a frame through 97 % of stance.
+  - Live at 0.8 m/s, half on the toes: the tip on the floor moved up to
+    5.6 mm a frame before, 0.95 after (the walk's tips: 1.07).
+  - With the change off, the new test fails at 3.5 mm.
+- **The crouch changes while walking** (`sneak::SneakGait`). The walk at
+  the crouch it set off from and the one at the crouch it is going to are
+  blended by how far the crouch has gone; each is a cached cycle.
+  - Walk to sneak and back is a crouch changing to or from none.
+  - A sneak's stride is now the walk's at the same speed, so every crouch
+    puts its feet in the same place over the floor.
+  - Asked to sneak while running, the run slows to a walk first.
+- **Fixed on the way:**
+  - Blending the two walks' joints pressed the planted foot 52 mm into the
+    floor half-way from standing to the deepest. Each leg is now re-solved
+    to the lerped ankle, and the press is the walk's 15 mm.
+  - The stride was measured keyed by the crouch it was in, so a walk cycle
+    was built every frame of a crouch going down. It is now keyed by the
+    crouch it is going to.
+
+**Live** (0.8 m/s: walk, deepest at 5 s, half on the toes at 9 s,
+standing at 12 s):
+- planted balls slip at most 0.75 mm a frame and toe tips 1.84 mm (the
+  walk's 0.37 and 1.07);
+- the pelvis peaks at 5.3 m/s², standing up from the toes on the move;
+- Left, gizmos on and mesh off, mid-change: the knees forward, the feet
+  down, the heels rising onto the toes.
+
+**Cost:** 51 µs a character a frame while a crouch changes (`anim_bench
+--gait sneak --crouch-from C`), against 23 steady. 1195 library tests
+pass; clippy is clean.
+
+### Sneaking, step 2: the sneak's walk, flat or on the toes
+
+Asked to walk while sneaking, a walker crouches first and then walks from
+the crouch (`sneak::sneaking_on`, `GaitParams::crouch`). It walks at most
+1 m/s and never runs. The crouch holds while walking. `anim_bench` takes
+`--gait sneak --speed V --crouch C [--on-toes]`. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md).
+
+- **Legs** (`WalkCycle::pose_legs`):
+  - Winter's ankle path from the hip socket, moved by as much as the crouch
+    moves the ankle from standing;
+  - the thigh and knee solved to it, the knee forward;
+  - on the toes, the foot never flatter than the 20° heel rise.
+- **Upper body:** the crouch's lean and arms, the swing held back 70 % at
+  the deepest.
+- **Fixed on the way:** the crouch's extra thigh and knee flexion added to
+  the walk's angles swept the thigh ~46° from vertical, where the hips'
+  height moves four times as fast. The pelvis bobbed 72 mm a step at 6.9
+  m/s² and the toe tips skimmed the floor at 26 mm a frame. Solved to the
+  walk's foot path, the bob is the walk's.
+
+**Measured:**
+- the least stance knee is 47-52° in a half crouch and 65-72° at the
+  deepest;
+- the hips ride the crouch's own height below the walk's, within 0.2 mm
+  flat;
+- the feet press and clear the floor exactly as the walk's do.
+
+**Live at 0.8 m/s, deepest:**
+- the pelvis spans 33 mm at 3.6 m/s² (the walk's: 32 mm, 3.3);
+- planted balls slip at most 0.33 mm a frame;
+- the start and stop match the walk's.
+
+**Open:** on the toes, a touchdown lands moving 4.3 then 2.0 mm a frame
+(the walk's heel 2).
+
+**Seen:** Front and Left, gizmos on, deep flat and on the toes; then the
+bare mesh.
+
+**Cost:** 24-27 µs a character a frame for the walk (the walk's 23), plus
+31 µs for the crouch posed each frame. 1193 library tests pass; clippy is
+clean.
+
 ### Sneaking, step 1: crouching down and standing up, flat or on the toes
 
 `Walker::sneak` asks for a sneak as two dials (`sneak::Sneak`): `crouch` 0-1

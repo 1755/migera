@@ -167,6 +167,24 @@ pub struct GaitParams {
     pub vertical_bob: f32,
     /// Where the legs' joint angles come from.
     pub curves: LegCurves,
+    /// How a measured walk is crouched (`super::sneak`): none for a walk.
+    pub crouch: CrouchAngles,
+}
+
+/// How a measured walk is crouched into a sneak (`super::sneak`), radians:
+/// the thigh's and knee's extra flexion over standing, as the crouch it
+/// walks from has them, and how far the heels stay risen at the least (0
+/// flat-footed).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CrouchAngles {
+    pub thigh: f32,
+    pub knee: f32,
+    pub heel: f32,
+}
+
+impl CrouchAngles {
+    /// No crouch: a walk.
+    pub const NONE: Self = Self { thigh: 0.0, knee: 0.0, heel: 0.0 };
 }
 
 /// Where a gait's hip, knee and ankle angles come from.
@@ -286,6 +304,7 @@ impl GaitParams {
             hip_dip: 0.09 / 0.49,
             vertical_bob: 0.05 / 0.49,
             curves: LegCurves::Authored,
+            crouch: CrouchAngles::NONE,
         }
     }
 
@@ -528,6 +547,7 @@ impl Default for GaitParams {
             // The recorded human stride. Its stance share is the recording's
             // own, so the curves play back untimed.
             curves: LegCurves::Measured { amplitude: 1.0 },
+            crouch: CrouchAngles::NONE,
         }
     }
 }
@@ -2649,6 +2669,7 @@ mod tests {
             // The measured curves hold the recording's mean posture even at
             // zero excursion, so identity is a property of the authored ones.
             curves: LegCurves::Authored,
+            crouch: CrouchAngles::NONE,
         };
 
         for i in 0..20 {
