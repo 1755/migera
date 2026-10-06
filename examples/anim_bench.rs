@@ -32,7 +32,8 @@ use migera::character::anim::{default_springs, poses};
 
 /// The gait posed each frame, if any (`--gait`), and its speed; or a jump
 /// (`--gait jump`, `--speed` its height and `--distance` how far forward,
-/// metres), posed through its whole length on each character's clock.
+/// metres; `--from-run V [--run-on]` from a run), posed through its whole
+/// length on each character's clock.
 #[derive(Clone, Copy)]
 enum Gait {
     None,
@@ -79,11 +80,16 @@ fn main() {
         Gait::None | Gait::Jump(..) => None,
     };
     let jump = match gait {
-        Gait::Jump(height, distance) => Some(migera::character::anim::jump::Jump::plan(
-            migera::character::anim::jump::JumpAsk { height, distance },
-            &stood,
-            &rig,
-        )),
+        Gait::Jump(height, distance) => {
+            use migera::character::anim::jump::{Jump, JumpAsk, RunStart};
+            let (run_speed, run_on) = from_run();
+            Some(if run_speed > 0.0 {
+                let ask = JumpAsk { keep_running: run_on, ..JumpAsk::forward(height, distance) };
+                Jump::from_run(ask, RunStart { leg: 0, speed: run_speed }, &stood, &rig)
+            } else {
+                Jump::plan(JumpAsk::forward(height, distance), &stood, &rig)
+            })
+        }
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
@@ -163,6 +169,14 @@ fn step(
         // propagation, which does the same work on the real rig.
         std::hint::black_box(forward_kinematics(&dho.pose(Vec3::ZERO)));
     }
+}
+
+/// `--from-run V`: the jump taken from a run at V m/s (`jump::Jump::from_run`),
+/// and with `--run-on`, landing on the other foot to run on.
+fn from_run() -> (f32, bool) {
+    let args: Vec<String> = std::env::args().collect();
+    let speed = args.iter().position(|a| a == "--from-run").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    (speed, args.iter().any(|a| a == "--run-on"))
 }
 
 fn parse_args() -> (usize, usize, Gait) {

@@ -41,6 +41,87 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Jumping from a run: a leap that runs on, a jump stop onto both feet
+
+Asked while running, `Walker::jump` waits for the next foot down and takes
+off from it (`Jump::from_run`, `jump/leap.rs`). `JumpAsk::running` lands on
+the other foot and runs on; `JumpAsk::forward` lands on both feet and
+stops. The gallery takes `--jump-at T:H:D:run` and has a "Run on"
+checkbox. `anim_bench` takes `--from-run V [--run-on]`. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-jump-from-a-run-replays-the-runs-stance-on-a-planned-com.md).
+
+- **Take-off:**
+  - the run's own stance is replayed on the planted foot;
+  - the pelvis is solved so the COM follows a planned push;
+  - the free thigh drives up and the arms swing harder;
+  - it brakes 0.3 m/s per m/s up.
+- **Running on:**
+  - the flight turns the body into the run's contact pose on the other
+    leg;
+  - the landing stance absorbs the fall;
+  - it hands back to the run at the landing foot's toe-off, mid-frame.
+- **Stopping:**
+  - a jump stop, braked to 2 m/s on the plant leg;
+  - the standing jump's forefoot landing, braking at 6 m/s² within grip.
+- **Push-shaped vertical paths** (`pushed_height`): the floor's push is zero
+  at contact and toe-off and never pulls. A cubic path pulled at −0.4 body
+  weights, a quintic at −0.5.
+- **Dead ends and traps:**
+  - carrying the foot at the run's speed slid it 18 mm (now a no-slip carry
+    table);
+  - velocities read at a contact's edge halve (now read in the flights);
+  - a hand-back at a frame boundary lost 44 mm of travel (now within the
+    frame, `Stride::given`);
+  - a two-foot landing at the run's speed braked at 3.5 g;
+  - the settle frame's pins moved both feet 14 mm;
+  - a deeper dip scraped the free foot 3.8 mm into the floor.
+- **Tests:** six in `jump::leap::tests`, covering:
+  - both ends exactly on the run's poses;
+  - flight at g and the floor never pulling;
+  - feet holding where they are down;
+  - the free thigh's drive;
+  - distance asked;
+  - a smooth hand-back;
+  - the two-foot landing, standing up and grip.
+  - Sabotaged, each fails: the carry (7.65 mm), the cubic (−0.25 body
+    weights), the hand-back travel (9 mm jolt), the landing feet carried
+    (11 mm), the brake (29 m/s² under 2 body weights).
+- **Live** at 4 m/s:
+  - leap flights of 0.47 and 0.30 s, the pelvis falling at −10.3 m/s²;
+  - the stop brakes over 0.35 s, its feet within 1.2 mm a frame after
+    landing.
+- **Seen:** Left and Front, gizmos on, following:
+  - take-off with the free knee up;
+  - the split in flight, landing on the lead foot and running on;
+  - stopping: a two-foot touchdown, a squat, standing.
+- **Cost:**
+  - 72 µs a character a frame running on, 99 stopping (53 standing);
+  - the plan 1.0-1.8 ms once, on the frame the foot lands.
+- **The run's own pelvis, fixed in the same change** (both were there
+  before any jump):
+  - A running body moved at the gait's contact velocity, which slowed to
+    2.4 m/s at every contact of a 4 m/s run, read off a heel that lands
+    still moving forward. It now moves at the run's speed, the locks holding
+    the feet.
+  - The locomotion layer's walk sway turned the pelvis about the feet a
+    walk's stance timing loads. On a run's clock its pivot jumped, and the
+    root went 15 mm back in three frames once a step. It now fades out
+    with the run (`walker::fade_walk_sway`).
+  - Live at 4 m/s, the pelvis goes at exactly 4.00 m/s every frame (2.2-4.3
+    before). Planted points move less: balls 1.2 to 0.5 mm a frame, toe
+    tips 5.7 to 2.4.
+  - The walk sway was also the hop's live-only 9 mm hand-back step: the
+    layer is composed on after the walker, so no headless replay had it.
+  - Test `walker::tests::running_the_layer_leaves_the_root_going_steadily`
+    (the un-faded sway on a run's clock jolts the root over 3 mm).
+- **Hips planned forward on one foot:** the run's legs kick its COM in the
+  body by 3 mm in a frame at a toe-off. Planned forward on the COM, the
+  hips took the kick two frames before handing back. The stances now plan
+  the hips forward and the COM up, each seam's hips rate matched to the
+  neighbour's. Headless, every hand-over and hand-back is within 0.33 mm of
+  the frames beside it (bound 1 mm). Live, the pelvis's sharpest change
+  through a leap is 8.4 m/s², against 20-60.
+
 ### Jumping forward from a stand
 
 `Walker::jump` takes a `JumpAsk { height, distance }`. The gallery's Jump

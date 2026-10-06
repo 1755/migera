@@ -162,10 +162,10 @@ up. This forefoot touchdown is higher, so the flight is shorter. At their
 ## Revisit when
 
 - The landing gets a pike or a heel-first touchdown (the gap above).
-- A jump from a run is added: one foot leaves, at the run's speed.
 
 ## Related
 
 - [A jump is planned as its centre of mass's path](./a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the vertical plan, pelvis solve, spring lead and landing pins this extends.
 - [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — context: root motion read off the run's planted feet, the other way travel reaches the entity.
+- [A jump from a run replays the run's stance under a planned COM](./a-jump-from-a-run-replays-the-runs-stance-on-a-planned-com.md) — extension: a stopping jump from a run lands with this landing.
 - [A toe tip pivots on the floor and needs its own lock](./a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md) — context: the tip lock the landing pins.

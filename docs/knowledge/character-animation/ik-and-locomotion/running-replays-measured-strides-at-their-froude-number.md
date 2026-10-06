@@ -7,9 +7,10 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-05
-verified: 2026-10-05
+updated: 2026-10-06
+verified: 2026-10-06
 code:
+  - src/character/anim/phase.rs
   - src/character/anim/run.rs
   - src/character/anim/gait.rs
   - src/character/anim/walker.rs
@@ -135,8 +136,13 @@ Winter records only a walk.
     slower walk the same way, then stops as a
     walk does. A walk's speed holds while both its feet are down
     ([two gaits at one clock](./two-gaits-blended-at-one-clock-disagree-on-the-planted-foot.md)).
-  - **Root motion while running:** the gait's own velocity, coasting
-    through flight.
+  - **Root motion while running:** the run's own speed, every frame. Its
+    clock is set so a stride covers exactly that, so over a stride the feet
+    do not drift, and the locks hold each foot while it is down. A runner's
+    body changes speed by a few per cent through a stride.
+  - **No walk sway on a run:** the locomotion layer's walk sway and pelvic
+    turn fade out with the run (`walker::fade_walk_sway`). The run's
+    pelvis tilt is in its own pose.
   - **Feet:** the feet down come from the clock (`AnimFootIk::planted`). A
     landing foot locks within 1 cm of where its toe joint stands flat
     (`grip`), at that height. A swinging foot's rendered sole is held off
@@ -160,6 +166,26 @@ Winter records only a walk.
   and it ran 15 % slow. The sprung leg is still swinging forward behind its
   target when it lands, and a run has no second foot down to carry the body
   through that.
+- **The gait's contact velocity as root motion** (`locomotion::
+  root_velocity_of` on the target, coasting through flight): the velocity
+  that keeps the stance foot's contact still. The recorded heel lands still
+  moving forward (18 mm over the first tenth of stance, carried at the
+  run's speed), so read off it the body slowed to 2.4 m/s at every contact
+  of a 4 m/s run. The pelvis stepped 45 mm in a frame of 70, once a step.
+  Moved at the run's speed instead, it goes exactly 4.00 m/s every frame;
+  the planted points' frame moves fell (balls 1.2 to 0.5 mm, toe tips 5.7
+  to 2.4).
+
+## A walk's sway on a run's clock
+
+The locomotion layer turns the pelvis about whichever feet a walk's stance
+timing (a 0.6 stance share) has loaded. On a run's clock, a third of the
+stride down and flights between, that pivot jumped between the feet once a
+step, and the root with it: 15 mm back in three frames. The root itself
+moved at exactly 4.00 m/s while the pelvis read 3.6-4.08. Faded out with
+the run, the pelvis goes at the run's speed. Test
+`walker::tests::running_the_layer_leaves_the_root_going_steadily`, which
+also shows the walk's sway on a run's clock jolting the root over 3 mm.
 
 ## Traps it hit
 
@@ -260,4 +286,5 @@ Winter records only a walk.
 - [Fade a gait only through single support](./fade-a-gait-only-through-single-support.md) — prerequisite: why the walk-run change runs in single support, and the rendered-foot lift.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — context: planted feet from the clock, and now gripped.
 - [Walking foot rocker contact model](./walking-foot-rocker-contact-model.md) — context: the three contacts, the tip now following the toe.
-- [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — contrast: why a run moves at the gait's velocity instead.
+- [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — contrast: why a run moves at its own speed instead.
+- [Walk step width and sideways sway](./walk-step-width-and-sideways-sway.md) — context: the walk sway a run fades out.

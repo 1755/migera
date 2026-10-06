@@ -43,6 +43,9 @@ use super::rig::{accumulate_world_rotations, delta_after_world_turn, offset_from
 use super::stance::place_ankle;
 use crate::character::skeleton::Bone;
 
+mod leap;
+pub use leap::{Resume, RunStart};
+
 /// Gravity, m/s².
 pub const GRAVITY: f32 = 9.81;
 
@@ -198,16 +201,33 @@ pub fn lead_of(spring: &SpringParams) -> f32 {
 
 /// A jump asked for: how high, metres of the COM's rise above take-off, and
 /// how far, metres the feet land ahead of where they stood (0 straight up).
+///
+/// From a run ([`Jump::from_run`]), the distance is from the take-off
+/// foot's toe to the landing foot's (0: as far as the run carries it), and
+/// `keep_running` lands on the other foot and runs on; else it lands on
+/// both feet and stops. Standing, `keep_running` is not read.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct JumpAsk {
     pub height: f32,
     pub distance: f32,
+    pub keep_running: bool,
 }
 
 impl JumpAsk {
     /// Straight up, `height` metres.
-    pub fn up(height: f32) -> Self {
-        Self { height, distance: 0.0 }
+    pub const fn up(height: f32) -> Self {
+        Self::forward(height, 0.0)
+    }
+
+    /// `height` metres up and `distance` forward, landing on both feet.
+    pub const fn forward(height: f32, distance: f32) -> Self {
+        Self { height, distance, keep_running: false }
+    }
+
+    /// From a run, `height` up and `distance` toe to toe (0: as far as the
+    /// run carries it), landing on the other foot and running on.
+    pub const fn running(height: f32, distance: f32) -> Self {
+        Self { height, distance, keep_running: true }
     }
 }
 
@@ -314,6 +334,11 @@ pub struct Jump {
     touched: f32,
     braking: f32,
     feet: Feet,
+    /// Jumping from a run ([`Jump::from_run`]): the run's part of the plan.
+    run: Option<Box<leap::FromRun>>,
+    /// How far the root moves, in the pose's frame, to meet the standing
+    /// pose once it has stood ([`Self::settle`]).
+    settle: Vec3,
 }
 
 /// Where the feet stand, worked out once from the standing pose.
@@ -414,6 +439,8 @@ impl Jump {
             touched: stand.0,
             braking: 0.0,
             feet,
+            run: None,
+            settle: Vec3::ZERO,
         };
         let asked = ask.distance.max(0.0);
         let passes = if asked > 0.0 { 6 } else { 1 };
@@ -548,6 +575,9 @@ impl Jump {
 
     /// The COM's planned height `t` seconds in, in the standing hips' frame.
     pub fn com_height_at(&self, t: f32) -> f32 {
+        if let Some(run) = self.run.as_ref().filter(|run| run.owns(self, t)) {
+            return run.com_at(self, t).1;
+        }
         let [down, push, flight, land, recover] = self.ends;
         let (from, span) = match self.phase_at(t) {
             JumpPhase::Down => (0.0, down),
@@ -573,6 +603,9 @@ impl Jump {
     /// air, and braked at constant deceleration from touchdown to rest over
     /// the landed feet.
     pub fn com_ahead_at(&self, t: f32) -> f32 {
+        if let Some(run) = self.run.as_ref().filter(|run| run.owns(self, t)) {
+            return run.com_at(self, t).0;
+        }
         let [_, push, flight, ..] = self.ends;
         let speed = self.speed;
         match self.phase_at(t) {
@@ -602,12 +635,20 @@ impl Jump {
     /// handed to root motion. The pose is posed that far back from its plan,
     /// so its COM stays over the character's root.
     pub fn travelled_at(&self, t: f32) -> f32 {
-        self.com_ahead_at(t) - self.stand.0
+        self.com_ahead_at(t) - self.com_ahead_at(0.0)
     }
 
     /// [`Self::travelled_at`] now.
     pub fn travelled(&self) -> f32 {
         self.travelled_at(self.t)
+    }
+
+    /// Once it has stood, how far the root moves, in the pose's frame, to
+    /// meet the standing pose: none from a stand, which began there; from a
+    /// run, the run's body at the take-off foot's contact was not over its
+    /// feet as a standing one is.
+    pub fn settle(&self) -> Vec3 {
+        self.settle
     }
 
     /// How far ahead the feet land, metres.
@@ -666,6 +707,11 @@ impl Jump {
 
     /// The pose `t` seconds in, from standing in `stood`.
     pub fn pose_at(&self, t: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
+        if let Some(run) = self.run.as_ref().filter(|run| run.owns(self, t)) {
+            let mut pose = run.pose_at(self, t, stood, rig);
+            pose.root_translation -= rig.forward() * self.travelled_at(t);
+            return pose;
+        }
         let height = self.com_height_at(t);
         let u = self.progress_at(t);
         let (lean, arms) = self.shape_at(t);
@@ -727,7 +773,7 @@ impl Jump {
             self.solved(&upper, stood, rig, ahead, Aim::Height { height, knee: least_knee(phase), heel: heel_at(phase, u, self.rise) }, on)
         };
         // Its travel is the root's ([`Self::travelled_at`]).
-        pose.root_translation -= rig.forward() * (ahead - self.stand.0);
+        pose.root_translation -= rig.forward() * self.travelled_at(t);
         pose
     }
 
@@ -792,8 +838,9 @@ impl Jump {
                 continue;
             }
             // The trunk and arms from their shape alone; the legs and hips
-            // need the pelvis solved there too.
-            let whole = !LED.contains(&bone);
+            // need the pelvis solved there too. From a run, everything is
+            // the run's pose: whole.
+            let whole = !LED.contains(&bone) || self.run.is_some();
             let at = match posed.iter().find(|(l, w, _)| (l - lead).abs() < 1.0e-4 && *w == whole) {
                 Some((_, _, ahead)) => ahead.rotations[bone],
                 None => {
@@ -1188,9 +1235,9 @@ mod tests {
 
     /// Jumps forward from a hop to a long jump.
     const FORWARD: [JumpAsk; 3] = [
-        JumpAsk { height: 0.1, distance: 0.5 },
-        JumpAsk { height: 0.2, distance: 1.2 },
-        JumpAsk { height: 0.25, distance: 1.8 },
+        JumpAsk::forward(0.1, 0.5),
+        JumpAsk::forward(0.2, 1.2),
+        JumpAsk::forward(0.25, 1.8),
     ];
 
     /// `pose`'s sole points (heel, ball, tip) `t` seconds into `jump`, in
@@ -1313,7 +1360,7 @@ mod tests {
         let (stood, rig) = real_stood();
         let forward = rig.forward();
         let up = 3.4 * 33.0f32.to_radians().sin();
-        let jump = Jump::plan(JumpAsk { height: up * up / (2.0 * GRAVITY), distance: 2.3 }, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::forward(up * up / (2.0 * GRAVITY), 2.3), &stood, &rig);
         let standing = soles_from_the_start(&jump, &stood, 0.0, &stood, &rig);
         let floor = standing.iter().flatten().map(|p| p.y).fold(f32::MAX, f32::min);
         let (toes, heels) = ((standing[0][2] + standing[1][2]) * 0.5, (standing[0][0] + standing[1][0]) * 0.5);
@@ -1332,7 +1379,7 @@ mod tests {
     #[test]
     fn too_far_is_planned_as_far_as_the_fastest_take_off_reaches() {
         let (stood, rig) = real_stood();
-        let jump = Jump::plan(JumpAsk { height: 0.35, distance: 4.0 }, &stood, &rig);
+        let jump = Jump::plan(JumpAsk::forward(0.35, 4.0), &stood, &rig);
         let leaving = (jump.speed().powi(2) + jump.up.powi(2)).sqrt();
         assert!((1.5..2.2).contains(&jump.distance()), "planned {} m", jump.distance());
         assert!((leaving - FASTEST).abs() < 0.15 * FASTEST, "leaves at {leaving} m/s");

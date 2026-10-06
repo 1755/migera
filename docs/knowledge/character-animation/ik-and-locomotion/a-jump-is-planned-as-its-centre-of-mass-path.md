@@ -149,13 +149,13 @@ COM, and the pelvis then rises less, as a real jumper's does.
 
 ## Revisit when
 
-- A jump out of a run is added: one foot leaving at the run's speed.
 - Jumps are many at once: the pelvis solve (8 steps of legs and COM) is
   most of the cost.
 
 ## Related
 
 - [A jump forward leans out over its toes, and its travel is the root's](./a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md) — extension: the way forward, its root motion, and the long jump's shape.
+- [A jump from a run replays the run's stance under a planned COM](./a-jump-from-a-run-replays-the-runs-stance-on-a-planned-com.md) — extension: the one-foot take-off from a run, running on or stopping.
 - [A run's flight plan bends the stance legs for a ballistic flight](./a-runs-flight-plan-bends-the-stance-legs-for-a-ballistic-flight.md) — same-trap: the run's flight, ballistic on the pelvis.
 - [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — context: grip on landing, the sprung legs lagging a fast body.
 - [A toe tip pivots on the floor and needs its own lock](./a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md) — context: the tip lock the jump's feet use.

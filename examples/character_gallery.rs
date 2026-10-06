@@ -702,7 +702,11 @@ fn controls_panel(
                 }
                 ui.add(egui::Slider::new(&mut jumps.button.height, 0.05..=0.6).text("Jump height (m)"));
             });
-            ui.add(egui::Slider::new(&mut jumps.button.distance, 0.0..=2.5).text("Jump distance (m)"));
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut jumps.button.distance, 0.0..=2.5).text("Jump distance (m)"));
+                // From a run: land on the other foot and run on.
+                ui.checkbox(&mut jumps.button.keep_running, "Run on");
+            });
 
             ui.add(
                 // Up to a fast run (`character::anim::run`): egui clamps a
@@ -1159,10 +1163,12 @@ impl StepAsideSchedule {
     }
 }
 
-/// Jumping: `--jump-at T:HEIGHT[:DISTANCE],...` jumps HEIGHT metres up
-/// and DISTANCE metres forward (0 if left out) at T seconds
+/// Jumping: `--jump-at T:HEIGHT[:DISTANCE][:run],...` jumps HEIGHT metres
+/// up and DISTANCE metres forward (0 if left out) at T seconds
 /// (`walker::Walker::jump`), e.g. `2:0.35,6:0.15:1.2`; and the panel's
-/// Jump button, at its sliders'.
+/// Jump button, at its sliders'. Running, it leaps from the next foot down,
+/// DISTANCE toe to toe (0: as far as the run carries it), and with `run`
+/// lands on the other foot and runs on (`6:0.3:0:run`).
 #[derive(Resource, Debug, Clone, Default)]
 struct JumpSchedule {
     due: Vec<(f32, JumpAsk)>,
@@ -1182,7 +1188,8 @@ impl JumpSchedule {
                 for entry in args.next().unwrap_or_default().split(',') {
                     let numbers: Vec<f32> = entry.split(':').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, height, ref rest @ ..] = numbers[..] {
-                        due.push((at, JumpAsk { height, distance: rest.first().copied().unwrap_or(0.0) }));
+                        let ask = JumpAsk::forward(height, rest.first().copied().unwrap_or(0.0));
+                        due.push((at, JumpAsk { keep_running: entry.trim().ends_with(":run"), ..ask }));
                     }
                 }
             }

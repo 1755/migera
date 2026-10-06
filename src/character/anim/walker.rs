@@ -330,8 +330,12 @@ pub struct WalkerState {
     /// Walking or running (`run`), and the one step that changes between
     /// them.
     pub gaits: super::run::Gaits,
-    /// A jump under way ([`Walker::jump`]), until it has landed and stood.
+    /// A jump under way ([`Walker::jump`]), until it has landed and stood,
+    /// or from a run, landed and run on.
     pub jump: Option<super::jump::Jump>,
+    /// A jump asked while running, waiting for the next foot to come down:
+    /// that foot takes off.
+    pub leap_asked: Option<super::jump::JumpAsk>,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound and whether it shuffles: measuring it
     /// costs a cycle of root-motion samples, so it is redone only when one
@@ -362,6 +366,7 @@ impl WalkerState {
             pace: 0.0,
             gaits: Default::default(),
             jump: None,
+            leap_asked: None,
             measured: None,
         }
     }
@@ -439,6 +444,9 @@ pub struct Stride {
     /// the pose's frame (`balance::Balance::travelled`): moved like root
     /// motion, then zeroed.
     pub stepped: Vec3,
+    /// This frame's whole travel is in `stepped` (a leap handing back to
+    /// the run): the gait's root motion is skipped. Read once.
+    pub given: bool,
 }
 
 /// Walkers whose skeleton has bound but who have no animation stack yet.
@@ -527,6 +535,31 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // synthetic proxy for the first frames. The gait's vertical motion
         // is in fractions of THIS rig's leg.
         let gait_rig = foot_ik.rig.clone().unwrap_or_default();
+
+        // A leap from a run whose landing foot leaves within this frame: the
+        // run picks up now, before the frame is posed, as far past that
+        // toe-off as the frame goes. Its speed is what it landed with, and
+        // the frame's travel is given whole: the jump's to the toe-off, the
+        // run's after it, and the root moved to meet the run's pose; the
+        // run's root motion is skipped this frame.
+        //
+        // Ended with a frame posed at the toe-off and the run picked up the
+        // next, the frame that ended it moved the pelvis 13 mm of 57 and the
+        // next 104.
+        let dt = time.delta_secs();
+        if let Some((resume, past, rest)) = state.jump.as_ref().and_then(|jump| {
+            let past = jump.elapsed() + dt - jump.duration();
+            jump.resumes().filter(|_| past >= 0.0).map(|resume| (resume, past, jump.travelled_at(jump.duration()) - jump.travelled()))
+        }) {
+            let cycle = (resume.cycle + past * resume.rate).rem_euclid(1.0);
+            phase.gait = cycle * TAU;
+            state.stride.cycle = cycle;
+            state.stride.previous_cycle = cycle;
+            state.pace = resume.speed;
+            state.stride.stepped += resume.handover + gait_rig.forward() * (rest + resume.speed * past);
+            state.stride.given = true;
+            state.jump = None;
+        }
 
         // Asked to sit on a chair elsewhere: walk to it and turn round first
         // (`approach`), overriding the speed and steering asked for. Its spot
@@ -650,8 +683,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Seated, sitting down or asked to, it asks no speed either: it stops
         // first, and stands up before it walks again.
         // Walking to a chair, it walks.
-        // Jumping, it asks no speed until it has landed and stood.
-        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || state.jump.is_some();
+        // Jumping, it asks no speed until it has landed and stood; leaping
+        // from a run to run on, the run goes on under it.
+        let jumping = state.jump.as_ref().is_some_and(|jump| jump.resumes().is_none());
+        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || jumping;
         // Asked to go aside (`Walker::aside`), with or without forward, and
         // not to sit. Mostly across (45° or more off forward): the side
         // shuffle (`shuffle`), a walk of its own on the same clock, forward
@@ -857,6 +892,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             sway.lateral *= settled;
             sway.fore_aft *= settled;
         }
+        fade_walk_sway(&mut wanted, running);
         if layer.0 != wanted {
             layer.0 = wanted;
         }
@@ -1033,6 +1069,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // reach them and the toe tips free; landing, each locks as it
         // touches.
         let asked_jump = walker.jump.take();
+        let mut let_go = false;
         if let Some(rig) = foot_ik.rig.clone() {
             let standing = weight <= 0.0
                 && state.transition.is_at_rest()
@@ -1041,34 +1078,91 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 && state.shuffle.is_none()
                 && !fallen
                 && balance.is_settled(1.0e-5);
+            // Running fully, a jump waits for the next foot to come down,
+            // and takes off from it (`jump::Jump::from_run`).
+            let running = state.gaits.running >= 1.0 && !state.gaits.changing() && weight >= 1.0 && state.shuffle.is_none() && !fallen;
             if let Some(ask) = asked_jump
                 && state.jump.is_none()
-                && standing
             {
-                state.jump = Some(super::jump::Jump::plan(ask, &stood, &rig));
+                if standing {
+                    state.jump = Some(super::jump::Jump::plan(ask, &stood, &rig));
+                } else if running {
+                    state.leap_asked = Some(ask);
+                }
             }
+            if !running {
+                state.leap_asked = None;
+            }
+            let mut started = false;
+            let rate = phase.gait_frequency_hz();
+            if let Some(ask) = state.leap_asked
+                && state.jump.is_none()
+                && rate > 0.0
+            {
+                // The foot whose contact the clock passed this frame.
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down {
+                    let since = (cycle - 0.5 * leg as f32).rem_euclid(1.0) / rate;
+                    let mut jump = super::jump::Jump::from_run(ask, super::jump::RunStart { leg, speed }, &stood, &rig);
+                    jump.advance(since);
+                    // Landing on both feet, it stops: the gait is let go
+                    // under the jump (at the end of the frame, once the
+                    // gait's root motion has been read), so it stands once
+                    // landed.
+                    let_go = jump.resumes().is_none();
+                    // The run carried the body up to the contact; the jump
+                    // from there.
+                    let run_part = (time.delta_secs() - since).max(0.0) * speed;
+                    state.stride.stepped += rig.forward() * (run_part + jump.travelled());
+                    state.jump = Some(jump);
+                    state.leap_asked = None;
+                    started = true;
+                }
+            }
+            let standing_pose = target.pose;
             if let Some(jump) = state.jump.as_mut() {
                 // The COM's way forward moves the character, like root
                 // motion; the pose keeps it over the root.
-                let before = jump.travelled();
-                jump.advance(time.delta_secs());
-                state.stride.stepped += rig.forward() * (jump.travelled() - before);
+                if !started {
+                    let before = jump.travelled();
+                    jump.advance(time.delta_secs());
+                    state.stride.stepped += rig.forward() * (jump.travelled() - before);
+                }
                 // Each bone led ahead of its spring, so the body rendered
                 // is the plan's.
                 target.pose = match springs {
                     Some(springs) => jump.pose_now_led(&stood, &rig, &springs.0),
                     None => jump.pose(&stood, &rig),
                 };
-                let down = !jump.airborne();
-                foot_ik.planted = [down; 2];
-                foot_ik.grip = matches!(jump.phase(), super::jump::JumpPhase::Land | super::jump::JumpPhase::Recover);
-                foot_ik.touchdown = foot_ik.grip.then(|| jump.touchdown(&stood, &rig));
+                // From a run, a foot at a time, and each held where the plan
+                // has it all the while it is down; standing, both feet, held
+                // as they land.
+                let from_run = jump.run_feet_down();
+                let down = from_run.unwrap_or([!jump.airborne(); 2]);
+                foot_ik.planted = down;
+                foot_ik.grip = from_run.is_some() || matches!(jump.phase(), super::jump::JumpPhase::Land | super::jump::JumpPhase::Recover);
+                let pinned = if from_run.is_some() { down.contains(&true) } else { foot_ik.grip };
+                foot_ik.touchdown = pinned.then(|| jump.touchdown(&stood, &rig));
                 foot_ik.clear = [0.0; 2];
-                foot_ik.gait_swing = Some([!down; 2]);
-                foot_ik.gait_bearing = Some([down; 2]);
+                foot_ik.gait_swing = Some(down.map(|down| !down));
+                foot_ik.gait_bearing = Some(down);
                 foot_ik.landing = None;
                 legs_free = false;
-                if jump.is_done() {
+                // Standing, done once it has stood; from a run, the run picks
+                // up next frame (above).
+                // Stood up: the standing pose this frame, the root moved to
+                // meet it (`Jump::settle`). Moved with the jump's last pose
+                // still shown, the hips went 15 mm on and 16 back.
+                // And the feet left locked where they are, no longer pinned
+                // where the jump's last pose had them: pinned, they went on
+                // the settle's 14 mm.
+                if jump.is_done() && jump.resumes().is_none() {
+                    state.stride.stepped += jump.settle();
+                    target.pose = standing_pose;
+                    foot_ik.touchdown = None;
                     state.jump = None;
                     state.stood_hold = STOOD_HOLD;
                 }
@@ -1147,11 +1241,29 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         state.stride.params = Some(params);
         state.stride.cycle = cycle;
         state.stride.weight = weight;
+        if let_go {
+            state.transition = super::transition::Transition::standing();
+            state.gaits.walk();
+            state.pace = 0.0;
+        }
 
         // The entity turns to match the heading, composed onto the asset's
         // own correction (heading first, then the correction): assigned over
         // it, the correction was wiped and the character walked backward.
         root.rotation = state.facing.rotation() * correction.map_or(Quat::IDENTITY, |c| c.0);
+    }
+}
+
+/// Fades `layer`'s walk sway and pelvic turn out as the gait is `running`
+/// (0 walking, 1 running). They are a walk's: the pelvis turned about
+/// whichever feet a walk's stance timing has loaded. On a run's clock (a
+/// third of the stride down, and flights) its pivot jumped between the
+/// feet, and with it the root, 15 mm back in three frames once a step; and
+/// under a leap from the run, a 9 mm step as it handed back. The run's
+/// pelvis tilt is in its own pose.
+pub fn fade_walk_sway(layer: &mut PhaseLayer, running: f32) {
+    if let Some(walk) = layer.walk_sway.as_mut() {
+        walk.gain *= 1.0 - running.clamp(0.0, 1.0);
     }
 }
 
@@ -1168,17 +1280,29 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             // Standing, the idle sways the pelvis over feet that stay put;
             // read as root motion, that sway walked the character.
             _ if state.stride.weight <= 0.0 => Vec3::ZERO,
-            // Running, at the gait's own velocity (`locomotion::root_velocity_of`
-            // on the target, coasting through flight). From the rendered
-            // contacts instead, each landing foot — the sprung leg still
-            // swinging forward a few centimetres behind its target — braked
-            // the body from 3.2 to 0.3-1.5 m/s for a frame or two every step,
-            // and it ran 15 % slow; a walk has a second foot down to carry
-            // it through. The run's feet down are told to the locks from the
-            // clock, which hold them in the world whatever the springs do.
+            // Jumping, its travel is the jump's (`Stride::stepped`); from a
+            // run, the run's clock goes on under it, and its velocity would
+            // carry the body a second time.
+            _ if state.jump.is_some() || std::mem::take(&mut state.stride.given) => Vec3::ZERO,
+            // Running, at the run's own speed: its clock is set so a stride
+            // covers exactly that, so over a stride the feet do not drift.
+            // A runner's body changes speed by a few per cent through a
+            // stride, and the run's feet down are told to the locks from the
+            // clock, which hold them in the world whatever the pose does.
+            //
+            // At the gait's contact velocity instead (`locomotion::
+            // root_velocity_of`), the body followed the recorded heel, which
+            // lands still moving forward (18 mm over the first tenth of
+            // stance, carried at the run's speed): it slowed to 2.4 m/s at
+            // every contact at a 4 m/s run, the pelvis stepping 45 mm in a
+            // frame of 70. From the rendered contacts, worse: each landing
+            // foot, its sprung leg still swinging, braked the body from 3.2
+            // to 0.3-1.5 m/s, and it ran 15 % slow.
             // Changing between the two, the planted foot it changes on:
             // both gaits have it in the same place (`run::Gaits::phases`).
-            _ if state.gaits.running >= 0.5 && !state.gaits.changing() => state.locomotion.root_velocity * time.delta_secs(),
+            _ if state.gaits.running >= 0.5 && !state.gaits.changing() => {
+                state.facing.rotation() * rig.forward() * (state.transition.stride_speed * time.delta_secs())
+            }
             (Some(params), Some(previous)) => {
                 // The cycle half-way through the frame decides which feet
                 // are planted.
@@ -1279,5 +1403,47 @@ pub fn follow_the_fallen_body(mut rigs: Query<(&Ragdoll, &Transform, &mut Walker
             state.locomotion.position.x = transform.translation.x;
             state.locomotion.position.z = transform.translation.z;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character::anim::stance::stance_on_rig;
+
+    /// The root's worst forward move in a 60 Hz frame against the frame
+    /// before, metres, over two strides of a 4 m/s run, the locomotion layer
+    /// composed on with its walk sway faded for `running`.
+    fn worst_root_jolt(running: f32) -> f32 {
+        let rig = crate::character::anim::gltf_rig::puppet_base_as_rendered();
+        let stood = stance_on_rig(&poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let speed = 4.0;
+        let params = GaitParams::running_on(speed, &rig);
+        let reference = super::super::run::reference_speed(speed, super::super::gait::leg_length_of(&rig));
+        let distance = super::super::run::distance_per_cycle(&stood, &rig, reference);
+        let mut layer = PhaseLayer::locomotion();
+        fade_walk_sway(&mut layer, running);
+        let dt = 1.0 / 60.0;
+        let ahead: Vec<f32> = (0..80)
+            .map(|frame| {
+                let phase = GaitPhase { gait: frame as f32 * dt * speed / distance * TAU, speed, base_frequency_hz: 0.0, speed_coefficient: 1.0 / distance, ..Default::default() };
+                let mut pose = walk_pose_on(cycle_of(&phase), &params, &stood, &rig);
+                layer.apply_on(&phase, &mut pose, &rig);
+                pose.root_translation.dot(rig.forward())
+            })
+            .collect();
+        let steps: Vec<f32> = ahead.windows(2).map(|w| w[1] - w[0]).collect();
+        steps.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    /// Running, the locomotion layer leaves the root going forward steadily
+    /// (the run's body moves at its speed): its walk sway, turning the
+    /// pelvis about the feet a walk's stance timing loads, jumped the root
+    /// 15 mm back in three frames once a step on a run's clock.
+    #[test]
+    fn running_the_layer_leaves_the_root_going_steadily() {
+        let (running, walking) = (worst_root_jolt(1.0), worst_root_jolt(0.0));
+        assert!(running < 1.0e-4, "running, the root's step changes {:.2} mm in a frame", running * 1e3);
+        assert!(walking > 3.0e-3, "the walk's sway on a run's clock jolts the root only {:.2} mm", walking * 1e3);
     }
 }
