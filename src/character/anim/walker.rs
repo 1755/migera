@@ -1071,6 +1071,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 foot_ik.displaced = [Vec3::ZERO; 2];
             }
         }
+        // How deep the crouch is, for a crouched shuffle's arms.
+        let carried = footing.filter(|_| crouched && state.shuffle.is_some()).map_or(0.0, |footing| footing.depth_of(state.crouching.now()));
         let transition_state = &state.transition;
         let gaits = state.gaits;
         let rendered = |cycle: f32| {
@@ -1082,8 +1084,13 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let walking = if let Some(gait) = sneak_gait.as_ref() {
                     gait.pose(cycle, &gait_rig)
                 } else if running <= 0.0 {
-                    // A walk, or a shuffle on the crouch it is in.
-                    walk_pose_on(cycle, &walk_params, &gait_base, &gait_rig)
+                    // A walk, or a shuffle on the crouch it is in, its arms
+                    // carried as a sneak's: the shuffle's own carry, out from
+                    // the body, laid over them held them out wide, the hands
+                    // outside the hips.
+                    let mut pose = walk_pose_on(cycle, &walk_params, &gait_base, &gait_rig);
+                    super::sneak::carry_arms(&mut pose, &gait_rig, carried, [0.0; 2]);
+                    pose
                 } else if running >= 1.0 {
                     walk_pose_on(cycle, &run_params, &stood, &gait_rig)
                 } else {

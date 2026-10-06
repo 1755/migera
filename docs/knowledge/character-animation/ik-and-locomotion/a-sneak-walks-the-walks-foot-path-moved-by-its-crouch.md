@@ -43,11 +43,12 @@ walks from the crouch: `sneak::sneaking_on` gives a measured walk
 
 ## Decision
 
-**The base pose is the crouch.** The trunk's lean and the arms carried
-forward come with it (see
+**The base pose is the crouch.** The trunk's lean comes with it (see
 [the crouch](./a-crouch-is-the-jumps-countermovement-held-over-the-feet.md)).
-The walk's arm swing composes on top, held back with depth (`ARMS_HELD`,
-70 % at the deepest).
+The arms are carried, not swung: each hand placed ahead of its shoulder and
+swinging a little against the legs, carried again over every walking and
+shuffling pose (see
+[a sneak carries its hands](./a-sneak-carries-its-hands-placed-by-arm-ik.md)).
 
 **Each leg is solved to the walk's foot path, moved by the crouch.**
 `WalkCycle::pose_legs` works in each leg's sagittal plane:

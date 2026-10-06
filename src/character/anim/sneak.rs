@@ -30,11 +30,98 @@ pub const DEEPEST: f32 = 0.18;
 /// the jump's [`jump::HEEL_RISE`] leaving the floor.
 pub const TOES_HEEL: f32 = jump::HEEL_RISE;
 
-/// The arms at the deepest crouch, as (swing, elbow) on top of standing,
-/// radians: the upper arms a little forward, the elbows bent, the hands
-/// held in front of the thighs out of the way of the knees. Authored; in
-/// proportion to the depth above it.
-pub const CROUCHED_ARMS: (f32, f32) = (0.3, 0.8);
+/// Where a sneak carries each hand (the wrist) from its shoulder, as
+/// fractions of the arm's length (upper arm plus forearm): ahead, below, and
+/// in toward the middle. Out of the way of the knees, in front of the belly,
+/// the elbow bent about 90°. Authored: no recording of a sneak's arms was to
+/// hand.
+pub const CARRIED_HAND: (f32, f32, f32) = (0.5, 0.42, 0.04);
+
+/// Which way a carried arm's elbow points, (out to its side, back, down):
+/// down under the shoulder, a little out and back, the forearm reaching
+/// forward near level. Pointed out 0.7 with the hands carried 0.12 in, the
+/// forearms ran 36° inward and the hands met over the belly.
+pub const CARRIED_ELBOW: (f32, f32, f32) = (0.4, 0.3, 0.85);
+
+/// How much further ahead and higher the right hand is carried than the
+/// left, as fractions of the arm's length: the two are never mirror images,
+/// whose sameness is the plainest tell of a puppet.
+pub const LEAD_HAND: (f32, f32) = (0.06, 0.04);
+
+/// How far a carried hand hangs from its wrist, radians (20°): loose, not
+/// held out straight along the forearm.
+pub const WRIST_DROP: f32 = 0.35;
+
+/// How far a sneak's hands swing ahead and back walking, metres per m/s,
+/// against the legs (each hand with the opposite foot): a little, the hands
+/// moving rather than the arms swinging from the shoulder.
+pub const HAND_SWING: f32 = 0.05;
+
+/// How far up a swinging hand rises as it comes forward, of its swing.
+pub const HAND_RISE: f32 = 0.3;
+
+/// Carries the arms as a sneak does (`weight` 0-1, its depth): each hand
+/// placed ahead of and below its shoulder ([`CARRIED_HAND`], [`LEAD_HAND`])
+/// and `swings` (left, right) metres further ahead, rising as it comes; the
+/// elbow toward [`CARRIED_ELBOW`]; the hand hanging [`WRIST_DROP`].
+///
+/// Each hand goes from where the pose has it toward its place by `weight`,
+/// and its elbow from where it bends now, so at no weight the pose is left
+/// as it is, and a sneak's arms come in as its crouch does.
+///
+/// The crouch's arms were both upper arms swung forward and both elbows
+/// bent by one angle, and walking, a walk's swing held back: the two hands
+/// side by side, fists straight out of the forearms, swinging fore and aft
+/// from the shoulder in one plane. A puppet's.
+pub fn carry_arms(pose: &mut LocalPose, rig: &RigGeometry, weight: f32, swings: [f32; 2]) {
+    use super::armik::{solve_arm_toward_from, ArmChain};
+    use super::rig::{delta_after_world_turn, forward_kinematics_on};
+    use bevy::math::{Quat, Vec3};
+    let weight = weight.clamp(0.0, 1.0);
+    if weight <= 0.0 {
+        return;
+    }
+    let (forward, up) = (rig.forward(), Vec3::Y);
+    // One pass for both arms: solving one leaves the other's joints where
+    // they were. Re-run for every step, carrying the arms added 26 µs to a
+    // crouch posed (`anim_bench --gait crouch`); now 5.
+    let at = forward_kinematics_on(pose, rig);
+    for (i, chain, side) in [(0usize, ArmChain::LEFT, 1.0f32), (1, ArmChain::RIGHT, -1.0)] {
+        let (shoulder, elbow, wrist) = (at[chain.shoulder], at[chain.elbow], at[chain.wrist]);
+        let length = (elbow - shoulder).length() + (wrist - elbow).length();
+        let out = rig.left() * side;
+        let (lead, raise) = if i == 1 { LEAD_HAND } else { (0.0, 0.0) };
+        let swing = swings[i];
+        let carried = shoulder + forward * ((CARRIED_HAND.0 + lead) * length + swing) - up * ((CARRIED_HAND.1 - raise) * length - HAND_RISE * swing)
+            - out * (CARRIED_HAND.2 * length);
+        let target = wrist.lerp(carried, weight);
+        // The elbow's side now, square to the shoulder-to-wrist line, toward
+        // the carried one.
+        let line = (wrist - shoulder).normalize_or_zero();
+        let now = ((elbow - shoulder) - line * (elbow - shoulder).dot(line)).normalize_or_zero();
+        let carried_pole = (out * CARRIED_ELBOW.0 - forward * CARRIED_ELBOW.1 - up * CARRIED_ELBOW.2).normalize();
+        let pole = if now == Vec3::ZERO { carried_pole } else { now.lerp(carried_pole, weight) };
+        let (placed_elbow, placed_wrist) = solve_arm_toward_from(pose, &at, chain, target, pole, rig);
+        // The hand hung from its wrist: turned about the level line square
+        // to the forearm, the way that tips it down.
+        let forearm = (placed_wrist - placed_elbow).normalize_or_zero();
+        let axis = forearm.cross(up).normalize_or_zero();
+        if axis != Vec3::ZERO {
+            pose.rotations[chain.wrist] = delta_after_world_turn(pose, rig, chain.wrist, Quat::from_axis_angle(axis, -WRIST_DROP * weight));
+        }
+    }
+}
+
+/// Each hand's swing ahead (left, right), metres, walking at `speed` m/s at
+/// `cycle`: each with the opposite foot, at its forward peak just after that
+/// foot's footfall, as the walk's arms (`gait`'s arm swing).
+pub fn hand_swings(cycle: f32, speed: f32) -> [f32; 2] {
+    const LAG: f32 = 0.02;
+    let amplitude = HAND_SWING * speed.max(0.0);
+    // The left hand with the right foot, down at 0.5; the right with the
+    // left, down at 0.
+    [0.5f32, 0.0].map(|footfall| amplitude * (std::f32::consts::TAU * (cycle - (footfall + LAG - 0.25))).sin())
+}
 
 /// The most the COM accelerates going down into a crouch or up out of it,
 /// m/s²: a fifth of `g`, a calm, controlled crouch rather than a jump's
@@ -109,6 +196,10 @@ pub struct SneakGait {
     from: (LocalPose, super::gait::GaitParams),
     to: (LocalPose, super::gait::GaitParams),
     weight: f32,
+    /// How deep each crouch is, 0-1, and the speed: the arms are carried
+    /// ([`carry_arms`]) by the depth, the hands swinging by the speed.
+    depths: (f32, f32),
+    speed: f32,
 }
 
 impl SneakGait {
@@ -117,7 +208,8 @@ impl SneakGait {
         let to = footing.walk(crouching.to, speed, stood, rig);
         let weight = crouching.gone();
         let from = if weight >= 1.0 { to } else { footing.walk(crouching.from, speed, stood, rig) };
-        Self { from, to, weight }
+        let depths = (footing.depth_of(crouching.from), footing.depth_of(crouching.to));
+        Self { from, to, weight, depths, speed }
     }
 
     /// The pose at `cycle`: the two walks blended, and each leg then put
@@ -132,20 +224,25 @@ impl SneakGait {
         use super::gait::walk_pose_on;
         use super::rig::{accumulate_world_rotations, delta_after_world_turn, offset_from};
         let to = walk_pose_on(cycle, &self.to.1, &self.to.0, rig);
-        if self.weight >= 1.0 {
-            return to;
-        }
-        let from = walk_pose_on(cycle, &self.from.1, &self.from.0, rig);
         let w = self.weight;
-        let mut pose = super::clip::blend(&from, &to, w);
-        let (turned_from, turned_to) = (accumulate_world_rotations(&from, rig), accumulate_world_rotations(&to, rig));
-        for ankle in [Bone::LeftFoot, Bone::RightFoot] {
-            let target = offset_from(&from, rig, Bone::Hips, ankle).lerp(offset_from(&to, rig, Bone::Hips, ankle), w);
-            super::stance::place_ankle(&mut pose, rig, ankle, target);
-            let wanted = turned_from[ankle].slerp(turned_to[ankle], w);
-            let now = accumulate_world_rotations(&pose, rig)[ankle];
-            pose.rotations[ankle] = delta_after_world_turn(&pose, rig, ankle, wanted * now.inverse());
-        }
+        let mut pose = if w >= 1.0 {
+            to
+        } else {
+            let from = walk_pose_on(cycle, &self.from.1, &self.from.0, rig);
+            let mut pose = super::clip::blend(&from, &to, w);
+            let (turned_from, turned_to) = (accumulate_world_rotations(&from, rig), accumulate_world_rotations(&to, rig));
+            for ankle in [Bone::LeftFoot, Bone::RightFoot] {
+                let target = offset_from(&from, rig, Bone::Hips, ankle).lerp(offset_from(&to, rig, Bone::Hips, ankle), w);
+                super::stance::place_ankle(&mut pose, rig, ankle, target);
+                let wanted = turned_from[ankle].slerp(turned_to[ankle], w);
+                let now = accumulate_world_rotations(&pose, rig)[ankle];
+                pose.rotations[ankle] = delta_after_world_turn(&pose, rig, ankle, wanted * now.inverse());
+            }
+            pose
+        };
+        // The arms carried again over the walk's, the hands swinging.
+        let depth = self.depths.0 + (self.depths.1 - self.depths.0) * w.min(1.0);
+        carry_arms(&mut pose, rig, depth, hand_swings(cycle, self.speed));
         pose
     }
 
@@ -247,7 +344,10 @@ impl Footing {
         }
         let depth = (crouch.drop / self.deepest).max(0.0);
         let lean = (jump::LEAN_PER_DEPTH * crouch.drop.max(0.0)).min(jump::MOST_LEAN);
-        let upper = jump::upper(stood, rig, lean, (CROUCHED_ARMS.0 * depth, CROUCHED_ARMS.1 * depth));
+        // The arms carried before the pelvis is solved, so the COM is where
+        // the crouch asks with them where they are.
+        let mut upper = jump::upper(stood, rig, lean, (0.0, 0.0));
+        carry_arms(&mut upper, rig, depth, [0.0; 2]);
         let heel = TOES_HEEL * crouch.toes.clamp(0.0, 1.0);
         let (ahead, height) = self.com(crouch);
         self.feet.solved(&upper, stood, rig, ahead, Aim::Height { height, knee: jump::KNEE_AT_TAKEOFF, heel }, 0.0, heel)
@@ -641,6 +741,104 @@ mod tests {
         }
     }
 
+    /// The deepest sneak carries each hand ahead of and below its shoulder,
+    /// its elbow under the shoulder and out past the hand, bent near a right
+    /// angle, the forearm reaching forward and only a little in; and the two
+    /// arms are not mirror images. The arms swung forward and the elbows
+    /// bent by one angle each had the hands side by side, straight out of
+    /// the forearms; carried 0.12 of the arm in with the elbows 0.7 out, the
+    /// forearms ran 36° in and the hands met over the belly.
+    #[test]
+    fn a_sneak_carries_its_hands_ahead_the_elbows_bent_under_and_out() {
+        use crate::character::anim::rig::forward_kinematics_on;
+        let (stood, rig) = real_stood();
+        let footing = Footing::of(&stood, &rig);
+        let (forward, left) = (rig.forward(), rig.left());
+        for on_toes in [false, true] {
+            let pose = footing.pose(Sneak { crouch: 1.0, on_toes }.crouch_on(leg_length_of(&rig)), &stood, &rig);
+            let at = forward_kinematics_on(&pose, &rig);
+            let mut ahead = [0.0f32; 2];
+            for (i, (shoulder, elbow, wrist), side) in [(0usize, (Bone::LeftArm, Bone::LeftForeArm, Bone::LeftHand), 1.0f32), (1, (Bone::RightArm, Bone::RightForeArm, Bone::RightHand), -1.0)] {
+                let (s, e, w) = (at[shoulder], at[elbow], at[wrist]);
+                let out = left * side;
+                let what = format!("on the toes {on_toes}, {shoulder:?}");
+                ahead[i] = (w - s).dot(forward);
+                assert!(ahead[i] > 0.15 && (s - w).y > 0.1, "{what}: the hand is {:.3} m ahead and {:.3} below the shoulder", ahead[i], (s - w).y);
+                assert!((s - e).y > 0.15, "{what}: the elbow is only {:.3} m below the shoulder", (s - e).y);
+                assert!((e - w).dot(out) > 0.02, "{what}: the elbow is {:.3} m out past the hand", (e - w).dot(out));
+                let bend = 180.0 - (s - e).angle_between(w - e).to_degrees();
+                assert!((60.0..110.0).contains(&bend), "{what}: the elbow bends {bend}°");
+                let forearm = w - e;
+                let inward = (-forearm.dot(out)).atan2(forearm.dot(forward)).to_degrees();
+                assert!((0.0..30.0).contains(&inward), "{what}: the forearm runs {inward}° in");
+            }
+            assert!(ahead[1] - ahead[0] > 0.01, "on the toes {on_toes}: the hands are carried alike, {ahead:?}");
+        }
+    }
+
+    /// At no weight [`carry_arms`] leaves the pose as it is, and toward no
+    /// weight it moves the arms toward nothing: a sneak's arms come in with
+    /// its crouch, with no jump as it begins. Steeply, though: the standing
+    /// arm is within 0.4 mm of straight, and bringing its wrist in a few
+    /// millimetres swings the elbow out by more (measured 0.3 mm at 1e-4,
+    /// 2.7 at 1e-3, 25 at 0.02). Solved with the arm IK's usual 5 mm of
+    /// softening, inside which the standing arm sits, the elbow jumped 12 mm
+    /// at 1e-4 (`armik::solve_arm_toward`).
+    #[test]
+    fn carried_by_nothing_the_arms_are_left_as_they_are() {
+        use crate::character::anim::rig::forward_kinematics_on;
+        let (stood, rig) = real_stood();
+        let mut untouched = stood;
+        carry_arms(&mut untouched, &rig, 0.0, [0.0; 2]);
+        assert_eq!(untouched.rotations.0, stood.rotations.0);
+        let before = forward_kinematics_on(&stood, &rig);
+        for (weight, most) in [(1.0e-4, 1.0e-3), (1.0e-3, 5.0e-3)] {
+            let mut barely = stood;
+            carry_arms(&mut barely, &rig, weight, [0.0; 2]);
+            let after = forward_kinematics_on(&barely, &rig);
+            for bone in [Bone::LeftForeArm, Bone::LeftHand, Bone::RightForeArm, Bone::RightHand] {
+                let moved = (after[bone] - before[bone]).length();
+                assert!(moved < most, "carried by {weight}, the {bone:?} moved {moved} m");
+            }
+        }
+    }
+
+    /// Walking crouched, each hand swings ahead and back against the other
+    /// by about [`HAND_SWING`] a m/s, the arms carried, not swung from the
+    /// shoulder.
+    #[test]
+    fn a_sneaks_hands_swing_against_each_other() {
+        use crate::character::anim::rig::forward_kinematics_on;
+        let (stood, rig) = real_stood();
+        let footing = Footing::of(&stood, &rig);
+        let speed = 0.8;
+        let mut crouching = Crouching::default();
+        crouching.ask(Sneak { crouch: 1.0, on_toes: false }.crouch_on(leg_length_of(&rig)), footing.rise());
+        crouching.advance(10.0);
+        let gait = SneakGait::of(&crouching, &footing, speed, &stood, &rig);
+        let ahead: Vec<[f32; 2]> = (0..64)
+            .map(|i| {
+                let at = forward_kinematics_on(&gait.pose(i as f32 / 64.0, &rig), &rig);
+                [(Bone::LeftArm, Bone::LeftHand), (Bone::RightArm, Bone::RightHand)].map(|(s, w)| (at[w] - at[s]).dot(rig.forward()))
+            })
+            .collect();
+        let mean = |k: usize| ahead.iter().map(|a| a[k]).sum::<f32>() / 64.0;
+        let (ml, mr) = (mean(0), mean(1));
+        let (mut lr, mut ll, mut rr) = (0.0, 0.0, 0.0);
+        for a in &ahead {
+            lr += (a[0] - ml) * (a[1] - mr);
+            ll += (a[0] - ml).powi(2);
+            rr += (a[1] - mr).powi(2);
+        }
+        let correlation = lr / (ll * rr).sqrt();
+        assert!(correlation < -0.8, "the hands swing together, correlation {correlation}");
+        for k in 0..2 {
+            let range = ahead.iter().map(|a| a[k]).fold(f32::MIN, f32::max) - ahead.iter().map(|a| a[k]).fold(f32::MAX, f32::min);
+            let asked = 2.0 * HAND_SWING * speed;
+            assert!((0.6 * asked..1.6 * asked).contains(&range), "hand {k} swings {range:.3} m, asked {asked:.3}");
+        }
+    }
+
     /// Not crouched, a sneak's walk is the walk.
     #[test]
     fn uncrouched_a_sneak_walks_as_a_walk() {
@@ -680,6 +878,8 @@ mod tests {
                     from: footing.walk(from.crouch_on(leg), speed, &stood, &rig),
                     to: footing.walk(to.crouch_on(leg), speed, &stood, &rig),
                     weight,
+                    depths: (from.crouch, to.crouch),
+                    speed,
                 };
                 let duty = gait.to.1.duty_factor;
                 let (mut floating, mut pressed) = (0.0f32, 0.0f32);

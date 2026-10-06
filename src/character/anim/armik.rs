@@ -383,6 +383,56 @@ pub fn solve_arm_on(
     forward_kinematics_on(pose, rig)[chain.wrist]
 }
 
+/// Places `chain`'s wrist at `wrist` (the pose's frame), its elbow bending
+/// toward `pole`: in the plane of the shoulder-to-wrist line and `pole`, on
+/// `pole`'s side. The hand keeps its turn on the forearm.
+///
+/// For a hand carried in front of the body, where the configured hinge of
+/// [`solve_arm_on`] (one world axis for every target) cannot say which way
+/// round the elbow goes. Returns where the wrist ended up.
+pub fn solve_arm_toward(pose: &mut LocalPose, chain: ArmChain, wrist: Vec3, pole: Vec3, rig: &RigGeometry) -> Vec3 {
+    let before = forward_kinematics_on(pose, rig);
+    solve_arm_toward_from(pose, &before, chain, wrist, pole, rig).1
+}
+
+/// [`solve_arm_toward`] from `before`, the pose's joint positions as they
+/// stand for this arm (another arm solved since leaves them so); returns
+/// where it put the elbow and the wrist.
+pub fn solve_arm_toward_from(
+    pose: &mut LocalPose,
+    before: &super::rig::BoneSet<Vec3>,
+    chain: ArmChain,
+    wrist: Vec3,
+    pole: Vec3,
+    rig: &RigGeometry,
+) -> (Vec3, Vec3) {
+    let shoulder = before[chain.shoulder];
+    let upper = (before[chain.elbow] - before[chain.shoulder]).length();
+    let fore = (before[chain.wrist] - before[chain.elbow]).length();
+    let to_target = wrist - shoulder;
+    let distance = to_target.length();
+    let unmoved = (before[chain.elbow], before[chain.wrist]);
+    if distance < 1.0e-6 || upper < 1.0e-6 || fore < 1.0e-6 {
+        return unmoved;
+    }
+    let direction = to_target / distance;
+    // The pole's part square to the line: the side the elbow goes.
+    let side = (pole - direction * pole.dot(direction)).normalize_or_zero();
+    if side == Vec3::ZERO {
+        return unmoved;
+    }
+    // Next to no softening: a standing arm is within 0.4 mm of straight,
+    // inside the usual 5 mm of it, and asked for its own wrist its elbow
+    // jumped 12 mm out (`sneak::tests::carried_by_nothing_the_arms_are_left_as_they_are`).
+    let solution = solve_two_bone(upper, fore, distance, 1.0e-4);
+    let elbow = shoulder + (direction * solution.upper_angle.cos() + side * solution.upper_angle.sin()) * upper;
+    let reached = shoulder + direction * solution.reach;
+    super::legik::aim_bone(pose, before, chain.shoulder, chain.elbow, elbow, rig);
+    let after = forward_kinematics_on(pose, rig);
+    super::legik::aim_bone(pose, &after, chain.elbow, chain.wrist, reached, rig);
+    (elbow, reached)
+}
+
 /// Rotates the hand to a world-space orientation.
 ///
 /// Unlike every other correction here this one is an assignment rather than a

@@ -1,6 +1,6 @@
 ---
 title: A crouch is the jump's countermovement held over the feet, eased by its COM's whole rise
-description: "sneak::Footing poses a crouch (depth 0-1, flat or on the toes) with the jump's foot-bound solver: trunk leant and arms forward by depth, the COM lowered over the feet, or over the balls with the heels up. Trap: an ease timed by depth alone ignored the toes' 7 cm rise: 3.3 m/s² where 2 was planned."
+description: "sneak::Footing poses a crouch (depth 0-1, flat or on the toes) with the jump's foot-bound solver: trunk leant and hands carried by depth, the COM lowered over the feet, or over the balls with the heels up. Trap: an ease timed by depth alone ignored the toes' 7 cm rise: 3.3 m/s² where 2 was planned."
 type: decision
 status: current
 tags:
@@ -44,7 +44,10 @@ jump's foot-bound solver (`jump::Feet::solved`, shared, the heel rise
 passed in) does all of it:
 - The trunk leans by the COM's drop (`jump::LEAN_PER_DEPTH`), the neck
   keeping the head up.
-- The arms come forward by depth (`CROUCHED_ARMS`, authored).
+- The arms are carried by depth, each hand placed ahead of its shoulder by
+  arm IK (`carry_arms`), before the pelvis is solved, so the COM counts
+  them (see
+  [a sneak carries its hands](./a-sneak-carries-its-hands-placed-by-arm-ik.md)).
 - The pelvis is solved so the real COM (`anthropometry::centre_of_mass`)
   is where the crouch asks: lowered by its depth, over where it stood.
 - The feet stay where they stood.

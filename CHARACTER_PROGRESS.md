@@ -41,6 +41,44 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### A sneak carries its hands
+
+The sneak's arms read as robotic: both upper arms swung forward and both
+elbows bent by one angle, and walking, the walk's swing held back. The hands
+were side by side, fists straight out of the forearms, swinging from the
+shoulder in one plane. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-sneak-carries-its-hands-placed-by-arm-ik.md).
+
+- **Placed by arm IK** (`sneak::carry_arms`, `armik::solve_arm_toward`):
+  - each hand ahead of and below its shoulder, in front of the belly;
+  - the elbow toward a pole under the shoulder, a little out and back,
+    bent about 90°;
+  - lerped in by the crouch's depth, so nothing jumps as it begins.
+- **Not a puppet:**
+  - the right hand leads by 3 cm;
+  - the wrists hang 20°;
+  - walking, the hands swing a little against the legs (0.05 m a m/s),
+    rising as they come forward.
+- **Applied** to the crouch (before the pelvis solve, so the COM counts
+  them), over the sneak's walk, and over a crouched shuffle (whose arms out
+  wide it replaces).
+- **Fixed on the way:**
+  - the hands carried far in with the elbows wide met over the belly (the
+    forearms 36° in, now 22°);
+  - the arm IK's 5 mm softening jumped a near-straight standing elbow
+    12 mm, so the pole solver uses 0.1 mm;
+  - a forward-kinematics pass per step cost 26 µs a crouch, now 5.
+- **Live:** crouching down the hands travel 34-37 cm at most 5 m/s²;
+  crouched they hold within 0.5 mm; walking at 0.8 m/s they swing 10.7 cm
+  against each other at most 1.8 m/s².
+- **Seen:** Front and Left, gizmos on and the bare mesh, standing, walking,
+  on the toes and shuffling.
+- **Tests:** the hand and elbow shape, nothing moved at no weight, and the
+  hands' anti-phase swing.
+- **Cost:** a crouch 36 µs (31 without); a sneak's walk 43 µs (23 without).
+
+1202 library tests pass; clippy is clean.
+
 ### The side shuffle starts and stops over a whole swing
 
 The open item from the shuffle's pelvis fix, closed. A faded swing (a
