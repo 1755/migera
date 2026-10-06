@@ -673,6 +673,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         let config = transition::TransitionConfig {
             // Half the duty factor: the other leg's mid-swing.
             mid_swing: state.stride.params.map_or(transition::TransitionConfig::default().mid_swing, |p| p.duty_factor * 0.5),
+            // A shuffle starts and stops over a whole swing: its quick
+            // cadence left a fade from mid-swing 6 frames long.
+            whole_swing: state.shuffle.is_some(),
             ..Default::default()
         };
         // A push lands on whichever balance carries the body: the walking

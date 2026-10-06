@@ -6,12 +6,13 @@ status: current
 tags:
   - locomotion
   - correctness
-updated: 2026-10-04
-verified: 2026-10-04
+updated: 2026-10-06
+verified: 2026-10-06
 code:
   - src/character/anim/transition.rs
   - src/character/anim/locomotion.rs
 sources:
+  - "test transition::tests::over_the_whole_swing_a_start_and_a_stop_fade_through_one_swing"
   - "test transition::tests::the_first_step_keeps_the_stance_foot_planted"
   - "test transition::tests::the_first_swing_lifts_before_it_travels"
 aliases:
@@ -39,6 +40,17 @@ So `Transition` places both fades in single support (`TransitionConfig::fade`,
 - **First step:** from the swinging leg's mid-swing to its heel contact.
 - **Last step:** after the footfall, wait out the double support, then fade
   from the other foot's toe-off to its mid-swing. The feet end side by side.
+- **Over the whole swing** (`TransitionConfig::whole_swing`, a side
+  shuffle's): the first step joins at the swinging foot's toe-off, and the
+  last step fades from the other foot's toe-off to its footfall, `1 − duty`
+  of a stride, still single support.
+  - At a shuffle's 1.8 cycles a second a fade from mid-swing was 6 frames.
+    The first swing's foot dropped 50 mm in about 3, still going across;
+    the sprung leg landed it pitched 8° toe-down and the tip dragged
+    15-20 mm. Over the whole swing (12 frames), nothing on the floor moves
+    over 2 mm a frame.
+  - Fading in by three quarters of the shorter fade made it worse (17-20
+    mm a frame): the foot moved across faster.
 - **Stopped before a start is in, it finishes first.** Told to stop during
   the first step's fade, the step completes (its fade landing at heel
   contact) and the stop starts from the walk: a step, then the other foot

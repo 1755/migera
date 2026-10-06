@@ -201,8 +201,9 @@ the toes at 9 s, standing at 12 s):
   schedule:
   - the pelvis peaks at 1.0-2.6 m/s² (8.6-10 before the shuffle's pelvis
     was smoothed);
-  - tips drag up to 11 mm a frame where it starts and changes side, a
-    faded swing's landing (see the shuffle's note);
+  - tips dragged up to 11 mm a frame where it started and changed side, a
+    faded swing's landing, until the shuffle faded over its whole swing
+    (see the shuffle's note);
 - the hips ride the crouch's own drop below the upright shuffle's.
 
 **Cost** (`anim_bench --gait sneak`):
@@ -214,7 +215,6 @@ the toes at 9 s, standing at 12 s):
 ## Revisit when
 
 - Many characters sneak at once: cache the crouches posed every frame.
-- The side shuffle's faded swings are fixed: a crouched one inherits them.
 
 ## Related
 

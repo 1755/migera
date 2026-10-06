@@ -166,15 +166,32 @@ pub struct TransitionConfig {
     /// walk holds the distance between them, and a changing blend scales
     /// it: the unloading foot slipped up to 12.5 mm a frame.
     pub mid_swing: f32,
+    /// Fade over the swing's whole length instead: the first step joining
+    /// at the swinging foot's toe-off, the last step's fade running from the
+    /// other foot's toe-off to its footfall. Both still single support.
+    ///
+    /// A side shuffle's (`shuffle`). At its quick cadence (1.8 cycles a
+    /// second) a fade from mid-swing lasted 6 frames, the first swing's foot
+    /// dropped 50 mm in about 3 still going across, and the sprung leg,
+    /// trailing, landed it pitched 8° toe-down: its tip dragged 15-20 mm.
+    pub whole_swing: bool,
 }
 
 impl TransitionConfig {
     /// The length of either fade, stride fraction: from mid-swing to the
     /// swinging foot's heel contact (a first step), or from the other foot's
     /// toe-off to its mid-swing (a last step). The same span, `0.5 −
-    /// mid_swing`, both ways.
+    /// mid_swing`, both ways. Over the [`Self::whole_swing`], the swing's
+    /// length, `1 − duty`.
     pub fn fade(&self) -> f32 {
-        (0.5 - self.mid_swing).max(0.0)
+        if self.whole_swing { 0.5 - self.toe_off() } else { (0.5 - self.mid_swing).max(0.0) }
+    }
+
+    /// Stride fraction from the standing leg's footfall to where the first
+    /// step joins the gait: the other leg's mid-swing, or its toe-off over
+    /// the [`Self::whole_swing`].
+    pub fn join(&self) -> f32 {
+        if self.whole_swing { self.toe_off() } else { self.mid_swing }
     }
 
     /// Stride fraction from a footfall to the other foot's toe-off, where
@@ -192,6 +209,7 @@ impl Default for TransitionConfig {
             blend_seconds: 0.25,
             release_seconds: 0.5,
             mid_swing: super::reference::STANCE_FRACTION * 0.5,
+            whole_swing: false,
         }
     }
 }
@@ -366,8 +384,9 @@ impl Transition {
                     if self.release >= 1.0 {
                         self.stage = Stage::FirstStep { from: None };
                         // Mid-swing of the leg that does NOT stand: the right
-                        // leg's is `mid_swing` after the left's footfall at 0.
-                        let cycle = if self.stance > 0.0 { 0.0 } else { 0.5 } + config.mid_swing;
+                        // leg's is `mid_swing` after the left's footfall at 0
+                        // (or its toe-off, `TransitionConfig::join`).
+                        let cycle = if self.stance > 0.0 { 0.0 } else { 0.5 } + config.join();
                         return Some(TransitionEvent::FirstStep { cycle: cycle.rem_euclid(1.0) });
                     }
                 }
@@ -814,6 +833,64 @@ mod tests {
     // -----------------------------------------------------------------
     // Starting
     // -----------------------------------------------------------------
+
+    /// Over the whole swing (a shuffle's, `TransitionConfig::whole_swing`):
+    /// the first step joins at the swinging foot's toe-off, and its fade and
+    /// a stop's each change the gait's weight only while one foot is down,
+    /// over that swing, done by its footfall.
+    #[test]
+    fn over_the_whole_swing_a_start_and_a_stop_fade_through_one_swing() {
+        let duty = 0.65;
+        let config = TransitionConfig { mid_swing: duty * 0.5, whole_swing: true, ..Default::default() };
+        let toe_off = duty - 0.5;
+        assert!((config.join() - toe_off).abs() < 1.0e-6 && (config.fade() - (1.0 - duty)).abs() < 1.0e-6);
+        let mut transition = Transition::standing();
+        let mut phase = 0.0f32;
+        let mut started = None;
+        for _ in 0..600 {
+            if let Some(TransitionEvent::FirstStep { cycle }) = transition.advance(0.5, phase, &config, DT) {
+                started = Some(cycle);
+                break;
+            }
+        }
+        // Standing square, the left stands (its footfall at 0) and the right
+        // swings from its toe-off.
+        assert_eq!(started, Some(toe_off));
+        phase = toe_off;
+        let rate = 0.01;
+        let mut changes = Vec::new();
+        while transition.weight < 1.0 {
+            let before = transition.weight;
+            transition.advance(0.5, phase, &config, DT);
+            if transition.weight != before {
+                changes.push(phase);
+            }
+            phase += rate;
+            assert!(phase < 2.0, "never walked");
+        }
+        assert!(changes.iter().all(|&p| (toe_off - 1.0e-4..=0.5 + 1.0e-4).contains(&p)), "the start's weight changed at {changes:?}");
+        assert!(changes.len() > 25, "the start faded in over only {} steps of the clock", changes.len());
+        // Stopping: after the next footfall, the fade runs from the other
+        // foot's toe-off to its own footfall.
+        let mut changes = Vec::new();
+        let mut footfall = None;
+        while !transition.is_at_rest() {
+            let before = transition.weight;
+            transition.advance(0.0, phase.rem_euclid(1.0), &config, DT);
+            if transition.weight != before {
+                footfall.get_or_insert((phase * 2.0).floor() * 0.5);
+                changes.push(phase);
+            }
+            phase += rate;
+            assert!(phase < 6.0, "never stopped");
+        }
+        let footfall = footfall.unwrap();
+        assert!(
+            changes.iter().all(|&p| (footfall + toe_off - 1.0e-4..=footfall + 0.5 + rate).contains(&p)),
+            "after the footfall at {footfall}, the stop's weight changed at {changes:?}"
+        );
+        assert!(changes.len() > 25, "the stop faded out over only {} steps of the clock", changes.len());
+    }
 
     #[test]
     fn a_start_prepares_before_the_first_step() {

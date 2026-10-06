@@ -321,7 +321,7 @@ mod tests {
         let (stood, rig) = real_stood();
         let params = shuffling(speed, toward, 0.0);
         let cadence = speed / distance_per_cycle(&params, &stood, &rig);
-        let config = TransitionConfig { mid_swing: params.duty_factor * 0.5, ..Default::default() };
+        let config = TransitionConfig { mid_swing: params.duty_factor * 0.5, whole_swing: true, ..Default::default() };
         let mut transition = Transition::standing();
         let (mut cycle, mut body) = (0.0f32, Vec3::ZERO);
         let (mut previous, mut previous_cycle) = (stood, 0.0f32);

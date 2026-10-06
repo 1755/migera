@@ -41,6 +41,32 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### The side shuffle starts and stops over a whole swing
+
+The open item from the shuffle's pelvis fix, closed. A faded swing (a
+start's or restart's first, a stop's last) landed its tip dragging 15-20 mm.
+See [the note](./docs/knowledge/character-animation/ik-and-locomotion/fade-a-gait-only-through-single-support.md).
+
+- **Cause:** at 1.8 cycles a second, a fade from mid-swing was 6 frames.
+  The foot dropped 50 mm in about 3, still going across, and the sprung
+  leg landed it pitched 8° toe-down.
+- **Fix:** `TransitionConfig::whole_swing`, set by the walker while
+  shuffling.
+  - The first step joins at the swinging foot's toe-off, not mid-swing.
+  - A stop fades from the other foot's toe-off to its footfall.
+  - Both are a whole swing (12 frames), still single support.
+  - The walk is unchanged.
+- **Live** (0.4 m/s left, right, stop):
+  - nothing on the floor moves over 2 mm a frame (tips 7-11 before);
+  - the pelvis peaks at 1.07 m/s²;
+  - each stop ends within 4 mm of the stance it started from.
+- **Test:**
+  `transition::tests::over_the_whole_swing_a_start_and_a_stop_fade_through_one_swing`.
+  The start joins at the toe-off, and both fades change the weight only in
+  that swing.
+
+1199 library tests pass; clippy is clean.
+
 ### The side shuffle's pelvis rides a smooth path
 
 The shuffle's pelvis dipped 7 mm at every step, 8-10 m/s² live, upright
@@ -74,6 +100,7 @@ and crouched. Two causes, both fixed. See
   - Tried and refused: fading in by three quarters of the swing (worse,
     17-20 mm a frame); lifting the foot level (no change: the posed foot
     is level).
+  - Closed by the entry above: faded over the whole swing.
 
 1198 library tests pass; clippy is clean.
 
