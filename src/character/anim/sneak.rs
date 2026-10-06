@@ -592,6 +592,55 @@ mod tests {
         }
     }
 
+    /// Shuffling aside crouched (`shuffle`, posed on the crouch): a foot
+    /// down stays on the floor, both down move alike under the body (or one
+    /// slides), and the hips ride as far below an upright shuffle's as the
+    /// crouch's are below standing.
+    #[test]
+    fn a_sneak_shuffles_aside_crouched_its_feet_down_on_the_floor() {
+        use crate::character::anim::foot::lowest;
+        use crate::character::anim::gait::{leg_phase, walk_pose_on};
+        use crate::character::anim::rig::offset_from;
+        use crate::character::anim::shuffle::shuffling;
+        let (stood, rig) = real_stood();
+        let footing = Footing::of(&stood, &rig);
+        let soles = [Bone::LeftFoot, Bone::RightFoot].map(|ankle| Sole::of(&rig, ankle));
+        let grounds = [0, 1].map(|leg| lowest(&soles[leg].points(&stood, &rig)));
+        for (crouch, on_toes) in SNEAKS {
+            let crouched = footing.pose(Sneak { crouch, on_toes }.crouch_on(leg_length_of(&rig)), &stood, &rig);
+            let drop = stood.root_translation.y - crouched.root_translation.y;
+            for (speed, toward, ahead) in [(0.4, 1.0, 0.0), (0.6, -1.0, 0.0), (0.5, 1.0, 0.6)] {
+                let params = shuffling(speed, toward, ahead);
+                let duty = params.duty_factor;
+                let what = format!("{crouch} {on_toes}, {speed} m/s toward {toward} ahead {ahead}");
+                let (frames, mut lower, mut previous) = (240, 0.0f32, None::<[Vec3; 2]>);
+                for i in 0..frames {
+                    let cycle = i as f32 / frames as f32;
+                    let pose = walk_pose_on(cycle, &params, &crouched, &rig);
+                    lower += (walk_pose_on(cycle, &params, &stood, &rig).root_translation.y - pose.root_translation.y) / frames as f32;
+                    let risen = pose.root_translation.y - stood.root_translation.y;
+                    let toes = [Bone::LeftToeBase, Bone::RightToeBase].map(|bone| offset_from(&pose, &rig, Bone::Hips, bone));
+                    for leg in 0..2 {
+                        if leg_phase(cycle + 0.5 * leg as f32, duty).is_stance() {
+                            let height = risen + lowest(&soles[leg].points(&pose, &rig)) - grounds[leg];
+                            assert!(height.abs() < 2.0e-3, "{what}: at {cycle:.3} foot {leg} down is {:.1} mm off the floor", height * 1e3);
+                        }
+                    }
+                    let both = |at: f32| leg_phase(at, duty).is_stance() && leg_phase(at + 0.5, duty).is_stance();
+                    if let Some([was_left, was_right]) = previous
+                        && both(cycle)
+                        && both(cycle - 1.0 / frames as f32)
+                    {
+                        let apart = ((toes[0] - was_left) - (toes[1] - was_right)) * Vec3::new(1.0, 0.0, 1.0);
+                        assert!(apart.length() < 5.0e-4, "{what}: at {cycle:.3} the feet down moved {:.2} mm apart", apart.length() * 1e3);
+                    }
+                    previous = Some(toes);
+                }
+                assert!((lower - drop).abs() < 0.01, "{what}: the hips ride {lower:.3} m below an upright shuffle's, the crouch's {drop:.3}");
+            }
+        }
+    }
+
     /// Not crouched, a sneak's walk is the walk.
     #[test]
     fn uncrouched_a_sneak_walks_as_a_walk() {

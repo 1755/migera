@@ -73,8 +73,8 @@ scaled to the rig like the gait's fractions. At the deepest:
 **In the walker.**
 - The crouch replaces the standing pose at rest, and both feet are held
   planted.
-- Asked to walk while sneaking, it walks from the crouch, and the crouch
-  can change on the move
+- Asked to walk or go aside while sneaking, it walks or shuffles from the
+  crouch, and the crouch can change on the move
   ([the sneak's walk](./a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md)).
 - Asked to sit, jump or step aside, it stands up first. The jump and the
   step stay asked until then.

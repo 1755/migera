@@ -1,6 +1,6 @@
 ---
 title: A sneak walks the walk's foot path moved by its crouch, the leg solved to it
-description: "sneak::sneaking_on walks Winter's stride from a crouch, each ankle on the walk's path moved as the crouch moves it, the leg solved to it; SneakGait blends two crouches on the move by their ankles. Traps: angle offsets bobbed the pelvis 72 mm; blended joints sank the foot 52 mm."
+description: "sneak::sneaking_on walks Winter's stride from a crouch, each ankle on the walk's path moved as the crouch moves it; SneakGait blends crouches on the move by their ankles; aside, the shuffle on the crouch. Traps: angle offsets bobbed the pelvis 72 mm; blended joints sank the foot 52 mm."
 type: decision
 status: current
 tags:
@@ -14,6 +14,7 @@ code:
   - src/character/anim/sneak.rs
   - src/character/anim/gait.rs
   - src/character/anim/walker.rs
+  - src/character/anim/shuffle.rs
 sources:
   - "Winter 2009 Appendix A (the replayed stride); Steele et al. 2010 (crouch gait classed by the least stance knee flexion)"
   - "tests sneak::tests::a_sneak_walks_on_bent_knees_lower_than_a_walk, a_sneaks_feet_stay_on_the_floor_and_swing_clear_of_it"
@@ -29,6 +30,9 @@ aliases:
   - crouch change while walking
   - walk to sneak
   - toe touchdown
+  - crouched shuffle
+  - sneaking aside
+  - turning while sneaking
 ---
 
 # A sneak walks the walk's foot path moved by its crouch, the leg solved to it
@@ -99,11 +103,25 @@ it:
 Walk to sneak and back is the same thing, a crouch changing to or from
 none.
 
+**Turning** needs nothing of its own. Steered while sneaking, the walk's
+heading turns as a walk's does, and the sneak's feet go as the walk's.
+Standing, a crouch turns on its locked feet as a standing walker does.
+
+**Going aside crouched** is the side shuffle (`shuffle::shuffle_pose`)
+posed on the crouch it is in. The shuffle places each foot and solves the
+pelvis to keep the loaded legs the base's length, so on a crouch:
+- the legs stay as bent as the crouch's;
+- the trunk's lean and the arms come with it;
+- on the toes, the feet keep the heels up.
+
+It is posed afresh every frame, not a cached cycle, so it takes the crouch
+as the crouch changes.
+
 **In the walker.**
-- Asked to sneak, it crouches standing or walking. Asked to stop sneaking
-  while walking, it stands up on the move.
+- Asked to sneak, it crouches standing, walking or shuffling aside. Asked
+  to stop sneaking while moving, it stands up on the move.
 - From a stand, it sets off once its crouch is still.
-- Asked to go aside, sit, jump or step aside, it stands up first.
+- Asked to sit, jump or step aside, it stands up first.
 
 ## Alternatives considered
 
@@ -174,6 +192,16 @@ the toes at 9 s, standing at 12 s):
 - the pelvis accelerates at most 5.3 m/s², standing up from the toes on the
   move: the crouch's 2 m/s² ease on top of the walk's bob.
 
+**Live, turning and going aside** (deepest, and half on the toes):
+- turning on a 0.5 rad/s circle at 0.6 m/s, planted balls slip at most 1.44
+  mm a frame and tips 1.74; the upright walk on the same circle, 1.39 and
+  1.74;
+- shuffling aside at 0.4 m/s each way, the crouch changing to half on the
+  toes on the way, every figure is the upright shuffle's on the same
+  schedule: the pelvis peaks at 8.6-10 m/s² (upright 8.3-9.7), and tips slip
+  up to 11 mm a frame where it starts and changes side (upright 11.25);
+- the hips ride the crouch's own drop below the upright shuffle's.
+
 **Cost** (`anim_bench --gait sneak`):
 - 23-27 µs a character a frame for the walk (the walk's 23);
 - 51 µs while a crouch changes (`--crouch-from`), two walks and the legs
@@ -183,8 +211,8 @@ the toes at 9 s, standing at 12 s):
 ## Revisit when
 
 - Many characters sneak at once: cache the crouches posed every frame.
-- A sneak needs to turn or go aside crouched; asked aside, it stands up
-  first now.
+- The side shuffle's own start and change of side are fixed: a crouched one
+  inherits them.
 
 ## Related
 

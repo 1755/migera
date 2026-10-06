@@ -41,6 +41,39 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Sneaking, step 3: turning and going aside crouched
+
+Turning needed nothing new; going aside crouched is the side shuffle posed
+on the crouch. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-sneak-walks-the-walks-foot-path-moved-by-its-crouch.md).
+
+- **Turning:** steered while sneaking, the walk's heading turns.
+  - Live on a 0.5 rad/s circle at 0.6 m/s, planted balls slip at most
+    1.44 mm a frame and tips 1.74.
+  - The upright walk on the same circle: 1.39 and 1.74.
+- **Aside:** `Walker::aside` no longer stands a sneak up first. The
+  shuffle (`shuffle::shuffle_pose`) is posed on the crouch it is in, which
+  keeps:
+  - the legs as bent as the crouch's;
+  - the lean and the arms;
+  - on the toes, the heels up.
+
+  It is posed every frame, so the crouch can change under it.
+- **Test** (`sneak::tests::a_sneak_shuffles_aside_crouched_its_feet_down_on_the_floor`):
+  - the feet down stay within 2 mm of the floor;
+  - both down move alike within 0.5 mm a frame;
+  - the hips ride the crouch's drop below an upright shuffle's.
+- **Live** (0.4 m/s left then right, the crouch changing from deepest to
+  half on the toes on the way): every figure is the upright shuffle's on
+  the same schedule.
+  - The pelvis peaks at 8.6-10 m/s² (upright 8.3-9.7).
+  - Tips slip up to 11 mm a frame where it starts and changes side
+    (upright 11.25): the shuffle's own, left open.
+- **Seen:** Front (deep, the stance widened, knees over the feet) and Left
+  (on the toes, heels up), gizmos on, mesh off.
+
+1196 library tests pass; clippy is clean.
+
 ### Sneaking: toe touchdowns held, the crouch changing on the move
 
 Two items left open by step 2, closed. See
