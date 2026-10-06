@@ -7,8 +7,8 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-04
-verified: 2026-10-04
+updated: 2026-10-06
+verified: 2026-10-06
 code:
   - src/character/anim/shuffle.rs
   - src/character/anim/gait.rs
@@ -34,6 +34,8 @@ aliases:
   - carry_arms
   - shuffle::planted
   - --aside-schedule
+  - smoothed_drop
+  - shuffle pelvis
 ---
 
 # Walking sideways is a shuffle on the walk's own clock, the feet sweeping across
@@ -63,9 +65,16 @@ direction.
   toe to toe) plus half a stride, never narrower than they stood. The
   leading foot steps out, the trailing one closes: the gap opens to a
   stride past the closest and shuts again.
-- **The legs are placed, not curved:** `stance::move_pelvis_and_feet`, the
-  pelvis taking the height that keeps every foot down in reach (spread
-  wide, it sinks, as a shuffling body does).
+- **The legs are placed, not curved:** `stance::move_pelvis_and_feet`.
+  Spread wide, the pelvis sinks, as a shuffling body does.
+- **The pelvis rides one sinusoid a step** (`smoothed_drop`), fitted at
+  or under the height every foot down allows over the cycle:
+  - 48 samples, plus each foot's last instant down;
+  - lowered whole by whatever the fit still rides above;
+  - under it the legs bend a little more, and the feet stay placed.
+- **The locomotion layer's walk sway is faded out while shuffling**
+  (`walker::fade_walk_sway`, passed 1 as for a run). It is the walk's: it
+  re-solves the pelvis over the feet a walk's stance timing loads.
 - **Stride from speed:** `0.55 × speed` (`SHUFFLE_STRIDE_PER_SPEED`),
   0.10–0.45 m a cycle, about 1.8 cycles a second: short, quick steps.
 - **The stride, width and diagonal are set from what is asked, not the
@@ -128,8 +137,27 @@ direction.
   going, its last 6–15 mm on the floor each step; across by three quarters
   of the swing, 4–9 mm (in the air, live, between samples).
 
+- **The pelvis took the lowest any foot down allowed, a step a step.**
+  A foot set down out wide counted at once (at least 0.2 of the load), and
+  its leg asked the pelvis lower that frame:
+  - 230-1260 m/s² over 1/240 of a cycle headless;
+  - 8-10 m/s² live through the springs, a 7 mm dip at every step.
+
+  Fitted as one sinusoid a step, it was still clipped to the legs' reach
+  in the trailing foot's last instant down, which no regular sample caught:
+  118 m/s² at 0.6 m/s, until that instant was checked too.
+- **The walk's sway put the dip back.** Composed on after the gait, the
+  locomotion layer's walk sway re-solved the pelvis over the walk's loaded
+  feet, wide apart: 403 m/s² headless, the live dip unchanged by the fit.
+  Faded out shuffling, 0.9 m/s² live.
+
 ## Consequences
 
+- **The pelvis:**
+  - headless, at most 3.2 m/s² through a steady shuffle (0.3-0.6 m/s,
+    across and diagonal);
+  - live at 0.4 m/s, 0.9 steady and 1.9 starting or changing side;
+  - crouched (`sneak`), 1.0-2.6.
 - **Model** (`shuffle::tests`, the real rig): a cycle carries the body one
   stride along its way within 1 %, under 1 cm off it, across and on
   diagonals forward and back; the feet never nearer than the closest less
@@ -153,6 +181,18 @@ direction.
 
 ## Revisit when
 
+- **A faded swing lands abruptly.** The start's first swing (and a
+  restart's) fades in from mid-swing to the footfall, 6 frames at 1.8
+  cycles a second. The foot comes down 50 mm in about 3 frames, still
+  going across. The sprung leg trails and lands it pitched toe-down 8°, so
+  its tip drags 15-20 mm over 2-3 frames; the ball lands still. A stop's
+  last swing does the same.
+  - Tried and refused: fading in by three quarters of the swing (the tips
+    slid 17-20 mm a frame); keeping the lifted foot level (no change: the
+    posed foot is level, the pitch is the springs').
+  - A fix wants the shuffle's first step faded over its whole swing (still
+    single support), which needs the first step's fade timed apart from
+    the stop's (one `TransitionConfig::mid_swing` times both now).
 - **The arms' shape** is authored; a recording of a side shuffle would
   settle it.
 - **Backward diagonals** from `Walker::speed` below zero: the walk does

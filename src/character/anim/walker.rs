@@ -956,7 +956,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             sway.lateral *= settled;
             sway.fore_aft *= settled;
         }
-        fade_walk_sway(&mut wanted, running);
+        // Shuffling, none of it: a shuffle carries its own pelvis
+        // (`shuffle::shuffle_pose`), and the walk's sway re-solved it over
+        // the walk's loaded feet, wide apart: a 7 mm dip at every step, 403
+        // m/s² headless.
+        fade_walk_sway(&mut wanted, if state.shuffle.is_some() { 1.0 } else { running });
         if layer.0 != wanted {
             layer.0 = wanted;
         }
@@ -1326,7 +1330,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
 }
 
 /// Fades `layer`'s walk sway and pelvic turn out as the gait is `running`
-/// (0 walking, 1 running). They are a walk's: the pelvis turned about
+/// (0 walking, 1 running; a shuffle passes 1). They are a walk's: the pelvis turned about
 /// whichever feet a walk's stance timing has loaded. On a run's clock (a
 /// third of the stride down, and flights) its pivot jumped between the
 /// feet, and with it the root, 15 mm back in three frames once a step; and

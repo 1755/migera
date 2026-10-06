@@ -198,8 +198,11 @@ the toes at 9 s, standing at 12 s):
   1.74;
 - shuffling aside at 0.4 m/s each way, the crouch changing to half on the
   toes on the way, every figure is the upright shuffle's on the same
-  schedule: the pelvis peaks at 8.6-10 m/s² (upright 8.3-9.7), and tips slip
-  up to 11 mm a frame where it starts and changes side (upright 11.25);
+  schedule:
+  - the pelvis peaks at 1.0-2.6 m/s² (8.6-10 before the shuffle's pelvis
+    was smoothed);
+  - tips drag up to 11 mm a frame where it starts and changes side, a
+    faded swing's landing (see the shuffle's note);
 - the hips ride the crouch's own drop below the upright shuffle's.
 
 **Cost** (`anim_bench --gait sneak`):
@@ -211,11 +214,11 @@ the toes at 9 s, standing at 12 s):
 ## Revisit when
 
 - Many characters sneak at once: cache the crouches posed every frame.
-- The side shuffle's own start and change of side are fixed: a crouched one
-  inherits them.
+- The side shuffle's faded swings are fixed: a crouched one inherits them.
 
 ## Related
 
 - [A crouch is the jump's countermovement held over the feet](./a-crouch-is-the-jumps-countermovement-held-over-the-feet.md) — prerequisite: the crouch a sneak walks from.
 - [Replay a recorded gait by segment attitudes](./replay-a-recorded-gait-by-segment-attitudes.md) — prerequisite: the walk replayed, thigh and foot by absolute attitudes.
 - [Walk pelvis rides one sinusoid per step](./walk-pelvis-rides-one-sinusoid-per-step.md) — context: the pelvis path the sneak's lowered hips ride.
+- [Walking sideways is a shuffle on the walk's clock](./walking-sideways-is-a-shuffle-on-the-walks-clock.md) — applies: the shuffle a sneak goes aside in, its pelvis and its open faded-swing landing.

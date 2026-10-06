@@ -41,6 +41,42 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### The side shuffle's pelvis rides a smooth path
+
+The shuffle's pelvis dipped 7 mm at every step, 8-10 m/s² live, upright
+and crouched. Two causes, both fixed. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/walking-sideways-is-a-shuffle-on-the-walks-clock.md).
+
+- **The pose** (`shuffle::smoothed_drop`). The pelvis took the lowest any
+  foot down allowed, so it stepped down the frame a foot set down out
+  wide: 230-1260 m/s² headless.
+  - It now rides one sinusoid a step, fitted at or under what the feet
+    allow over the cycle.
+  - The fit is also checked at each foot's last instant down, which the
+    samples missed (118 m/s² until then).
+  - Headless, at most 3.2 m/s².
+- **The layer** (`walker`). The locomotion layer's walk sway, composed on
+  after the gait, re-solved the pelvis over the walk's loaded feet: 403
+  m/s² headless, the live dip unchanged by the first fix. It is now faded
+  out while shuffling, as running fades it.
+- **Live** (0.4 m/s left then right):
+  - upright: 0.9 m/s² steady, 1.9 starting or changing side;
+  - crouched: 1.0-2.6.
+- **Tests:**
+  - `shuffle::tests::a_shuffles_pelvis_rides_a_smooth_path`;
+  - `..::under_the_locomotion_layer_a_shuffles_pelvis_rides_smooth_with_the_walk_sway_faded`,
+    which also checks the unfaded sway still steps the pelvis (over 50
+    m/s²).
+- **Open:** a faded swing (a start's or restart's first, a stop's last)
+  lands its tip dragging 15-20 mm over 2-3 frames; the ball lands still.
+  - Its fade is 6 frames at 1.8 cycles a second, and the foot drops 50 mm
+    in about 3. The sprung leg lands it pitched 8° toe-down.
+  - Tried and refused: fading in by three quarters of the swing (worse,
+    17-20 mm a frame); lifting the foot level (no change: the posed foot
+    is level).
+
+1198 library tests pass; clippy is clean.
+
 ### Sneaking, step 3: turning and going aside crouched
 
 Turning needed nothing new; going aside crouched is the side shuffle posed

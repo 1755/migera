@@ -126,23 +126,107 @@ pub fn shuffle_pose(phase: f32, params: &GaitParams, step: f32, toward: f32, ahe
     // pass each other, apart across, as a walk's do.
     let duty = params.duty_factor;
     let wider = ((SHUFFLE_CLOSEST + 0.5 * sideways * step / duty).max(stood) - stood) * 0.5;
-    let (mut feet, mut loads) = ([Vec3::ZERO; 2], [0.0f32; 2]);
-    for (leg, shift) in [(0usize, 0.0f32), (1, 0.5)] {
-        let (along, lift) = foot_at(phase + shift, duty, step);
-        // Out to its own side, the left foot to the rig's left.
-        let side = if leg == 0 { rig.left() } else { -rig.left() };
-        feet[leg] = side * wider + across * along + Vec3::Y * lift;
-        // Every foot down counts for the pelvis's height
-        // (`move_pelvis_and_feet` heeds a leg over 0.05 of the load): one
-        // just set down carries none yet, and left out, the pelvis stood
-        // too high for it to reach the floor (10 mm up).
-        if let LegPhase::Stance { progress } = leg_phase(phase + shift, duty) {
-            loads[leg] = stance_load(progress, duty).max(0.2);
+    // Each foot's move from where it stood at `at`, and its load.
+    let feet_at = |at: f32| {
+        let (mut feet, mut loads) = ([Vec3::ZERO; 2], [0.0f32; 2]);
+        for (leg, shift) in [(0usize, 0.0f32), (1, 0.5)] {
+            let (along, lift) = foot_at(at + shift, duty, step);
+            // Out to its own side, the left foot to the rig's left.
+            let side = if leg == 0 { rig.left() } else { -rig.left() };
+            feet[leg] = side * wider + across * along + Vec3::Y * lift;
+            // Every foot down counts for the pelvis's height
+            // (`move_pelvis_and_feet` heeds a leg over 0.05 of the load): one
+            // just set down carries none yet, and left out, the pelvis stood
+            // too high for it to reach the floor (10 mm up).
+            if let LegPhase::Stance { progress } = leg_phase(at + shift, duty) {
+                loads[leg] = stance_load(progress, duty).max(0.2);
+            }
         }
-    }
-    super::stance::move_pelvis_and_feet(&mut pose, rig, Vec3::ZERO, Quat::IDENTITY, loads, feet, 0.0, feet, [0.0; 2], |needed, _| needed);
+        (feet, loads)
+    };
+    let (feet, loads) = feet_at(phase);
+    let drop = smoothed_drop(phase, duty, base, rig, &feet_at);
+    super::stance::move_pelvis_and_feet(&mut pose, rig, Vec3::ZERO, Quat::IDENTITY, loads, feet, 0.0, feet, [0.0; 2], |_, ceiling| drop.min(ceiling));
     carry_arms(&mut pose, phase, duty, rig);
     pose
+}
+
+/// Samples a cycle the pelvis's path is fitted over ([`smoothed_drop`]).
+const DROP_SAMPLES: usize = 48;
+
+/// The pelvis's drop at `phase` (negative down, from standing on `base`):
+/// one sinusoid a step, fitted at or under the height the feet down allow
+/// over the cycle (`feet_at` gives each foot's move and load), as the
+/// walk's pelvis is (`walk::BOB_HARMONICS`).
+///
+/// Each leg down allows the pelvis as high as it reaches its foot,
+/// `stance::move_pelvis_and_feet`'s own need, and the pelvis took the
+/// lowest. A foot set down out wide counted at once, and the pelvis stepped
+/// down for it in a frame: 230-1260 m/s² headless, 8-10 live through the
+/// springs, a dip every step. Under the fit the legs bend a little more,
+/// and the feet stay where they are placed.
+fn smoothed_drop(phase: f32, duty: f32, base: &LocalPose, rig: &RigGeometry, feet_at: &dyn Fn(f32) -> ([Vec3; 2], [f32; 2])) -> f32 {
+    use std::f32::consts::TAU;
+    // Each leg, socket to ankle, as it stood.
+    let legs = [(Bone::LeftUpLeg, Bone::LeftFoot), (Bone::RightUpLeg, Bone::RightFoot)]
+        .map(|(socket, ankle)| offset_from(base, rig, Bone::Hips, ankle) - offset_from(base, rig, Bone::Hips, socket));
+    // How high the pelvis may sit at `at` for each loaded leg to reach its
+    // foot.
+    let allowed_at = |at: f32| {
+        let (feet, loads) = feet_at(at);
+        let total = (loads[0] + loads[1]).max(1.0e-6);
+        (0..2)
+            .filter(|&leg| loads[leg] / total > 0.05)
+            .map(|leg| {
+                let to = legs[leg] + feet[leg];
+                to.y + (legs[leg].length_squared() - (to.x * to.x + to.z * to.z)).max(0.0).sqrt()
+            })
+            .fold(0.0f32, f32::min)
+    };
+    let allowed: Vec<f32> = (0..DROP_SAMPLES).map(|i| allowed_at(i as f32 / DROP_SAMPLES as f32)).collect();
+    // And each foot's last instant down, the trailing foot furthest under:
+    // between the samples, the path was clipped to it there and kinked
+    // (118 m/s² headless at 0.6 m/s).
+    let lifts = [duty, duty + 0.5].map(|lift| {
+        let at = (lift - 1.0e-4).rem_euclid(1.0);
+        (at, allowed_at(at))
+    });
+    // Mean and the step's harmonic (twice a cycle), pushed under wherever
+    // the fit rides above what is allowed.
+    let n = DROP_SAMPLES as f32;
+    let fit = |target: &[f32]| {
+        let mut c = [target.iter().sum::<f32>() / n, 0.0, 0.0];
+        for (i, &h) in target.iter().enumerate() {
+            let angle = TAU * 2.0 * i as f32 / n;
+            c[1] += 2.0 / n * h * angle.cos();
+            c[2] += 2.0 / n * h * angle.sin();
+        }
+        c
+    };
+    let at = |c: &[f32; 3], p: f32| c[0] + c[1] * (TAU * 2.0 * p).cos() + c[2] * (TAU * 2.0 * p).sin();
+    let mut target = allowed.clone();
+    let mut c = fit(&target);
+    for _ in 0..40 {
+        let mut above = 0.0f32;
+        for (i, slot) in target.iter_mut().enumerate() {
+            let over = at(&c, i as f32 / n) - allowed[i];
+            if over > 0.0 {
+                *slot -= over;
+                above = above.max(over);
+            }
+        }
+        if above < 1.0e-5 {
+            break;
+        }
+        c = fit(&target);
+    }
+    // Whatever the passes left above, the whole path lowered by: clipped
+    // to the legs' reach between, it stepped again.
+    let above = (0..DROP_SAMPLES)
+        .map(|i| at(&c, i as f32 / n) - allowed[i])
+        .chain(lifts.iter().map(|&(p, allowed)| at(&c, p) - allowed))
+        .fold(0.0f32, f32::max);
+    at(&c, phase.rem_euclid(1.0)) - above
 }
 
 /// How far a shuffle carries each upper arm out from the body, radians.
@@ -309,6 +393,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The pelvis's height over a steady shuffle, at the cadence the walker
+    /// sets: its sharpest acceleration up or down, m/s².
+    fn hardest_pelvis(speed: f32, toward: f32, ahead: f32, base: &LocalPose, rig: &RigGeometry) -> f32 {
+        use crate::character::anim::locomotion::distance_per_cycle;
+        let params = shuffling(speed, toward, ahead);
+        let seconds = distance_per_cycle(&params, base, rig) / speed;
+        let n = 240;
+        let dt = seconds / n as f32;
+        let heights: Vec<f32> = (0..n + 2).map(|i| crate::character::anim::gait::walk_pose_on(i as f32 / n as f32, &params, base, rig).root_translation.y).collect();
+        heights.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (dt * dt)).abs()).fold(0.0, f32::max)
+    }
+
+    /// The pelvis rides one smooth path a step ([`smoothed_drop`]): through
+    /// a steady shuffle it accelerates no harder than 5 m/s² (measured at
+    /// most 3.2, at 0.6 m/s). Taking the lowest any foot down allowed, it
+    /// stepped down as each foot set down out wide: 230-1260 m/s² over
+    /// 1/240 of a cycle, 8-10 live through the springs.
+    #[test]
+    fn a_shuffles_pelvis_rides_a_smooth_path() {
+        let (stood, rig) = real_stood();
+        for (speed, toward, ahead) in [(0.3, 1.0, 0.0), (0.4, 1.0, 0.0), (0.6, -1.0, 0.0), (0.5, 1.0, 0.6), (0.5, -1.0, -0.6)] {
+            let hardest = hardest_pelvis(speed, toward, ahead, &stood, &rig);
+            assert!(hardest < 5.0, "{speed} m/s toward {toward} ahead {ahead}: the pelvis accelerates at {hardest} m/s²");
+        }
+    }
+
+    /// The locomotion layer composed on a shuffle as the walker does, its
+    /// walk sway faded out (`walker::fade_walk_sway`, passed 1 shuffling):
+    /// the pelvis still rides smooth. Not faded, the walk's sway re-solved
+    /// the pelvis over the feet a walk's stance timing loads, wide apart,
+    /// and stepped it down at every step: 403 m/s² headless, a 7 mm dip
+    /// live.
+    #[test]
+    fn under_the_locomotion_layer_a_shuffles_pelvis_rides_smooth_with_the_walk_sway_faded() {
+        use crate::character::anim::locomotion::distance_per_cycle;
+        use crate::character::anim::phase::{GaitPhase, PhaseLayer};
+        let (stood, rig) = real_stood();
+        let speed = 0.4;
+        let params = shuffling(speed, 1.0, 0.0);
+        let seconds = distance_per_cycle(&params, &stood, &rig) / speed;
+        let hardest = |faded: bool| {
+            let mut layer = PhaseLayer::locomotion();
+            if faded {
+                crate::character::anim::walker::fade_walk_sway(&mut layer, 1.0);
+            }
+            let n = 240;
+            let dt = seconds / n as f32;
+            let heights: Vec<f32> = (0..n + 2)
+                .map(|i| {
+                    let cycle = i as f32 / n as f32;
+                    let mut pose = crate::character::anim::gait::walk_pose_on(cycle, &params, &stood, &rig);
+                    let phase = GaitPhase { gait: cycle * std::f32::consts::TAU, speed, ..Default::default() };
+                    layer.apply_on(&phase, &mut pose, &rig);
+                    pose.root_translation.y
+                })
+                .collect();
+            heights.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (dt * dt)).abs()).fold(0.0, f32::max)
+        };
+        let (faded, not) = (hardest(true), hardest(false));
+        assert!(faded < 5.0, "faded, the pelvis accelerates at {faded} m/s²");
+        assert!(not > 50.0, "the walk's sway on a shuffle steps the pelvis only {not} m/s²");
     }
 
     #[test]
