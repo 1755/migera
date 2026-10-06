@@ -123,6 +123,10 @@ pub struct Walker {
     /// is dropped. A walk asked meanwhile starts once the jump has landed
     /// and stood.
     pub jump: Option<super::jump::JumpAsk>,
+    /// Sneak: crouch this deep, 0-1, flat or on the toes (`sneak`). Standing
+    /// still it crouches down and stays crouched; asked to walk, sit, jump
+    /// or step aside meanwhile, it stands up first.
+    pub sneak: super::sneak::Sneak,
 }
 
 impl Default for Walker {
@@ -143,6 +147,7 @@ impl Default for Walker {
             aside: 0.0,
             step_aside: 0.0,
             jump: None,
+            sneak: super::sneak::Sneak::STANDING,
         }
     }
 }
@@ -336,6 +341,8 @@ pub struct WalkerState {
     /// A jump asked while running, waiting for the next foot to come down:
     /// that foot takes off.
     pub leap_asked: Option<super::jump::JumpAsk>,
+    /// The crouch it is in or on its way to ([`Walker::sneak`]).
+    pub crouching: super::sneak::Crouching,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound and whether it shuffles: measuring it
     /// costs a cycle of root-motion samples, so it is redone only when one
@@ -367,6 +374,7 @@ impl WalkerState {
             gaits: Default::default(),
             jump: None,
             leap_asked: None,
+            crouching: Default::default(),
             measured: None,
         }
     }
@@ -686,7 +694,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Jumping, it asks no speed until it has landed and stood; leaping
         // from a run to run on, the run goes on under it.
         let jumping = state.jump.as_ref().is_some_and(|jump| jump.resumes().is_none());
-        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || jumping;
+        // Crouched (`sneak`), it stands up before anything else.
+        let crouched = !state.crouching.is_standing();
+        let still = fallen || !state.posture.is_standing() || (walker.sit.is_some() && arrived) || jumping || crouched;
         // Asked to go aside (`Walker::aside`), with or without forward, and
         // not to sit. Mostly across (45° or more off forward): the side
         // shuffle (`shuffle`), a walk of its own on the same clock, forward
@@ -706,7 +716,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // One step aside asked (`Walker::step_aside`): the standing
         // balance's side step and close, from a stand. A walk asked for
         // meanwhile starts once the feet have closed.
-        let step_aside = std::mem::take(&mut walker.step_aside);
+        let step_aside = if crouched { 0.0 } else { std::mem::take(&mut walker.step_aside) };
         if step_aside != 0.0 && !still && state.transition.is_at_rest() && state.shuffle.is_none() {
             balance.step_aside(step_aside);
         }
@@ -901,7 +911,26 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // the character and to derive its root motion, so the two cannot
         // disagree. Blended from `stood`, so the standing knee bend does not
         // pop as a walk begins or ends.
+        // Standing still and asked to sneak, it crouches (`sneak`); asked
+        // anything else, it stands up first.
+        let busy = walker.speed > 0.0
+            || walker.aside != 0.0
+            || walker.step_aside != 0.0
+            || walker.sit.is_some()
+            || walker.jump.is_some()
+            || fallen
+            || !state.posture.is_standing()
+            || state.jump.is_some()
+            || weight > 0.0
+            || !state.transition.is_at_rest();
+        let sneak = if busy { super::sneak::Sneak::STANDING } else { walker.sneak };
         let mut prepared = stood;
+        if sneak.is_sneaking() || !state.crouching.is_standing() {
+            let footing = super::sneak::Footing::of(&stood, &gait_rig);
+            state.crouching.ask(sneak.crouch_on(leg), footing.rise());
+            state.crouching.advance(time.delta_secs());
+            prepared = footing.pose(state.crouching.now(), &stood, &gait_rig);
+        }
         state.transition.apply_release(&mut prepared, &gait_rig);
         // A stop's last swing is set down onto where it will stand.
         foot_ik.landing = state.transition.landing(&prepared, &gait_rig);
@@ -959,6 +988,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             // cannot fool their speed test, and let go at toe-off, so the
             // lock does not hold a foot that has left.
             [0.0, 0.5].map(|shift| super::gait::leg_phase(cycle + shift, params.duty_factor).is_stance())
+        } else if !state.crouching.is_standing() {
+            // Crouching or crouched, both feet stay where they stood, as a
+            // jump's do going down into its countermovement.
+            [true; 2]
         } else {
             [false; 2]
         };
@@ -1026,7 +1059,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // the leg IK. It starts only once stopped.
         let mut legs_free = false;
         if let Some(rig) = foot_ik.rig.clone() {
-            let ready = weight <= 0.0 && state.transition.is_at_rest() && arrived;
+            let ready = weight <= 0.0 && state.transition.is_at_rest() && arrived && state.crouching.is_standing();
             // The seat as the walk to it left it (`sit_seat`), else one
             // where it stands.
             let seat = match walker.chair {
@@ -1068,7 +1101,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // sprung legs do; in flight they are in the air, no hips dropped to
         // reach them and the toe tips free; landing, each locks as it
         // touches.
-        let asked_jump = walker.jump.take();
+        let asked_jump = if crouched { None } else { walker.jump.take() };
         let mut let_go = false;
         if let Some(rig) = foot_ik.rig.clone() {
             let standing = weight <= 0.0

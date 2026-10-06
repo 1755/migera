@@ -247,7 +247,7 @@ pub enum JumpPhase {
 /// air with each ankle hips-relative and the feet pitched toe-down by an
 /// angle.
 #[derive(Debug, Clone, Copy)]
-enum Legs {
+pub(super) enum Legs {
     Down { knee: f32, heel: f32, on: f32 },
     Free { ankles: [Vec3; 2], pitch: f32 },
 }
@@ -257,7 +257,7 @@ enum Legs {
 /// way the heels risen `heel` at least and the knees at least `knee` short
 /// of straight.
 #[derive(Debug, Clone, Copy)]
-enum Aim {
+pub(super) enum Aim {
     Height { height: f32, knee: f32, heel: f32 },
     Reach { heel: f32, knee: f32 },
 }
@@ -341,12 +341,13 @@ pub struct Jump {
     settle: Vec3,
 }
 
-/// Where the feet stand, worked out once from the standing pose.
+/// Where the feet stand, worked out once from the standing pose; and how a
+/// pose is stood on them ([`Self::solved`]).
 #[derive(Debug, Clone, Copy)]
-struct Feet {
+pub(super) struct Feet {
     /// Each ankle, and each toe tip, in the standing hips' frame.
     ankles: [Vec3; 2],
-    tips: [Vec3; 2],
+    pub(super) tips: [Vec3; 2],
     /// Each foot's world rotation standing, and the axis its heel rises
     /// about (horizontal, across the foot).
     attitudes: [Quat; 2],
@@ -356,7 +357,7 @@ struct Feet {
 }
 
 impl Feet {
-    fn of(stood: &LocalPose, rig: &RigGeometry) -> Self {
+    pub(super) fn of(stood: &LocalPose, rig: &RigGeometry) -> Self {
         let world = accumulate_world_rotations(stood, rig);
         let ankles = LEGS.map(|(_, _, ankle)| offset_from(stood, rig, Bone::Hips, ankle));
         let tips = LEGS.map(|(_, _, ankle)| Sole::of(rig, ankle).points(stood, rig)[2]);
@@ -379,7 +380,7 @@ impl Feet {
     }
 
     /// Where foot `i`'s ankle is with its heel risen `angle` about its tip.
-    fn ankle(&self, i: usize, angle: f32) -> Vec3 {
+    pub(super) fn ankle(&self, i: usize, angle: f32) -> Vec3 {
         self.tips[i] + Quat::from_axis_angle(self.axes[i], angle) * (self.ankles[i] - self.tips[i])
     }
 }
@@ -391,7 +392,7 @@ fn hips_of(pose: &LocalPose, stood: &LocalPose) -> Vec3 {
 }
 
 /// `pose`'s COM in the standing hips' frame.
-fn com_of(pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
+pub(super) fn com_of(pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
     hips_of(pose, stood) + centre_of_mass(pose, rig)
 }
 
@@ -864,25 +865,45 @@ impl Jump {
         self.pose_led(self.t, stood, rig, springs)
     }
 
-    /// `stood` with the trunk leaning `lean` (radians forward) and the arms
-    /// swung `arms` (radians forward from hanging).
-    fn upper(&self, stood: &LocalPose, rig: &RigGeometry, lean: f32, (swing, elbow): (f32, f32)) -> LocalPose {
-        let mut pose = *stood;
-        let left = rig.left();
-        for (bone, angle) in [(Bone::Hips, lean * PELVIS_SHARE), (Bone::Spine, lean * (1.0 - PELVIS_SHARE)), (Bone::Neck, -0.6 * lean)] {
-            pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, Quat::from_axis_angle(left, angle));
-        }
-        // The upper arm swung, then the forearm bent forward on it.
-        for (bone, angle) in [(Bone::LeftArm, swing), (Bone::RightArm, swing), (Bone::LeftForeArm, elbow), (Bone::RightForeArm, elbow)] {
-            pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, Quat::from_axis_angle(left, -angle));
-        }
-        pose
+    /// [`upper`].
+    fn upper(&self, stood: &LocalPose, rig: &RigGeometry, lean: f32, arms: (f32, f32)) -> LocalPose {
+        upper(stood, rig, lean, arms)
     }
 
-    /// `upper` standing on its feet (`on` metres ahead of where they stood)
-    /// with its COM at `ahead` along the rig's forward and at `aim`'s
-    /// height, the knees kept at least `knee` short of straight.
+    /// [`Feet::solved`], the heels rising no further than they leave.
     fn solved(&self, upper: &LocalPose, stood: &LocalPose, rig: &RigGeometry, ahead: f32, aim: Aim, on: f32) -> LocalPose {
+        self.feet.solved(upper, stood, rig, ahead, aim, on, self.rise)
+    }
+
+    /// [`Feet::legs`], the heels rising no further than they leave.
+    fn legs(&self, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry, legs: Legs) -> LocalPose {
+        self.feet.legs(pose, stood, rig, legs, self.rise)
+    }
+}
+
+/// `stood` with the trunk leaning `lean` (radians forward) and the arms
+/// swung `arms` (radians forward from hanging, and the elbows bent on top
+/// of the standing pose's).
+pub(super) fn upper(stood: &LocalPose, rig: &RigGeometry, lean: f32, (swing, elbow): (f32, f32)) -> LocalPose {
+    let mut pose = *stood;
+    let left = rig.left();
+    for (bone, angle) in [(Bone::Hips, lean * PELVIS_SHARE), (Bone::Spine, lean * (1.0 - PELVIS_SHARE)), (Bone::Neck, -0.6 * lean)] {
+        pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, Quat::from_axis_angle(left, angle));
+    }
+    // The upper arm swung, then the forearm bent forward on it.
+    for (bone, angle) in [(Bone::LeftArm, swing), (Bone::RightArm, swing), (Bone::LeftForeArm, elbow), (Bone::RightForeArm, elbow)] {
+        pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, Quat::from_axis_angle(left, -angle));
+    }
+    pose
+}
+
+impl Feet {
+    /// `upper` standing on these feet (`on` metres ahead of where they
+    /// stood) with its COM at `ahead` along the rig's forward and at `aim`'s
+    /// height, the knees kept at least `knee` short of straight; the heels
+    /// rising, to reach, no further than `rise`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn solved(&self, upper: &LocalPose, stood: &LocalPose, rig: &RigGeometry, ahead: f32, aim: Aim, on: f32, rise: f32) -> LocalPose {
         let forward = rig.forward();
         let (knee, heel) = match aim {
             Aim::Height { knee, heel, .. } | Aim::Reach { knee, heel } => (knee, heel),
@@ -897,7 +918,7 @@ impl Jump {
             if let Aim::Reach { heel, knee } = aim {
                 trial.root_translation.y += self.highest(&trial, stood, rig, heel, knee, on);
             }
-            pose = self.legs(&trial, stood, rig, Legs::Down { knee, heel, on });
+            pose = self.legs(&trial, stood, rig, Legs::Down { knee, heel, on }, rise);
             let com = com_of(&pose, stood, rig);
             let up = match aim {
                 Aim::Height { height, .. } => height - com.y,
@@ -921,27 +942,27 @@ impl Jump {
         (0..2)
             .map(|i| {
                 let socket = hips + offset_from(pose, rig, Bone::Hips, LEGS[i].0);
-                let ankle = self.feet.ankle(i, heel) + rig.forward() * on;
+                let ankle = self.ankle(i, heel) + rig.forward() * on;
                 let across = Vec3::new(ankle.x - socket.x, 0.0, ankle.z - socket.z).length_squared();
-                ankle.y + (self.feet.reach(i, knee).powi(2) - across).max(0.0).sqrt() - socket.y
+                ankle.y + (self.reach(i, knee).powi(2) - across).max(0.0).sqrt() - socket.y
             })
             .fold(f32::MAX, f32::min)
     }
 
     /// `pose` with its legs set: each ankle placed, and each foot turned to
-    /// its attitude.
-    fn legs(&self, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry, legs: Legs) -> LocalPose {
+    /// its attitude; down, the heels rising to reach no further than `rise`.
+    pub(super) fn legs(&self, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry, legs: Legs, rise: f32) -> LocalPose {
         let mut pose = *pose;
         let hips = hips_of(&pose, stood);
         for (i, &(socket, _, ankle)) in LEGS.iter().enumerate() {
             let (target, pitch) = match legs {
                 Legs::Down { knee, heel, on } => {
                     let at = hips + offset_from(&pose, rig, Bone::Hips, socket);
-                    let ankle_at = |angle: f32| self.feet.ankle(i, angle) + rig.forward() * on;
-                    let short = |angle: f32| (ankle_at(angle) - at).length() - self.feet.reach(i, knee);
+                    let ankle_at = |angle: f32| self.ankle(i, angle) + rig.forward() * on;
+                    let short = |angle: f32| (ankle_at(angle) - at).length() - self.reach(i, knee);
                     // The least heel rise from `heel` that brings the ankle
                     // into reach, up to as far as they rise leaving.
-                    let most = self.rise.max(heel);
+                    let most = rise.max(heel);
                     let angle = if short(heel) <= 0.0 {
                         heel
                     } else if short(most) > 0.0 {
@@ -960,7 +981,7 @@ impl Jump {
             };
             place_ankle(&mut pose, rig, ankle, target);
             let now = accumulate_world_rotations(&pose, rig)[ankle];
-            let wanted = Quat::from_axis_angle(self.feet.axes[i], pitch) * self.feet.attitudes[i];
+            let wanted = Quat::from_axis_angle(self.axes[i], pitch) * self.attitudes[i];
             pose.rotations[ankle] = delta_after_world_turn(&pose, rig, ankle, wanted * now.inverse());
         }
         pose

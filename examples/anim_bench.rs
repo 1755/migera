@@ -33,13 +33,16 @@ use migera::character::anim::{default_springs, poses};
 /// The gait posed each frame, if any (`--gait`), and its speed; or a jump
 /// (`--gait jump`, `--speed` its height and `--distance` how far forward,
 /// metres; `--from-run V [--run-on]` from a run), posed through its whole
-/// length on each character's clock.
+/// length on each character's clock; or a crouch (`--gait crouch`, `--speed`
+/// its depth 0-1, `--on-toes`), going down and up through it on each
+/// character's clock, posed from its feet every frame as the walker poses it.
 #[derive(Clone, Copy)]
 enum Gait {
     None,
     Walk(f32),
     Run(f32),
     Jump(f32, f32),
+    Crouch(f32, bool),
 }
 
 fn main() {
@@ -77,7 +80,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) => None,
     };
     let jump = match gait {
         Gait::Jump(height, distance) => {
@@ -93,6 +96,12 @@ fn main() {
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
+        _ if let Gait::Crouch(depth, on_toes) = gait => {
+            use migera::character::anim::sneak::{Footing, Sneak};
+            let crouch = depth * 0.5 * (1.0 - (std::f32::consts::TAU * cycle).cos());
+            let asked = Sneak { crouch, on_toes }.crouch_on(migera::character::anim::gait::leg_length_of(&rig));
+            Some((Footing::of(&stood, &rig).pose(asked, &stood, &rig), None))
+        }
         // Led ahead of its springs, as the walker poses it.
         (Some(jump), _) => Some((jump.pose_led(cycle * jump.duration(), &stood, &rig, &springs), None)),
         (None, Some(p)) => Some((walk_pose_on(cycle, &p, &stood, &rig), Some(p))),
@@ -121,6 +130,7 @@ fn main() {
         Gait::Walk(speed) => format!("   walk {speed} m/s"),
         Gait::Run(speed) => format!("   run {speed} m/s"),
         Gait::Jump(height, distance) => format!("   jump {height} m up, {distance} m forward"),
+        Gait::Crouch(depth, on_toes) => format!("   crouch {depth}{}", if on_toes { " on the toes" } else { "" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -204,6 +214,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("walk") => Gait::Walk(speed),
         Some("run") => Gait::Run(speed),
         Some("jump") => Gait::Jump(speed, distance),
+        Some("crouch") => Gait::Crouch(speed, std::env::args().any(|a| a == "--on-toes")),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

@@ -33,6 +33,7 @@ use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
 use migera::character::anim::plugin::{AnimFootIk, AnimGround};
 use migera::character::anim::jump::JumpAsk;
+use migera::character::anim::sneak::Sneak;
 use migera::character::anim::walker;
 use migera::character::anim::obstacles::{AnimObstacles, Footprints};
 use migera::character::anim::{approach, sitting};
@@ -611,6 +612,7 @@ fn joint_pairs() -> impl Iterator<Item = (Bone, Bone)> {
 // egui controls panel
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn controls_panel(
     mut contexts: EguiContexts,
     mut gizmos_cfg: ResMut<DebugGizmos>,
@@ -618,6 +620,7 @@ fn controls_panel(
     mut idle_cfg: ResMut<AnimIdleConfig>,
     mut sit: ResMut<SitConfig>,
     mut jumps: ResMut<JumpSchedule>,
+    mut sneaks: ResMut<SneakSchedule>,
     mut characters: Query<(&mut AnimTarget, &mut AnimSprings)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -706,6 +709,15 @@ fn controls_panel(
                 ui.add(egui::Slider::new(&mut jumps.button.distance, 0.0..=2.5).text("Jump distance (m)"));
                 // From a run: land on the other foot and run on.
                 ui.checkbox(&mut jumps.button.keep_running, "Run on");
+            });
+
+            // Sneaking (`character::anim::sneak`): how deep, and on the toes.
+            ui.horizontal(|ui| {
+                let crouch = ui.add(egui::Slider::new(&mut sneaks.panel.crouch, 0.0..=1.0).text("Crouch"));
+                let toes = ui.checkbox(&mut sneaks.panel.on_toes, "On toes");
+                if crouch.changed() || toes.changed() {
+                    sneaks.touched = true;
+                }
             });
 
             ui.add(
@@ -1109,6 +1121,7 @@ fn steer_the_walker(
     aside: Res<AsideSchedule>,
     mut steps: ResMut<StepAsideSchedule>,
     mut jumps: ResMut<JumpSchedule>,
+    sneaks: Res<SneakSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
     let due = pushes.due(time.elapsed_secs());
@@ -1124,6 +1137,7 @@ fn steer_the_walker(
         if jump.is_some() {
             walker.jump = jump;
         }
+        walker.sneak = sneaks.at(time.elapsed_secs());
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
@@ -1177,6 +1191,45 @@ struct JumpSchedule {
     /// The button's jump, and whether it was pressed.
     button: JumpAsk,
     pressed: bool,
+}
+
+/// Sneaking: `--sneak-schedule T:CROUCH[:toes],...` crouches CROUCH deep
+/// (0 standing to 1 the deepest sneak), on the toes with `toes`, from T
+/// seconds on until the next entry (`walker::Walker::sneak`), e.g.
+/// `2:1,5:0.5:toes,8:0`; and the panel's slider and checkbox, which take
+/// over once touched.
+#[derive(Resource, Debug, Clone, Default)]
+struct SneakSchedule {
+    due: Vec<(f32, Sneak)>,
+    panel: Sneak,
+    touched: bool,
+}
+
+impl SneakSchedule {
+    fn from_args() -> Self {
+        let mut due = Vec::new();
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--sneak-schedule" {
+                for entry in args.next().unwrap_or_default().split(',') {
+                    let numbers: Vec<f32> = entry.split(':').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, crouch, ..] = numbers[..] {
+                        due.push((at, Sneak { crouch, on_toes: entry.trim().ends_with(":toes") }));
+                    }
+                }
+            }
+        }
+        due.sort_by(|a: &(f32, Sneak), b| a.0.total_cmp(&b.0));
+        Self { due, panel: Sneak::STANDING, touched: false }
+    }
+
+    /// The sneak asked at `elapsed` seconds.
+    fn at(&self, elapsed: f32) -> Sneak {
+        if self.touched {
+            return self.panel;
+        }
+        self.due.iter().rev().find(|(at, _)| elapsed >= *at).map_or(self.panel, |&(_, sneak)| sneak)
+    }
 }
 
 impl JumpSchedule {
@@ -2030,6 +2083,7 @@ fn main() {
         .insert_resource(AsideSchedule::from_args())
         .insert_resource(StepAsideSchedule::from_args())
         .insert_resource(JumpSchedule::from_args())
+        .insert_resource(SneakSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
         .add_systems(Update, place_chair.after(WalkerSet::Drive));

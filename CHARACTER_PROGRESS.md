@@ -41,6 +41,43 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Sneaking, step 1: crouching down and standing up, flat or on the toes
+
+`Walker::sneak` asks for a sneak as two dials (`sneak::Sneak`): `crouch` 0-1
+and `on_toes`. Standing still, the walker crouches into it and holds it.
+Asked to walk, sit, jump or step aside, it stands up first; the sneak's
+gait is step 2. The gallery takes `--sneak-schedule T:CROUCH[:toes],...`
+and has a Crouch slider and an "On toes" checkbox. `anim_bench` takes
+`--gait crouch --speed DEPTH [--on-toes]`. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-crouch-is-the-jumps-countermovement-held-over-the-feet.md).
+
+- **Pose** (`sneak::Footing`): the jump's foot-bound solver, moved onto
+  `jump::Feet` to share it.
+  - The trunk leans by the drop and the arms come forward by depth.
+  - The pelvis is solved so the COM is lowered over where it stood.
+  - On the toes, the heels rise 20° and the COM goes over the balls,
+    raised by the ankles' rise.
+- **Depth:** the deepest drops the COM 0.18 of leg length (0.16 m on
+  `puppet_base`): knees 75°, shanks leaning 29°.
+- **Ease** (`sneak::Crouching`): a cubic at rest at its end, at most 2 m/s²
+  on the COM, at least 0.4 s. Asked again on the way, it turns from where
+  it is at its rate.
+- **Fixed:** timed by depth alone, a deep flat crouch changed to a half one
+  on the toes accelerated the pelvis at 3.26 m/s²; the toes' 7 cm rise was
+  left out. It is now timed by the COM's whole way: 2.09 m/s² live.
+
+**Live** (60 Hz, BRP every frame):
+- the pelvis goes from 0.943 m to 0.762 m deep;
+- the balls of the feet move at most 0.24 mm a frame;
+- asked to walk while crouched, it stood in 0.5 s, then walked.
+
+**Seen:** Front and Left, gizmos on and mesh off, deep flat and half on the
+toes; then the bare mesh, Left.
+
+**Cost:** 31 µs a character a frame crouched, against 4 µs idle;
+`Footing::of` is 7 µs of it. 1190 library tests pass; clippy is clean on
+the library and examples.
+
 ### Jumping from a run: a leap that runs on, a jump stop onto both feet
 
 Asked while running, `Walker::jump` waits for the next foot down and takes

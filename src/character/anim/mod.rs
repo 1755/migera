@@ -91,6 +91,7 @@ pub mod rig;
 pub mod run;
 pub mod shuffle;
 pub mod sitting;
+pub mod sneak;
 pub mod stance;
 pub mod transition;
 pub mod walk;
