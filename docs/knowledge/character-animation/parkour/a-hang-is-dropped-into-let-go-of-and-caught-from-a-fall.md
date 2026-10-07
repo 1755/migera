@@ -16,7 +16,7 @@ code:
   - src/character/anim/walker.rs
   - src/character/anim/parkour/geometry.rs
 sources:
-  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate}"
+  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate, a_running_jump_lands_on_the_far_top_or_catches_its_lip}"
   - "live: --block 0,1,180,3.6,1.2,3.0 --side-ledge 0,1.35,180,1.4,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 25; --block 0,-0.3,0,3.0,1.2,3.0 --side-ledge 0,-1.7,180,3.0,1.2 --start-height 3.0 --jump-at 6:0.3:1.2 [--catch]"
   - "live: character_gallery --block 0,1,180,2.0,1.2,3.0 --start-height 2.0 --drop-down-at 2 --let-go-at 25; and --block 0,1,180,3.6,1.2,3.0,0.15 --side-ledge 0,0.65,180,1.9,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 30 --catch, Xvfb, BRP"
 aliases:
@@ -31,7 +31,10 @@ aliases:
   - Falling::from_jump
   - Falling::land_at
   - missed jump
+  - running jump
+  - Falling::land_on
   - landing on a step
+  - step under one foot
   - dropping down to a hang
   - letting go
   - catching a ledge
@@ -73,14 +76,36 @@ than 0.3 m) changes the landing:
 - with no room, it clears the step's edge, its ankles landing 0.35 m past it
   (`STEP_CLEAR`).
 
+**A step under one foot only.** Its depth is measured from the feet over
+it. Landing on it, both landing feet must be on its top, a foot's width
+either side of each ankle. If its end lies between them, the landing moves
+along the wall as little as puts both on it (up to 0.6 m). Too narrow for
+both, the landing moves along the wall beside it as little as lands both
+feet off it, with the feet checked clear of every top all the way down.
+Failing that, it clears the step outward.
+
 **A jump in the air goes over an edge into a fall** (`Falling::from_jump`).
 When the ground under an airborne jump drops more than a step, the walker
 hands the jump to a fall. The fall leaves with the **centre of mass's**
-velocity: in a jump that, not the hips, is ballistic. The legs and the trunk
-and arms coast on their own swing for 0.15 s (`LEGS_COAST`). While the jump
-still pushes off the edge, the root is held up over the drop. A fall then
-catches as any other: with `Walker::catch`, a standing jump of 1.2 m off a
-3 m top catches a wall as high 1.7 m off.
+velocity: in a jump that, not the hips, is ballistic. The hips go on at
+their own speed a moment, the difference running down over 0.15 s
+(`LEGS_COAST`, `hips_drift`). The legs, the knee hinges, and the trunk and
+arms coast on their own swing over the same time. Each swing is read over
+the jump's next 10 ms (`AHEAD`), not at the instant. While the jump still
+pushes off the edge, the root is held up over the drop. A jump whose own
+landing is on ground as high (a gap cleared) is held up over the gap and
+lands and runs on as it would.
+
+**A fall lands on the first top its feet come down onto** along its flight
+(`Falling::land_on`), coming from above it, not into its side.
+
+A fall then catches as any other: with `Walker::catch`, a standing jump of
+1.2 m off a 3 m top catches a wall as high 1.7 m off; a running jump
+falling short slams into the far wall, held off it, and catches its lip.
+
+**Landed, a fall's root is on the ground** and the depth of the squat or
+the roll is in the pose. Then the plugin keeps the sprung pose clear of the
+floor, as for any free-legged pose.
 
 A fall facing a wall is kept off it, catching or landing (see
 [a fall facing a wall is held off it](./a-fall-facing-a-wall-is-held-off-it.md)).
@@ -141,6 +166,20 @@ variable frame time.
   The walker shuffled 55 s before dropping down. It reads the highest.
 - **Comparing the hand-off with the step before it** shows the jump's own
   take-off. Compare the fall's first step with the jump's own next.
+- **A running jump's hips run ahead of its centre of mass** (3.0 m/s
+  against 2.3), and just after take-off they slow fast (3.0 at the instant,
+  2.4 over the next frame). Thrown at the centre of mass's speed, the hips
+  stepped 1 cm short in the first frame; at the instant's, 1 cm long.
+- **A near-straight take-off leg** turned its knee 2.8 cm for 3 mm of the
+  ankle's miss. The ankles' swing must be read as precisely as the hips'.
+- **A top reached from the side is not landed on.** Its footprint reached
+  already under its top, the fall landed on it through its wall, 16 cm in.
+- **The rendered feet went 0.18-0.21 m through the floor** landing from
+  3 m, squatting or rolling. The root rode the hips down, so the floor the
+  sprung pose is kept clear of was under the floor; the target pose was
+  fine. Headless tests check the target, so only live BRP showed it.
+- **A step under one foot, measured from between the feet**, read as no
+  step. The other foot was left landing in the air over the floor.
 
 ## Consequences
 
@@ -173,6 +212,16 @@ variable frame time.
   - from 0.5 m back (1.9 m off) it passes the lip 0.6 m out and lands;
   - not reaching, it lands against the wall, pushed back off it at most
     1.9 g, nothing under the floor.
+- **Running jumps** (3 and 4.5 m/s) off a 3 m top, the far top as high,
+  its wall from 0.2 m short of the jump's landing to 1 m past it:
+  - the hand-off within 1 cm of the jump's own next frame, every joint;
+  - reaching the far top it lands on it;
+  - falling short it slams into the wall (at most 4.5 g at 4.5 m/s) and
+    catches the lip, held;
+  - no joint into the wall or under the ground.
+- **A step under one foot**: ending between the feet, it lands along the
+  wall with both ankles on it, a foot's width in from its end; 0.15 m wide,
+  it lands beside it, 10 cm past its end.
 
 **Live** (Xvfb, BRP, gizmos on, mesh off; back and side views):
 - **Dropping down** off a 2.0 m top: the wrists end 10 cm under the lip, the
@@ -187,6 +236,12 @@ variable frame time.
   with `--catch` it hangs from the far lip, the feet braced on its face;
   without, it lands at the wall's foot, the hands 10 cm off it on the way
   down, standing 0.47 m out.
+- **Running** at 3 m/s off a 3 m top: the jump is held up over the gap and
+  falls; running off the edge it catches the far wall 1.3 m away. Landing,
+  squatting or rolling, the lowest ball joint stays 1.5 cm up (it had gone
+  0.21 m under).
+- **A step under one foot**: hung with one foot over a step that ends
+  between the feet, it lands moved 0.15 m along the wall, both feet on it.
 
 **Cost** (`anim_bench --characters 20`, a character a frame):
 
@@ -195,13 +250,14 @@ variable frame time.
 | `drop-down` | 42 µs, as climbing up |
 | `let-go` | 25 µs (19 before the wall it faces was kept off) |
 | `catch` | 24 µs (with the swept catch test each frame) |
-| `jump-catch` | 30 µs |
+| `jump-catch` | 34 µs |
 
 ## Revisit when
 
-- **A running jump**: only a standing jump falling short is tested.
-- **The ground under one foot only**: the step is landed on or cleared
-  whole.
+- **The walker's run** goes on through a wall it lands at the foot of: it
+  has no collision with ledges.
+- **A step under one foot from a walk-off or a jump**: only letting go
+  checks the feet; a fall onto a top lands both feet on it.
 
 ## Related
 

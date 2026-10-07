@@ -1661,7 +1661,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if let Some(rig) = foot_ik.rig.clone() {
             // Started from this frame's pose, it moves on from the next.
             let mut started = false;
-            if let Some(ground) = state.fall_to.take()
+            if let Some(below) = state.fall_to.take()
                 && state.falling.is_none()
                 && !fallen
             {
@@ -1671,14 +1671,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     // where its travel this frame (not yet ridden) puts it.
                     Some(jump) => {
                         let root = state.locomotion.position + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
-                        super::parkour::Falling::from_jump(&jump, root, state.facing.yaw, ground, foot_ik.pelvis_drop, &stood, &rig)
+                        super::parkour::Falling::from_jump(&jump, root, state.facing.yaw, below, foot_ik.pelvis_drop, &stood, &rig)
                     }
                     None => {
                         let velocity = Vec3::new(state.locomotion.root_velocity.x, 0.0, state.locomotion.root_velocity.z);
-                        super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, ground, foot_ik.pelvis_drop, &stood, &rig)
+                        super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, below, foot_ik.pelvis_drop, &stood, &rig)
                     }
                 };
-                // Falling against a wall faced, kept off it.
+                // Onto a top it comes down on along its flight (a running
+                // jump across a gap); else against a wall faced, kept off it.
+                falling.land_on(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height));
                 let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
                 falling.against(&ledges, &rig);
                 state.falling = Some(falling);
@@ -1729,8 +1731,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if foot_ik.legs_free != legs_free {
             foot_ik.legs_free = legs_free;
         }
-        if foot_ik.off_floor != state.on_holds() {
-            foot_ik.off_floor = state.on_holds();
+        // Landed from a fall, on the floor again: the sprung pose kept clear
+        // of it (left off it, the feet went 0.18 m through landing from 3 m).
+        let off_floor = state.on_holds() && !state.falling.as_ref().is_some_and(|falling| falling.is_landed());
+        if foot_ik.off_floor != off_floor {
+            foot_ik.off_floor = off_floor;
         }
 
 
@@ -1922,7 +1927,14 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             // feet still on the top: held up until it leaves (snapped down,
             // a jump from 0.3 m back landed on the floor of the gap).
             let drops = height < height_before - super::parkour::fall::STEP_DOWN;
-            if drops && state.jump.as_ref().is_some_and(|jump| !jump.airborne() && jump.elapsed() < jump.ends(super::jump::JumpPhase::Flight)) {
+            // A jump whose own landing is on ground as high (a gap cleared)
+            // is held up over the gap to land and run on as it would.
+            let clears = state.jump.as_ref().is_some_and(|jump| {
+                let left = jump.travelled_at(jump.ends(super::jump::JumpPhase::Flight)) - jump.travelled();
+                let lands = root.translation + state.facing.rotation() * rig.forward() * left;
+                ground.0.sample(lands.with_y(height_before)).is_some_and(|hit| hit.height >= height_before - super::parkour::fall::STEP_DOWN)
+            });
+            if drops && state.jump.as_ref().is_some_and(|jump| clears || (!jump.airborne() && jump.elapsed() < jump.ends(super::jump::JumpPhase::Flight))) {
                 root.translation.y = height_before;
                 state.locomotion.position.y = height_before;
             } else if drops && state.jump.as_ref().is_none_or(|jump| jump.airborne()) {

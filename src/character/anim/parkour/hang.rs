@@ -99,7 +99,7 @@ const FEET_TO_WALL: f32 = 0.5;
 const FEET_SWING_OUT: f32 = 0.3;
 /// Braced, the knees kept this far out of the wall at least, metres; and
 /// the hips (at 0.11, the shoulders touched it).
-const KNEE_OFF_WALL: f32 = 0.0;
+const KNEE_OFF_WALL: f32 = 0.01;
 const HIPS_OFF_WALL_HANGING: f32 = 0.15;
 /// Letting go braced, the feet push off the wall this fast, m/s (no data:
 /// set by eye).
@@ -112,6 +112,11 @@ const PUSH_OFF: f32 = 0.6;
 pub const STEP_ROOM: f32 = 0.2;
 pub const STAND_OFF: f32 = 0.13;
 pub const STEP_CLEAR: f32 = 0.35;
+/// Half a foot's width, metres: a foot lands on a step only if the step is
+/// under both its sides.
+const FOOT_HALF_WIDTH: f32 = 0.05;
+/// Landing beside a narrow step, how far each foot's side keeps from it.
+const STEP_ASIDE: f32 = 0.05;
 /// The least wall below the edge to brace the feet on, beyond where they
 /// go, metres.
 const WALL_MARGIN: f32 = 0.1;
@@ -381,21 +386,75 @@ impl Hanging {
             falling.against(&[self.ledge], rig);
             return falling;
         }
-        let out = self.face().0;
-        let edge = (0..=50).map(|i| i as f32 * 0.02).find(|&d| at_feet(middle + out * d).is_none_or(|height| height < under - 0.05)).unwrap_or(1.0);
-        let (spot, onto) = if edge >= STEP_ROOM { (middle + out * STAND_OFF, under) } else { (middle + out * (edge + STEP_CLEAR), floor) };
-        let mut falling = off(onto);
+        let (out, along) = self.face();
+        let on_step = |point: Vec3| at_feet(point).is_some_and(|height| height >= under - 0.05);
+        // Its depth out from the feet over it (from between the feet, a step
+        // under one of them read as none).
+        let over: Vec<Vec3> = feet.iter().copied().filter(|&foot| on_step(foot)).collect();
+        let from = over.iter().copied().sum::<Vec3>() / over.len() as f32;
+        let edge = (0..=50).map(|i| i as f32 * 0.02).find(|&d| !on_step(from + out * d)).unwrap_or(1.0);
         // Onto the step, facing the wall above it: aimed through the wall's
         // hold on the hips, then the hips' room planned for that landing.
-        if edge >= STEP_ROOM {
-            falling.facing_wall(self.grip, out);
-        }
-        falling.land_at(spot, rig);
-        if edge >= STEP_ROOM {
+        let onto = |spot: Vec3| {
+            let mut falling = off(under);
             falling.facing_wall(self.grip, out);
             falling.land_at(spot, rig);
+            falling.facing_wall(self.grip, out);
+            falling.land_at(spot, rig);
+            falling
+        };
+        // Both feet landing on it, a foot's width either side of each ankle.
+        let both_on = |falling: &super::Falling, shift: Vec3| falling.feet().iter().all(|&ankle| [-1.0, 1.0].iter().all(|&side| on_step(ankle + shift + along * (side * FOOT_HALF_WIDTH))));
+        if edge >= STEP_ROOM {
+            let spot = middle + out * STAND_OFF;
+            let falling = onto(spot);
+            if both_on(&falling, Vec3::ZERO) {
+                return falling;
+            }
+            // Its end between the feet: landed along the wall as little as
+            // puts both feet on it; too narrow for both, cleared.
+            let shift = (1..=30).flat_map(|k| [1.0, -1.0].map(|way| along * (way * 0.02 * k as f32))).find(|&shift| both_on(&falling, shift));
+            if let Some(shift) = shift {
+                return onto(spot + shift);
+            }
         }
-        falling
+        // Off it: along the wall as little as puts both feet beside it (a
+        // narrow step), else out past its edge (cleared outward, a narrow
+        // step 0.35 m deep had a foot come down 6 cm into its corner).
+        let plain = off(floor);
+        let both_off = |falling: &super::Falling, shift: Vec3| {
+            falling.feet().iter().all(|&ankle| [-1.0, 0.0, 1.0].iter().all(|&side| !on_step(ankle + shift + along * (side * (FOOT_HALF_WIDTH + STEP_ASIDE)))))
+        };
+        // And the feet clear of every top all the way down: the least shift
+        // landing beside it swept a foot through its side (5 mm).
+        let clear = |falling: &super::Falling| {
+            let mut at = falling.clone();
+            let flight = falling.ends()[0];
+            (0..=(flight / 0.005).ceil() as usize).all(|i| {
+                if i > 0 {
+                    at.advance(0.005);
+                }
+                let joints = forward_kinematics_on(&at.pose(rig), rig);
+                let turn = Quat::from_rotation_y(at.facing());
+                LEGS.iter().flat_map(|&(_, _, ankle, toe)| [ankle, toe]).all(|bone| {
+                    let joint = at.root() + turn * joints[bone];
+                    ground(joint).is_none_or(|height| height <= joint.y - 0.01)
+                })
+            })
+        };
+        let aside = (1..=20).flat_map(|k| [1.0, -1.0].map(|way| along * (way * 0.02 * k as f32))).find_map(|shift| {
+            if !both_off(&plain, shift) {
+                return None;
+            }
+            let mut falling = plain.clone();
+            falling.land_at(plain.rest() + shift, rig);
+            clear(&falling).then_some(falling)
+        });
+        aside.unwrap_or_else(|| {
+            let mut falling = plain;
+            falling.land_at(middle + out * ((from - middle).dot(out) + edge + STEP_CLEAR), rig);
+            falling
+        })
     }
 
     /// A hang of `ledge` not yet placed or planned.
@@ -923,7 +982,18 @@ impl Hanging {
                         place_ankle(&mut pose, rig, ankle_bone, back * (ankle(mid) - root) - self.body.hips);
                         if knee_off(&pose) < KNEE_OFF_WALL { high = mid } else { low = mid }
                     }
-                    place_ankle(&mut pose, rig, ankle_bone, back * (ankle(low) - root) - self.body.hips);
+                    // Caught with the knee in already (a running jump's leg
+                    // reaching ahead, 15 cm in), the foot out as far.
+                    let mut at = ankle(low);
+                    place_ankle(&mut pose, rig, ankle_bone, back * (at - root) - self.body.hips);
+                    for _ in 0..8 {
+                        let short = KNEE_OFF_WALL - knee_off(&pose);
+                        if short <= 0.0 {
+                            break;
+                        }
+                        at += self.face().0 * short;
+                        place_ankle(&mut pose, rig, ankle_bone, back * (at - root) - self.body.hips);
+                    }
                 }
             }
             let attitude = (self.turn * self.body.attitudes[side]).slerp(attitude, moved);
@@ -1274,17 +1344,34 @@ mod tests {
 
     /// Hung braced from a 3.6 m wall over a 1.4 m step out from it, it lets
     /// go: onto the step 0.35 m deep, standing on it; past one 0.1 m deep,
-    /// down to the floor. The pose continuous as it does, nothing into the
-    /// wall or the step (fallen to the floor under the root, the feet went
-    /// 0.99 m into the step).
+    /// down to the floor. A step under one foot only: ending between the
+    /// feet, it lands along the wall onto it, both feet on it; 0.15 m wide,
+    /// too narrow for both, it clears it (one foot was left in the air over
+    /// the floor). The pose continuous as it does, nothing into the wall or
+    /// the step (fallen to the floor under the root, the feet went 0.99 m
+    /// into the step).
     #[test]
     fn letting_go_over_a_step_lands_on_it_or_clears_it() {
         use crate::character::anim::ground::{FlatGround, GroundProbe};
         let (stood, rig) = real_stood();
         let upper = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, 3.6, 3.0);
-        for (out, on) in [(0.35, true), (0.1, false)] {
-            let name = format!("a step {out} m out");
-            let step = Ledge::wall(Vec3::new(0.0, 0.0, -0.5 + out), Vec3::Z, 4.0, 1.4, 1.0);
+        // Where the feet hang across the wall.
+        let feet_x = {
+            let mut hanging = hung_from(&upper, &[]);
+            hanging.advance(1.0);
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            LEGS.map(|(_, _, ankle, _)| (hanging.root() + turn * at[ankle]).x)
+        };
+        let (low, high) = (feet_x[0].min(feet_x[1]), feet_x[0].max(feet_x[1]));
+        let steps = [
+            ("a step 0.35 m out", 0.0, 4.0, 0.35, true),
+            ("a step 0.1 m out", 0.0, 4.0, 0.1, false),
+            ("a step ending between the feet", 0.5 * (low + high) + 0.5, 1.0, 0.35, true),
+            ("a step 0.15 m wide under one foot", high, 0.15, 0.35, false),
+        ];
+        for (name, x, width, out, on) in steps {
+            let step = Ledge::wall(Vec3::new(x, 0.0, -0.5 + out), Vec3::Z, width, 1.4, 1.0);
             let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![upper, step] };
             let mut hanging = hung_from(&upper, &[]);
             hanging.advance(1.0);
@@ -1314,10 +1401,14 @@ mod tests {
             assert!(jump < 0.03, "{name}: a joint moved {jump:.4} m the frame it let go");
             assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the wall or the step");
             assert!(from_standing < 0.01 && (falling.root().y - floor).abs() < 1.0e-3, "{name}: {from_standing:.4} m from standing, the root {:.4} m up", falling.root().y);
+            let length = (step.b - step.a).length();
+            let along = ankles.iter().map(|&ankle| (ankle - step.a).dot(step.along())).fold(f32::MAX, |least, s| least.min(s).min(length - s));
             if on {
                 assert!(off_step < -0.05, "{name}: an ankle {off_step:.3} m out from the step's edge standing on it");
+                assert!(along > FOOT_HALF_WIDTH - 1.0e-4, "{name}: an ankle {along:.3} m in from the step's end standing on it");
             } else {
-                assert!(off_step > 0.15, "{name}: an ankle only {off_step:.3} m past the step's edge");
+                // Past its edge, or beside it.
+                assert!(off_step > 0.15 || along < -FOOT_HALF_WIDTH, "{name}: an ankle only {off_step:.3} m past the step's edge, {along:.3} m in from its end");
             }
         }
     }
@@ -1422,6 +1513,119 @@ mod tests {
                 caught = falling.catches(&[far], &rig).is_some();
             }
             assert!(caught, "at {fps} fps: never caught the far ledge");
+        }
+    }
+
+    /// Running jumps (3 and 4.5 m/s) off a 3 m top over a gap to a top as
+    /// high, the far wall from 0.2 m short of where the jump would land to
+    /// 1 m past it: reaching the far top, it lands on it (it fell on to the
+    /// floor of the gap); falling short, it slams into the far wall, held
+    /// off it, and catches its lip. The hand-off within 1 cm of the jump's
+    /// own next frame (the hips and a near-straight take-off knee were 1 and
+    /// 2.8 cm off), no joint into the wall (a knee went 5 cm in falling, 15
+    /// in the hang caught) or under the ground, the wall's stop under 4.5 g
+    /// (a slam at a run), the hang held.
+    #[test]
+    fn a_running_jump_lands_on_the_far_top_or_catches_its_lip() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        use crate::character::anim::jump::RunStart;
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let start = Vec3::new(0.0, 3.0, 0.0);
+        let world = |pose: &LocalPose, root: Vec3, yaw: f32| {
+            let at = forward_kinematics_on(pose, &rig);
+            BoneSet::from_fn(|bone| root + Quat::from_rotation_y(yaw) * at[bone])
+        };
+        for speed in [3.0, 4.5] {
+            let plan = Jump::from_run(JumpAsk::running(0.3, 0.0), RunStart { leg: 0, speed }, &stood, &rig);
+            let lands = plan.travelled_at(plan.ends(JumpPhase::Flight));
+            for past in [-0.2, 0.0, 0.3, 0.6, 1.0] {
+                let name = format!("{speed} m/s, the wall {past:+} m past its landing");
+                let far = Ledge::wall(start.with_y(0.0) + forward * (lands + past), -forward, 4.0, 3.0, 2.0);
+                let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![far] };
+                let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
+                let mut jump = plan.clone();
+                while !jump.airborne() {
+                    jump.advance(DT);
+                }
+                let root = |jump: &Jump| start + forward * jump.travelled();
+                let mut falling = crate::character::anim::parkour::Falling::from_jump(&jump, root(&jump), 0.0, 0.0, 0.0, &stood, &rig);
+                falling.land_on(&height);
+                falling.against(&[far], &rig);
+                falling.reach(true);
+                jump.advance(DT);
+                falling.advance(DT);
+                let (next, fell) = (world(&jump.pose(&stood, &rig), root(&jump), 0.0), world(&falling.pose(&rig), falling.root(), falling.facing()));
+                let parted = Bone::ALL.iter().map(|&bone| (fell[bone] - next[bone]).length()).fold(0.0, f32::max);
+                let on_top = falling.ground() > 2.9;
+                let (mut into, mut under, mut caught, mut hips) = (0.0f32, 0.0f32, None, Vec::new());
+                loop {
+                    let pose = falling.pose(&rig);
+                    into = into.max(into_block(&far, &pose, falling.root(), falling.facing(), &rig));
+                    let at = world(&pose, falling.root(), falling.facing());
+                    under = Bone::ALL.iter().map(|&bone| height(at[bone]).unwrap_or(0.0) - at[bone].y).fold(under, f32::max);
+                    hips.push(falling.hips());
+                    if let Some(ledge) = falling.catches(&[far], &rig) {
+                        caught = Some(Hanging::caught(&ledge, &[], falling.hips(), falling.hips_velocity(), &pose, falling.root(), falling.facing(), 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig));
+                        break;
+                    }
+                    if falling.is_done() {
+                        break;
+                    }
+                    falling.advance(DT);
+                }
+                let stop = hips.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (DT * DT)).dot(far.out) / GRAVITY).fold(0.0, f32::max);
+                assert!(parted < 0.01, "{name}: the fall {parted:.4} m off the jump a frame on");
+                assert!(under < 1.0e-3, "{name}: a joint {under:.4} m under the ground");
+                assert!(stop < 4.5, "{name}: the wall stopped the hips at {stop:.2} g");
+                if past < 0.0 {
+                    assert!(on_top, "{name}: reached the far top, fell past it");
+                }
+                if past > 0.5 {
+                    assert!(caught.is_some(), "{name}: fell short, never caught the lip");
+                }
+                match caught {
+                    Some(mut caught) => {
+                        for _ in 0..(3.0 / DT) as usize {
+                            caught.advance(DT);
+                            into = into.max(into_block(&far, &caught.pose(&rig), caught.root(), caught.facing(), &rig));
+                        }
+                        let at = world(&caught.pose(&rig), caught.root(), caught.facing());
+                        let held = (0..2).map(|side| (at[ARMS[side].wrist] - caught.wrists()[side]).length()).fold(0.0, f32::max);
+                        assert!(held < 1.0e-3, "{name}: a caught wrist {held:.4} m off its hook");
+                    }
+                    None => assert!(on_top && (falling.root().y - 3.0).abs() < 1.0e-3, "{name}: neither caught nor stood on the far top"),
+                }
+                assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the far wall");
+            }
+        }
+    }
+
+    #[test]
+    fn probe_run_off_into_wall() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        for (speed, gap, cycle) in [(3.0, 2.5, 0.0), (3.0, 2.5, 0.25), (3.0, 2.5, 0.5), (3.0, 2.5, 0.75), (3.0, 1.5, 0.3), (1.4, 1.0, 0.3)] {
+            let params = crate::character::anim::gait::GaitParams::running_on(speed, &rig);
+            let pose = crate::character::anim::gait::walk_pose_on(cycle, &params, &stood, &rig);
+            let far = Ledge::wall(forward * gap, -forward, 4.0, 3.0, 1.0);
+            let mut falling = crate::character::anim::parkour::Falling::off(Vec3::new(0.0, 3.0, 0.0), 0.0, forward * speed, &pose, 0.0, 0.0, &stood, &rig);
+            falling.against(&[far], &rig);
+            let (mut under, mut into) = (0.0f32, 0.0f32);
+            while !falling.is_done() {
+                falling.advance(DT);
+                let pose = falling.pose(&rig);
+                into = into.max(into_block(&far, &pose, falling.root(), falling.facing(), &rig));
+                let at = forward_kinematics_on(&pose, &rig);
+                for bone in Bone::ALL {
+                    let y = -(falling.root() + at[bone]).y;
+                    if y > under + 0.01 {
+                        eprintln!("  {speed} {gap}: {bone:?} {:.3} under, phase {:?} hips {:?} out {:.3}", y, falling.phase(), falling.hips(), far.out_of(falling.hips()));
+                    }
+                    under = under.max(y);
+                }
+            }
+            eprintln!("{speed} m/s, wall {gap}: under {under:.3} into {into:.3} hurt {} ends {:?}", falling.is_hurt(), falling.ends());
         }
     }
 

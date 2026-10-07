@@ -7,8 +7,8 @@ tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-07
-verified: 2026-10-07
+updated: 2026-10-08
+verified: 2026-10-08
 code:
   - src/character/anim/parkour/fall.rs
   - src/character/anim/walker.rs
@@ -137,6 +137,11 @@ no foot locks, no pushes).
   impact first.
 - **The centroid across touchdown** steps 2.4 m/s: the feet stop dead. Test
   the hips' continuity there.
+- **A target pose clear of the floor is not a rendered one.** Landing from
+  3 m on the gallery's rig, the sprung feet went 0.18-0.21 m through the
+  floor, squatting or rolling. The root rode the hips down, so the floor the
+  plugin keeps a free-legged pose clear of was under the real floor. Landed,
+  the root is on the ground and the depth is in the pose (2026-10-08).
 
 ## Consequences
 

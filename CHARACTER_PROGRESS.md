@@ -109,8 +109,38 @@ fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-o
   - cost: `--gait jump-catch` 30 µs; `let-go` 25 µs (was 19, the wall
     checks).
   - not covered: a running jump; a step under one foot only.
+- **Follow-up, a running jump and a step under one foot:**
+  - a running jump's hips run ahead of its centre of mass (3.0 m/s against
+    2.3), so the fall's hips go on at their own speed a moment, as do the
+    legs, knee hinges and arms. Each is read over the jump's next 10 ms:
+    just after take-off the hips slow fast. The hand-off is now within 1 cm
+    a frame; it was 2.9 cm off.
+  - a fall lands on the first top its feet come down onto
+    (`Falling::land_on`), coming from above, not into its side. A jump
+    whose own landing is on ground as high is held up over the gap and
+    lands and runs on.
+  - in the air facing a wall, the knees are kept off it (a running jump's
+    leg reaching ahead, 5 cm in). In a hang caught there, the foot moves
+    out as far as its knee would go in (15 cm).
+  - headless, at 3 and 4.5 m/s: it lands on the far top when it reaches it,
+    else slams into the wall (at most 4.5 g) and catches the lip.
+  - letting go over a step under one foot: ending between the feet, it
+    lands along the wall with both feet on it; too narrow for both, it
+    lands beside it. The landing is checked clear of every top on the way
+    down. It had left one foot in the air.
+  - live, the rendered feet went 0.18-0.21 m through the floor landing from
+    3 m, squatting or rolling, while the target pose was fine. Landed, a
+    fall's root is now on the ground and the pose kept clear of the floor;
+    the lowest ball joint stays 1.5 cm up.
+  - live: running off a 3 m top, the far wall caught; a step ending between
+    the feet, landed 0.15 m along, both feet on it (back view, gizmos on,
+    mesh off).
+  - cost: `--gait jump-catch` 34 µs (30 before).
+  - not covered: the walker's run goes on through a wall it landed at the
+    foot of (no collision with ledges); only letting go checks the feet
+    against a step.
 
-1242 library tests pass; clippy is clean.
+1244 library tests pass; clippy is clean.
 
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 

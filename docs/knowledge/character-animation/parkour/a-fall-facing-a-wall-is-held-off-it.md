@@ -62,10 +62,12 @@ rest spot and the planted feet use the final room. In the air, the stop is
 the flight's 0.25 m: a braced hang's feet, on the wall, are ahead of the
 hips by 0.42 m from the first frame.
 
-**The hands and toes are kept off its face under its top.** The wrists are
-held 0.1 m off it, eased in as the arms are let go. Each arm is solved
-toward the shifted wrist with its own elbow plane. The ankles move out as
-far as the levelling toes would go in.
+**The hands, toes and knees are kept off its face under its top.** The
+wrists are held 0.1 m off it, eased in as the arms are let go. Each arm is
+solved toward the shifted wrist with its own elbow plane. The ankles move
+out as far as the levelling toes would go in, and in the air as far as a
+knee would come within 2 cm. A running jump's legs reach ahead for its
+landing; the hips held off, a knee went 5 cm in.
 
 **A hurt landing against a wall does not lean over onto its hands.** It
 keeps the deeper knees and the hold. The room for the lean (0.65 m) pushed
@@ -73,8 +75,10 @@ the hips back off the wall while still in the air, out of a ledge's reach.
 It does not roll either.
 
 **A braced hang caught near the wall**:
-- each foot goes only as far onto the wall as keeps its knee out, found by
-  bisection on the blend, more as the hips swing out;
+- each foot goes only as far onto the wall as keeps its knee 1 cm out,
+  found by bisection on the blend, more as the hips swing out; caught with
+  the knee in already (a running jump's leg reaching ahead, 15 cm), the
+  foot moves out as far;
 - the braced swing cannot bring the hips nearer than 0.15 m. At 0.11 m a
   shoulder touched the wall.
 
@@ -93,6 +97,9 @@ It does not roll either.
 - **A missed jump**, not reaching, from 3 m: it lands against the wall,
   braked and pushed back at most 1.9 g. No joint goes into the wall or
   under the floor.
+- **A running jump** slamming into it at 4.5 m/s stops at 3.6-3.9 g, about
+  4.5² / 2 over the 0.2 m give either side, a slam at a run. It is bounded,
+  not softened.
 - **Caught** at the wall (reaching): the hang settles, held within 1 mm,
   nothing into the wall.
 - **Let go onto a step** under its wall: it lands standing 0.13 m off the
