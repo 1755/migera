@@ -143,9 +143,10 @@ pub struct Walker {
     pub ledge: Option<super::parkour::Ledge>,
     /// Asked of [`Walker::ledge`]: `Grab` walks under it, jumps and hangs
     /// from it (`parkour::hang`). Out of a standing jump's reach, the ask is
-    /// dropped. Hanging, `ClimbUp` climbs onto its top and stands there (on
-    /// the walker's ground, [`super::parkour::LedgeGround`]); the ask is
-    /// dropped once taken. Hanging, nothing else asked of it is done.
+    /// dropped. `ClimbUp` climbs onto its top and stands there (on the
+    /// walker's ground, [`super::parkour::LedgeGround`]), grabbing it first
+    /// if not hanging yet; the ask is dropped once taken. Hanging, nothing
+    /// else asked of it is done.
     pub hang: Option<super::parkour::hang::HangAsk>,
 }
 
@@ -681,7 +682,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Asked to grab a ledge (`parkour::hang`): it walks to the spot under
         // it, facing the wall, and jumps from there once stopped.
         let hang_asked = !state.on_holds()
-            && walker.hang == Some(super::parkour::hang::HangAsk::Grab)
+            && walker.hang.is_some()
             && walker.ledge.is_some()
             && walker.sit.is_none()
             && !ladder_asked
@@ -1556,7 +1557,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.ledge_spot = None;
             }
             if let Some(hanging) = state.hanging.as_mut() {
-                if walker.hang == Some(super::parkour::hang::HangAsk::ClimbUp) && hanging.climb_up() {
+                // Climbing up is taken once it hangs (asked while it still
+                // walks there or jumps, it grabs first); a top with no room
+                // to stand drops the ask.
+                if walker.hang == Some(super::parkour::hang::HangAsk::ClimbUp) && hanging.is_hanging() {
+                    hanging.climb_up();
                     walker.hang = None;
                 }
                 hanging.advance(dt);

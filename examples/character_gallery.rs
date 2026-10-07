@@ -1185,7 +1185,8 @@ fn steer_the_walker(
         walker.ladder = climbs.ladder;
         walker.climb = climbs.at(time.elapsed_secs());
         walker.ledge = hangs.ledge;
-        if grab.is_some() {
+        // A climb up already asked grabs first: a later grab keeps it.
+        if grab.is_some() && walker.hang != Some(migera::character::anim::parkour::hang::HangAsk::ClimbUp) {
             walker.hang = grab;
         }
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
@@ -1372,7 +1373,7 @@ impl ClimbSchedule {
 /// foot at X,Z facing HEADING degrees, HEIGHT high, WIDTH wide, its wall
 /// reaching BELOW down from the edge; less than HEIGHT, a slab with nothing
 /// under it), when to grab it (`--hang-at T`), and when to climb up onto
-/// it once hanging (`--climb-up-at T`).
+/// it (`--climb-up-at T`: grabbing it first if not hanging yet).
 #[derive(Resource, Debug, Clone, Default)]
 struct HangSchedule {
     ledge: Option<migera::character::anim::parkour::Ledge>,
@@ -1406,7 +1407,7 @@ impl HangSchedule {
             }
         }
         // Asked to grab with no ledge given: a wall 1 m ahead, 2.25 m high.
-        if schedule.ledge.is_none() && schedule.at.is_some() {
+        if schedule.ledge.is_none() && (schedule.at.is_some() || schedule.up_at.is_some()) {
             schedule.ledge = Some(Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.25, 1.0));
         }
         schedule

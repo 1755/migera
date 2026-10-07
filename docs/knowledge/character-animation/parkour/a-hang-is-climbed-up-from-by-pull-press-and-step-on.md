@@ -64,6 +64,14 @@ rise, a foot smears up the face until it reaches. The knees are turned out
 0.6 of the way to sideways (about 55° at the hip). The feet leave the wall
 through the press.
 
+**Pressing, the elbows point back** toward the hips: each arm's elbow pole
+turns from the hang's (out to the side and back) as its hand comes over.
+With the hang's pole the elbows went 18.5 cm out past the
+shoulder-to-wrist line; a quarter out, 6.8 cm; straight back, 0.6 cm.
+
+**Asked before it hangs**, `ClimbUp` grabs the ledge first and climbs
+straight on.
+
 **Asked mid-swing, it waits** for the hips to slow below 0.25 m/s, at the end
 of a swing, before it pulls.
 

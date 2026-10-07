@@ -90,10 +90,14 @@ the top and stands there, 0.3 m back from the edge, on its ground
 - **Live** (2.25 m wall, BRP): standing on the top 3.8 s after the ask, the
   pelvis 3.19 m up, 0.3 m back from the face.
 - **Seen:** Left at the pull, press, step on, trailing foot and stand; Back
-  at the press and trailing foot; gizmos on, mesh off. The elbows go wide
-  pressing (the hang's sideways elbow pole).
-- **Gallery:** `--climb-up-at T`, after the hang (a new ask replaces a grab
-  still under way).
+  at the press and trailing foot; gizmos on, mesh off.
+- **Elbows back pressing** (follow-up): each arm's elbow pole turns from the
+  hang's (out and back) to straight back toward the hips as its hand comes
+  over; pressing, the elbows went 18.5 cm out past the shoulder-to-wrist
+  line, now 0.6 cm (a quarter out: 6.8).
+- **`ClimbUp` grabs first** (follow-up): asked before hanging, it walks
+  there, grabs and climbs straight on; it had replaced a grab still under
+  way. Gallery: `--climb-up-at T` alone does the whole move.
 - **Cost** (`anim_bench --gait hang-up --characters 20`): 41 µs a character
   a frame (hanging 46, a ladder 52, a walk 24).
 

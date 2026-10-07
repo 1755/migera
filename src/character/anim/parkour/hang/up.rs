@@ -349,16 +349,19 @@ impl Hanging {
         self.drop * across(up.t, (up.ends[3], up.ends[4]))
     }
 
-    /// Each wrist and its hand's world turn, and how much the arms hold
-    /// (letting go, standing up).
-    fn hands_up(&self, up: &ClimbUp) -> ([Vec3; 2], [Quat; 2], f32) {
+    /// Each wrist and its hand's world turn, how far each has turned over
+    /// onto the top (0-1), and how much the arms hold (letting go, standing
+    /// up).
+    fn hands_up(&self, up: &ClimbUp) -> ([Vec3; 2], [Quat; 2], [f32; 2], f32) {
         let (pulled, turned) = (up.ends[0], up.ends[1]);
         let span = turned - pulled;
         let mut wrists = up.hooks;
         let mut turns = [self.hook_turn(0), self.hook_turn(1)];
+        let mut pressing = [0.0; 2];
         for side in 0..2 {
             let window = if side == up.lead { (pulled, pulled + 0.65 * span) } else { (pulled + 0.35 * span, turned) };
             let s = across(up.t, window);
+            pressing[side] = s;
             if s <= 0.0 {
                 continue;
             }
@@ -373,7 +376,7 @@ impl Hanging {
         }
         let (stepped, stood) = (up.ends[3], up.ends[4]);
         let holding = 1.0 - across(up.t, (stepped + LET_GO.0 * (stood - stepped), stepped + LET_GO.1 * (stood - stepped)));
-        (wrists, turns, holding)
+        (wrists, turns, pressing, holding)
     }
 
     /// Foot `side`'s ankle and world rotation, and how far its knee turns
@@ -466,9 +469,9 @@ impl Hanging {
             let now = accumulate_world_rotations(&pose, rig)[leg.2];
             pose.rotations[leg.2] = delta_after_world_turn(&pose, rig, leg.2, (back * attitude) * now.inverse());
         }
-        let (wrists, turns, holding) = self.hands_up(up);
+        let (wrists, turns, pressing, holding) = self.hands_up(up);
         let free = pose;
-        self.arms_to(&mut pose, rig, root, wrists, turns, 1.0);
+        self.arms_to(&mut pose, rig, root, wrists, turns, pressing, 1.0);
         if holding < 1.0 {
             for arm in ARMS {
                 for bone in [arm.shoulder, arm.elbow, arm.wrist] {
@@ -537,6 +540,9 @@ mod tests {
         hooked_off: f32,
         pressed_off: f32,
         pressed_at: f32,
+        /// Pressing, the most an elbow sits out to its side of the line from
+        /// its shoulder to its wrist, metres.
+        elbow_out: f32,
         /// When the hips accelerate most, seconds into the climb.
         accelerated_at: f32,
         /// The deepest any joint goes into the block (the wall below the
@@ -607,13 +613,20 @@ mod tests {
             let turn = Quat::from_rotation_y(hanging.facing());
             let world = BoneSet::from_fn(|bone| hanging.root() + turn * at[bone]);
             hips.push(world[Bone::Hips]);
-            let (wrists, _, holding) = hanging.hands_up(up);
+            let (wrists, _, _, holding) = hanging.hands_up(up);
             for side in 0..2 {
                 let off = (world[ARMS[side].wrist] - wrists[side]).length();
                 if up.t < ends[0] {
                     m.hooked_off = m.hooked_off.max(off);
-                } else if up.t > ends[1] && holding >= 1.0 && off > m.pressed_off {
-                    (m.pressed_off, m.pressed_at) = (off, up.t);
+                } else if up.t > ends[1] && holding >= 1.0 {
+                    if off > m.pressed_off {
+                        (m.pressed_off, m.pressed_at) = (off, up.t);
+                    }
+                    // The elbow out to its side of the shoulder-to-wrist line.
+                    let (shoulder, elbow, wrist) = (world[ARMS[side].shoulder], world[ARMS[side].elbow], world[ARMS[side].wrist]);
+                    let line = (wrist - shoulder).normalize_or_zero();
+                    let bent = elbow - shoulder - line * (elbow - shoulder).dot(line);
+                    m.elbow_out = m.elbow_out.max(bent.dot(turn * rig.left() * SIGN[side]));
                 }
             }
             for side in 0..2 {
@@ -670,6 +683,9 @@ mod tests {
                 assert!(m.done, "{name}: not done");
                 assert!(m.hooked_off < 1.0e-3, "{name}: a hand {:.4} m off its hook pulling", m.hooked_off);
                 assert!(m.pressed_off < 1.0e-3, "{name}: a hand {:.4} m off its press at {:.2} s", m.pressed_off, m.pressed_at);
+                // Pressing, the elbows back by the body (pointing out as
+                // hanging, 18.5 cm out; a quarter out, 6.8 cm).
+                assert!(m.elbow_out < 0.03, "{name}: an elbow {:.4} m out to its side pressing", m.elbow_out);
                 assert!(m.into_block < 1.0e-3, "{name}: {:?} {:.4} m into the block", m.deepest, m.into_block);
                 assert!(m.knee_turned < KNEE_TURN, "{name}: a knee's hinge turned {:.2} rad from standing's", m.knee_turned);
                 assert!(m.wall_off < 1.0e-3 && m.landed_off < 1.0e-3, "{name}: an ankle {:.4} m off the wall, {:.4} m off the top", m.wall_off, m.landed_off);

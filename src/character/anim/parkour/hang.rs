@@ -99,6 +99,10 @@ const LEGS_HANG: f32 = 0.3;
 const FOOT_ON_WALL: f32 = 1.1;
 /// The hands close onto the lip over this long before they reach it.
 const CLOSING: f32 = 0.12;
+/// Pressing on a top, each elbow's pole is out to its side by this much
+/// for each unit back toward the hips: none, the elbows by the body (a
+/// quarter out, they went 6.8 cm out of the shoulder-to-wrist line).
+const PRESS_ELBOW_OUT: f32 = 0.0;
 /// Sideways, the hips settle under the grip at this rate, rad/s.
 const SIDEWAYS: f32 = 6.0;
 /// Where a hand without known fingers hooks, metres along it from the
@@ -652,7 +656,7 @@ impl Hanging {
             let root = self.root();
             let wrists = self.wrists();
             let targets = [0, 1].map(|side| self.reach_from[side].lerp(wrists[side], reaching));
-            self.arms_to(&mut pose, rig, root, targets, [self.hook_turn(0), self.hook_turn(1)], reaching);
+            self.arms_to(&mut pose, rig, root, targets, [self.hook_turn(0), self.hook_turn(1)], [0.0; 2], reaching);
         }
         pose
     }
@@ -686,15 +690,29 @@ impl Hanging {
             let now = accumulate_world_rotations(&pose, rig)[ankle_bone];
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
-        self.arms_to(&mut pose, rig, root, self.wrists(), [self.hook_turn(0), self.hook_turn(1)], 1.0);
+        self.arms_to(&mut pose, rig, root, self.wrists(), [self.hook_turn(0), self.hook_turn(1)], [0.0; 2], 1.0);
         pose
+    }
+
+    /// Where elbow `side` points hanging (the pose's frame): out to the side
+    /// and back from the wall.
+    fn hang_pole(&self, side: usize, rig: &RigGeometry) -> Vec3 {
+        rig.left() * SIGN[side] * 0.7 + self.turn.inverse() * self.ledge.out * 0.5 - Vec3::Y * 0.2
+    }
+
+    /// Where elbow `side` points pressing on the top (the pose's frame):
+    /// back toward the hips, a little out. Pointing out as hanging, the
+    /// elbows went 18.5 cm out past the shoulder-to-wrist line.
+    fn press_pole(&self, side: usize, rig: &RigGeometry) -> Vec3 {
+        rig.left() * SIGN[side] * PRESS_ELBOW_OUT + self.turn.inverse() * self.ledge.out
     }
 
     /// Each arm to its wrist at `wrists` (the world), turning its hand
     /// toward `turns` (the world) by `weight` (0 as the pose has it): the
-    /// shoulder lifted toward it, the elbow out and back.
+    /// shoulder lifted toward it, the elbow out and back hanging, back
+    /// pressing (`pressing`, 0-1 each).
     #[allow(clippy::too_many_arguments)]
-    fn arms_to(&self, pose: &mut LocalPose, rig: &RigGeometry, root: Vec3, wrists: [Vec3; 2], turns: [Quat; 2], weight: f32) {
+    fn arms_to(&self, pose: &mut LocalPose, rig: &RigGeometry, root: Vec3, wrists: [Vec3; 2], turns: [Quat; 2], pressing: [f32; 2], weight: f32) {
         let back = self.turn.inverse();
         let to_pose = |p: Vec3| back * (p - root);
         let at = forward_kinematics_on(pose, rig);
@@ -706,9 +724,8 @@ impl Hanging {
         let at = forward_kinematics_on(pose, rig);
         for side in 0..2 {
             let chain = ARMS[side];
-            // Out to the side and back from the wall.
-            let pole = rig.left() * SIGN[side] * 0.7 + back * self.ledge.out * 0.5 - Vec3::Y * 0.2;
-            let (elbow, wrist) = solve_arm_toward_from(pose, &at, chain, targets[side], pole.normalize(), rig);
+            let pole = self.hang_pole(side, rig).lerp(self.press_pole(side, rig), pressing[side]).normalize();
+            let (elbow, wrist) = solve_arm_toward_from(pose, &at, chain, targets[side], pole, rig);
             let wanted = back * turns[side];
             turn_hand(pose, rig, chain, self.body.hand_binds[side], wanted, weight, (wrist - elbow).normalize_or_zero());
         }
