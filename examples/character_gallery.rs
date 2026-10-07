@@ -886,7 +886,10 @@ fn spawn_real_mesh(
     idle: Res<AnimIdleConfig>,
     proportions: Option<Res<ProportionsConfig>>,
 ) {
-    let root = spawn_gltf_humanoid(&mut commands, &asset_server, &model_cfg.path, model_cfg.yaw_correction_radians, Transform::IDENTITY);
+    // Standing `--start-height H` up (on a block's top, say, to walk off it).
+    let args: Vec<String> = std::env::args().collect();
+    let height = args.iter().position(|a| a == "--start-height").and_then(|i| args.get(i + 1)).and_then(|h| h.parse().ok()).unwrap_or(0.0);
+    let root = spawn_gltf_humanoid(&mut commands, &asset_server, &model_cfg.path, model_cfg.yaw_correction_radians, Transform::from_xyz(0.0, height, 0.0));
     let mut character = commands.entity(root);
     character.insert((
         RealMeshRoot,

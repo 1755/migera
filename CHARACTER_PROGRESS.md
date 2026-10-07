@@ -41,6 +41,65 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 4: falling off an edge, landing from height, rolling
+
+Second part: **past 1.7 m it rolls**; **past 4 m it goes to the ragdoll** at
+touchdown.
+
+- **The roll**: the squat's first 0.15 s (feet planted, knees giving), 0.2 s
+  tucking (the turn rising), once round over a shoulder (the body's left
+  tilted 0.45 rad) at the forward speed or 0.45 of the touchdown speed, at
+  least 2 m/s; 0.9 s coming up to standing. The centroid follows one path;
+  the resting height is planned over time: every 5 ms the height resting
+  the lowest joint as low as standing's, the greatest over ±60 ms, averaged.
+- **Found on the way:** a sphere's height for the tuck put the toes 29 cm
+  under the ground; held up only where a joint went under, the hips jerked
+  at 167 m/s²; resting on the lowest joint each frame, 557 and 70 m/s²;
+  tucking from the straight-legged contact, the body stalled on its feet.
+- **Headless** (1.8 and 2.4 m, still and at 1.4 m/s): nothing below the
+  ground; the hips continuous at touchdown (0.05 m/s) and at most 46 m/s²
+  from the tuck on; the forward speed kept rolling; once round; standing on
+  its spot.
+- **Seen:** from the left, a 2.2 m drop: the squat's give, tucking, rolling,
+  standing.
+- **Cost** (`anim_bench --gait roll`): 20 µs a character a frame.
+
+### Parkour, step 4 (first part): falling off an edge and landing from height
+
+A walker whose ground drops more than a step (0.3 m) below it, walking off
+a top, falls and lands (`parkour::Falling`). See
+[the note](./docs/knowledge/character-animation/parkour/a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md).
+
+- **Flight**: the hips ballistic from the root's velocity; the legs reach to
+  the landing's shape (knees 25°, 20-29° measured), the feet planted where
+  the hips come to rest; arms out.
+- **Landing**: the measured time (377/335/290 ms from 0.9/1.8/2.7 m) to the
+  measured knee depth (116°/126°/134°) on this rig's legs, keyed by the
+  drop; the velocity falls as `v(1-s)^n(1+n·s)`, braking rising to a peak
+  about 65 ms in; forward speed braked over the same time; trunk forward,
+  arms forward; up to standing at the foot IK's drop.
+- **The walker**: the ground snap no longer takes the root down onto ground
+  more than a step below; it falls instead, posed off the floor.
+- **Found on the way:** the study's touchdown speeds (3.0/4.9/6.3 m/s) are
+  not free fall's from its drops (4.2 m/s from 0.9 m), so the landing is
+  keyed by the drop; a cubic landing could not be as shallow as the knees
+  (136° for 116°); a planted foot ahead of the hips leans the leg (3.5 mm
+  short taken upright).
+- **Headless** (0.9 and 1.8 m, still and walking off): touchdown at free
+  fall's speed with the feet on the ground and the hips' velocity continuous
+  (0.05 m/s); landing times and knees as measured; 4.2-4.4 body weights from
+  0.9 m, 6.5-6.6 from 1.8 m; planted ankles within 0.4 mm; standing exactly
+  at the end.
+- **Live** (a 0.9 m block, walking off at 1.2 m/s): pelvis 1.84 → 0.48 →
+  0.94 m, feet planted on the floor, walking on. Seen from the left leaving
+  the edge, falling and landing; gizmos on, mesh off.
+- **Gallery:** `--start-height H`; e.g. `--block 0,0.9,180,0.9,2.0,1.8
+  --start-height 0.9 --anim-speed-schedule 2:1.2`.
+- **Cost** (`anim_bench --gait drop --characters 20`): 16 µs a character a
+  frame.
+
+1231 library tests pass; clippy is clean.
+
 ### Parkour, step 3: shimmying along a ledge and round its corners
 
 Hanging, asked `HangAsk::Shimmy(Left|Right)`, the walker goes along the lip

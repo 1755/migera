@@ -103,7 +103,9 @@ Drops from 0.75 m (Puddle and Maulder 2013, 10 males):
 | Traditional | 5.2 ± 1.2 BW | 44 ms | 154 BW/s |
 
 Drops from 0.9, 1.8 and 2.7 m (Dai et al. 2020, 20 practitioners):
-- vertical speed at contact 3.0, 4.9 and 6.3 m/s;
+- vertical speed at contact 3.0, 4.9 and 6.3 m/s [not free fall's: from
+  0.9 m that is 4.2 m/s, and these do not scale as the drops' square roots;
+  key a landing by the drop, not by them];
 - landing duration, squat 377, 335, 290 ms; roll 380, 364, 320 ms; stiff
   169 ms (0.9 m) and 224 ms (1.8 m);
 - the knees 20-29° flexed at contact, every technique;

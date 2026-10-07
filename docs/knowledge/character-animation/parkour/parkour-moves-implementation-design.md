@@ -307,7 +307,11 @@ its API, its tests, and when it is done.
 - **Step 3**, shimmy and corners: built 2026-10-07. A ledge stays one
   straight segment; corners are other ledges meeting its end
   (`Ledge::joined`, `Ledge::block`, `Walker::ledges`), not a polyline.
-- Steps 4-10: not started.
+- **Step 4**, landing from height: built 2026-10-07 ([the
+  note](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md)):
+  falling off an edge, the squat landing, the roll past 1.7 m, the ragdoll
+  past 4 m. The airborne body (0c) is `parkour::Falling`'s flight.
+- Steps 5-10: not started.
 
 ## Related
 

@@ -391,6 +391,10 @@ pub struct WalkerState {
     pub ladder_spot: Option<(super::ladder::Ladder, bool, Vec3)>,
     /// Grabbing a ledge and hanging from it ([`Walker::hang`]).
     pub hanging: Option<super::parkour::Hanging>,
+    /// Falling off an edge and landing below (`parkour::fall`); and the
+    /// ground found below as the root went over the edge, the fall to start.
+    pub falling: Option<super::parkour::Falling>,
+    pub fall_to: Option<f32>,
     /// The ledge it walks under, the spot it jumps from, and whether it has
     /// come round in front of it to walk straight in (`LEDGE_LEAD_IN`).
     pub ledge_spot: Option<(super::parkour::Ledge, Vec3, bool)>,
@@ -434,15 +438,18 @@ impl WalkerState {
             climbing: None,
             ladder_spot: None,
             hanging: None,
+            falling: None,
+            fall_to: None,
             ledge_spot: None,
             measured: None,
         }
     }
 
-    /// Whether its hands hold the body off the floor, a move posing it on
-    /// its holds: on a ladder, or grabbing or hanging from a ledge.
+    /// Whether a move poses the body off the floor, its hands on holds or in
+    /// the air: on a ladder, grabbing or hanging from a ledge, or falling
+    /// off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some()
     }
 }
 
@@ -1610,6 +1617,46 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
         }
+        // Over an edge (`parkour::fall`): from the gait's pose and the root's
+        // velocity it falls to the ground found below and lands, posed off
+        // the floor, the root riding its hips; stood again, it walks on.
+        if let Some(rig) = foot_ik.rig.clone() {
+            if let Some(ground) = state.fall_to.take()
+                && state.falling.is_none()
+                && !fallen
+            {
+                let velocity = Vec3::new(state.locomotion.root_velocity.x, 0.0, state.locomotion.root_velocity.z);
+                state.falling = Some(super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, ground, foot_ik.pelvis_drop, &stood, &rig));
+            }
+            if let Some(falling) = state.falling.as_mut() {
+                falling.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => falling.pose_led(&rig, &springs.0),
+                    None => falling.pose(&rig),
+                };
+                state.locomotion.position = falling.root();
+                state.facing.yaw = falling.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                // Too far to land: at touchdown the body goes to the ragdoll,
+                // falling on with the velocity it hit with (a walker without
+                // one lands it as it can).
+                if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {
+                    walker.fall_now = true;
+                    state.falling = None;
+                } else if falling.is_done() {
+                    state.falling = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
+                }
+            }
+        }
         if foot_ik.legs_free != legs_free {
             foot_ik.legs_free = legs_free;
         }
@@ -1792,7 +1839,15 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
         if !state.on_holds()
             && let Some(height) = locomotion::ground_following_height(root.translation, 0.0, ground.0.as_ref())
         {
-            root.translation.y = height;
+            // Over an edge, the ground more than a step below: it falls
+            // (`parkour::fall`, started next frame), not snapped down to it.
+            if height < height_before - super::parkour::fall::STEP_DOWN && state.jump.is_none() {
+                root.translation.y = height_before;
+                state.locomotion.position.y = height_before;
+                state.fall_to = Some(height);
+            } else {
+                root.translation.y = height;
+            }
         }
         // The rise is travel too: a lock that knew only the horizontal part
         // carried a planted foot 9 cm up a 0.2 grade every stance.
