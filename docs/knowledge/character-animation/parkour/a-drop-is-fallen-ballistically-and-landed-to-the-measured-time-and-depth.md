@@ -74,6 +74,16 @@ depend on it, so it is planned once: every 5 ms, the height that puts the
 lowest joint as low as standing's, then the greatest over ±60 ms, then
 averaged over it.
 
+**Moving on fast it rolls from lower**: a squat brakes the forward speed
+over its own time; harder than 6 m/s² (about 0.6 g) it rolls instead, from
+drops of 0.75 m up (the lowest measured). From 1.0 m at 3 m/s the squat
+would brake at 8 m/s², the feet planted 0.57 m ahead. No data: set by eye.
+
+**Between 3 and 4 m it lands hurt** (`is_hurt`): a squat deeper (the knees
+to 140°), the trunk leant far enough over (2.6 rad a metre of depth) for
+the hands to plant on the ground under the shoulders, held down 0.8 s, then
+up twice as slowly. No data: past the measured 2.7 m, set by eye.
+
 **Past `FATAL_DROP` (4 m) it does not land**: at touchdown the walker falls
 (`Walker::fall_now`), the ragdoll taking the body with the velocity the
 kinematic root had; without a ragdoll it rolls. No data; past the measured
@@ -117,6 +127,11 @@ no foot locks, no pushes).
   Joints sweep the bottom at about the roll's speed, so any per-frame
   minimum jerks. Planned over time and smoothed from above, the hips peak at
   36-46 m/s², swinging round the tucked centroid.
+- **The tucking's height** eases from the squat's own to the resting one and
+  can pass under what the joints need. Rolling off a 1 m drop at a run, a
+  joint went 1 cm under; held up to the need frame by frame, the hips
+  jerked at 67 m/s². The shortfall is planned like the resting height,
+  ramped from nothing in and out (left on at the end, a 125 m/s² jump).
 - **Tucking at touchdown** from the straight-legged contact shape: the body
   stalled on its feet (5.9 m/s down to 0.1 in a frame). The squat takes the
   impact first.
@@ -142,7 +157,12 @@ no foot locks, no pushes).
 the ground; the hips continuous across touchdown (within 0.05 m/s) and at
 most 46 m/s² from the tuck on; the forward speed kept rolling; once round;
 standing on its spot. From 4.5 m it does not land, from 3.5 m it does; from
-1.2 m it squats, from 2.0 m it rolls.
+1.2 m it squats, from 2.0 m it rolls; from 1.0 m it rolls at 3.5 m/s and
+squats at 1.4, from 0.5 m it squats at 4 m/s.
+
+**Headless, hurt** (3.5 m): the wrists on the ground within 1 cm, on its
+hands for the hold, the knees past 128°, nothing below the ground, standing
+at the end.
 
 **Live** (a 0.9 m block, walking off at 1.2 m/s, BRP): the pelvis from
 1.84 m to 0.48 at the bottom, the feet planted on the floor, standing again
@@ -153,10 +173,7 @@ the start): 16 µs a character a frame (a walk 23).
 
 ## Revisit when
 
-- **Rolling from speed**: a fast run off a low drop might roll too; it
-  rolls by the drop's height only.
-- **A hurting drop** between rolling and fatal (a stumble, a hand down) is
-  not modelled.
+- **Data** on rolling from speed or hurt landings: both are set by eye.
 - **A stride's own lift**: a walker steps off with its foot in the air; the
   fall starts from the root, between the feet.
 

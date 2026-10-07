@@ -50,6 +50,12 @@ pub enum HangAsk {
     ClimbUp,
     /// Hanging from it, shimmy along it while asked.
     Shimmy(Shimmy),
+    /// Hanging from it, let go and fall to the ground below (catching a
+    /// ledge falling past if [`Walker::catch`](crate::character::anim::Walker::catch)).
+    LetGo,
+    /// Standing on its top, walk to its edge, turn the back to it and lower
+    /// down into a hang from it.
+    DropDown,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -86,8 +92,14 @@ const GIVE: (f32, f32) = (10.0, 0.9);
 const BRACED_OUT: f32 = 0.42;
 const BRACED_LEG: f32 = 0.95;
 const BRACED_SETTLE: f32 = 5.5;
-/// How long the feet take to swing onto the wall after the catch, seconds.
-const FEET_TO_WALL: f32 = 0.35;
+/// How long the feet take to swing onto the wall after the catch, seconds;
+/// and how far out they swing on the way, metres (straight there from under
+/// the body, a knee jutted 6.8 cm into the wall).
+const FEET_TO_WALL: f32 = 0.5;
+const FEET_SWING_OUT: f32 = 0.3;
+/// Letting go braced, the feet push off the wall this fast, m/s (no data:
+/// set by eye).
+const PUSH_OFF: f32 = 0.6;
 /// The least wall below the edge to brace the feet on, beyond where they
 /// go, metres.
 const WALL_MARGIN: f32 = 0.1;
@@ -108,6 +120,7 @@ const CLOSING: f32 = 0.12;
 /// for each unit back toward the hips: none, the elbows by the body (a
 /// quarter out, they went 6.8 cm out of the shoulder-to-wrist line).
 const PRESS_ELBOW_OUT: f32 = 0.0;
+const PRESS_ELBOW_DOWN: f32 = 0.5;
 /// Sideways, the hips settle under the grip at this rate, rad/s.
 const SIDEWAYS: f32 = 6.0;
 /// Where a hand without known fingers hooks, metres along it from the
@@ -269,9 +282,69 @@ impl Hanging {
     /// standing jump cannot bring its hands to the lip, or they reach it
     /// standing (a mantle, not a hang).
     pub fn grab(ledge: &Ledge, root: Vec3, square: f32, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let mut hanging = Self::blank(ledge, root, square, drop, stood, rig);
+        hanging.place_hands(rig);
+        hanging.plan_jump(stood, rig)?;
+        hanging.plan_hang(rig);
+        Some(hanging)
+    }
+
+    /// Hanging still from `ledge` already, square to it, its hands near
+    /// `near` (on `rig`, its hands' own grips `grips`): for a walker that
+    /// lowers itself down to it from its top (`HangAsk::DropDown`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn hung(ledge: &Ledge, others: &[Ledge], near: Vec3, drop: f32, grips: [Option<HandGrip>; 2], stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let square = Self::square(ledge, rig.forward());
+        let mut hanging = Self::blank(ledge, near, square, drop, stood, rig);
+        hanging.take_grips(grips, rig);
+        hanging.others = others.iter().filter(|other| !shimmy::same(other, ledge)).copied().collect();
+        hanging.place_hands(rig);
+        hanging.plan_rest(rig);
+        hanging.phase = Phase::Hanging;
+        // Long hung: the legs where the hang has them, at rest.
+        hanging.since = 10.0;
+        let (r, theta) = hanging.rest;
+        hanging.swing = Swing { r, dr: 0.0, theta, dtheta: 0.0, along: 0.0, dalong: 0.0 };
+        hanging
+    }
+
+    /// Catching `ledge` falling past it: the hips at `hips` moving at
+    /// `velocity` (the world), posed `pose` at `root` turned `yaw` (radians
+    /// about `+Y`, square to the ledge), its hands' own grips `grips`. The
+    /// arms take the fall as they take a jump's (`GIVE`), the body swinging
+    /// on about the grip; the legs go to the hang's from where they are.
+    #[allow(clippy::too_many_arguments)]
+    pub fn caught(ledge: &Ledge, others: &[Ledge], hips: Vec3, velocity: Vec3, pose: &LocalPose, root: Vec3, yaw: f32, drop: f32, grips: [Option<HandGrip>; 2], stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let mut hanging = Self::blank(ledge, root, yaw, drop, stood, rig);
+        hanging.take_grips(grips, rig);
+        hanging.others = others.iter().filter(|other| !shimmy::same(other, ledge)).copied().collect();
+        hanging.place_hands(rig);
+        hanging.plan_rest(rig);
+        hanging.phase = Phase::Hanging;
+        let at = forward_kinematics_on(pose, rig);
+        let ankles = LEGS.map(|(_, _, ankle, _)| root + hanging.turn * at[ankle]);
+        hanging.catch_with(hips, velocity, ankles);
+        hanging
+    }
+
+    /// The hips' velocity hanging now (the world).
+    pub fn hips_velocity(&self) -> Vec3 {
+        self.hang_velocity()
+    }
+
+    /// What letting go falls with: the hips' velocity, and braced, a push
+    /// off the wall with the feet (`PUSH_OFF`; dropped straight down by
+    /// it, a hand swung forward landing went 13 cm into it).
+    pub fn let_go_velocity(&self) -> Vec3 {
+        let push = if self.braced { self.face().0 * PUSH_OFF } else { Vec3::ZERO };
+        self.hang_velocity() + push
+    }
+
+    /// A hang of `ledge` not yet placed or planned.
+    fn blank(ledge: &Ledge, root: Vec3, square: f32, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Self {
         let body = Body::of(stood, rig);
         let turn = Quat::from_rotation_y(square);
-        let mut hanging = Self {
+        Self {
             ledge: *ledge,
             body,
             rig: std::sync::Arc::new(rig.clone()),
@@ -298,11 +371,19 @@ impl Hanging {
             pulled: 0.0,
             others: Vec::new(),
             spread: 0.0,
-        };
-        hanging.place_hands(rig);
-        hanging.plan_jump(stood, rig)?;
-        hanging.plan_hang(rig);
-        Some(hanging)
+        }
+    }
+
+    /// The rig's own hand grips (each hand's own frame), turned by each
+    /// hand's bind into the frame the hang uses.
+    fn take_grips(&mut self, grips: [Option<HandGrip>; 2], rig: &RigGeometry) {
+        let binds = accumulate_bind_rotations(rig);
+        for side in 0..2 {
+            if let Some(grip) = grips[side] {
+                let bind = binds[ARMS[side].wrist];
+                self.body.grips[side] = HandGrip { bar: bind * grip.bar, palm: (bind * grip.palm).normalize(), along: (bind * grip.along).normalize() };
+            }
+        }
     }
 
     /// Takes the hand grips the rig's own fingers make (`RelaxedHands`, in
@@ -316,13 +397,7 @@ impl Hanging {
         if self.phase != Phase::Jumping || self.jump.elapsed() > 0.0 {
             return;
         }
-        let binds = accumulate_bind_rotations(rig);
-        for side in 0..2 {
-            if let Some(grip) = grips[side] {
-                let bind = binds[ARMS[side].wrist];
-                self.body.grips[side] = HandGrip { bar: bind * grip.bar, palm: (bind * grip.palm).normalize(), along: (bind * grip.along).normalize() };
-            }
-        }
+        self.take_grips(grips, rig);
         if self.plan_jump(stood, rig).is_some() {
             self.plan_hang(rig);
         }
@@ -424,6 +499,27 @@ impl Hanging {
     /// Braced or free, where the hips come to rest, and the swing as the
     /// hands catch the lip.
     fn plan_hang(&mut self, rig: &RigGeometry) {
+        self.plan_rest(rig);
+        self.plan_catch(rig);
+    }
+
+    /// The swing as the hands meet the lip, the hips at `hips` moving at
+    /// `velocity` (the world), the ankles at `ankles`.
+    fn catch_with(&mut self, hips: Vec3, velocity: Vec3, ankles: [Vec3; 2]) {
+        let out = self.ledge.out;
+        let off = hips - self.grip;
+        let along = self.ledge.along();
+        let plane = off - along * off.dot(along);
+        let r = plane.length();
+        let radial = plane / r.max(1.0e-6);
+        let theta = plane.dot(out).atan2(-plane.y);
+        let tangential = (out * theta.cos() + Vec3::Y * theta.sin()).normalize();
+        self.swing = Swing { r, dr: velocity.dot(radial), theta, dtheta: velocity.dot(tangential) / r.max(1.0e-3), along: off.dot(along), dalong: velocity.dot(along) };
+        self.caught_ankles = ankles;
+    }
+
+    /// Braced or free, and where the hips come to rest hanging.
+    fn plan_rest(&mut self, rig: &RigGeometry) {
         let out = self.ledge.out;
         let wrists = self.wrists();
         // The hips at `height` below the grip and `away` out from it, the
@@ -458,22 +554,18 @@ impl Hanging {
             (below_for(0.0), 0.0)
         };
         (self.braced, self.wall_balls, self.rest) = (braced, balls, rest);
+    }
 
+    /// The swing as the jump's hands meet the lip, and each wrist as the
+    /// push began, where its reach for the lip starts.
+    fn plan_catch(&mut self, rig: &RigGeometry) {
         // The hips' state as the hands meet the lip.
         let (at, before, after) = (self.catch_at, self.catch_at - 1.0e-3, self.catch_at + 1.0e-3);
         let (pose, hips) = self.jump_hips(at, &self.body.stood, rig);
         let velocity = (self.jump_hips(after, &self.body.stood, rig).1 - self.jump_hips(before, &self.body.stood, rig).1) / 2.0e-3;
-        let off = hips - self.grip;
-        let along = self.ledge.along();
-        let plane = off - along * off.dot(along);
-        let r = plane.length();
-        let radial = plane / r.max(1.0e-6);
-        let theta = plane.dot(out).atan2(-plane.y);
-        let tangential = (out * theta.cos() + Vec3::Y * theta.sin()).normalize();
-        self.swing = Swing { r, dr: velocity.dot(radial), theta, dtheta: velocity.dot(tangential) / r.max(1.0e-3), along: off.dot(along), dalong: velocity.dot(along) };
         let at = forward_kinematics_on(&pose, rig);
         let caught = self.jump_root(self.catch_at);
-        self.caught_ankles = LEGS.map(|(_, _, ankle, _)| caught + self.turn * at[ankle]);
+        self.catch_with(hips, velocity, LEGS.map(|(_, _, ankle, _)| caught + self.turn * at[ankle]));
         let push = self.jump.ends(JumpPhase::Down);
         let (pushing, _) = self.jump_hips(push, &self.body.stood, rig);
         let at = forward_kinematics_on(&pushing, rig);
@@ -547,7 +639,13 @@ impl Hanging {
                 self.step_swing(dt - left.max(0.0));
             }
             Phase::Hanging => match self.up.as_mut() {
-                Some(up) => up.t += dt,
+                Some(up) => {
+                    up.advance(dt);
+                    // Lowered all the way: hanging, still.
+                    if up.lowered() {
+                        self.up = None;
+                    }
+                }
                 None => {
                     self.advance_shimmy(dt);
                     self.step_swing(dt);
@@ -745,7 +843,8 @@ impl Hanging {
             } else {
                 hanging()
             };
-            let ankle = self.caught_ankles[side].lerp(target, moved);
+            let swing_out = if self.braced { self.face().0 * (FEET_SWING_OUT * (std::f32::consts::PI * moved).sin()) } else { Vec3::ZERO };
+            let ankle = self.caught_ankles[side].lerp(target, moved) + swing_out;
             place_ankle(&mut pose, rig, ankle_bone, back * (ankle - root) - self.body.hips);
             let attitude = (self.turn * self.body.attitudes[side]).slerp(attitude, moved);
             let now = accumulate_world_rotations(&pose, rig)[ankle_bone];
@@ -765,7 +864,10 @@ impl Hanging {
     /// back toward the hips, a little out. Pointing out as hanging, the
     /// elbows went 18.5 cm out past the shoulder-to-wrist line.
     fn press_pole(&self, side: usize, rig: &RigGeometry) -> Vec3 {
-        rig.left() * SIGN[side] * PRESS_ELBOW_OUT + self.turn.inverse() * self.face().0
+        // Back and down: straight back from the wall, it lay along the arm
+        // as the hand came over the lip just in front of the shoulder, and
+        // the elbow flipped (17 cm in a frame).
+        rig.left() * SIGN[side] * PRESS_ELBOW_OUT + self.turn.inverse() * self.face().0 - Vec3::Y * PRESS_ELBOW_DOWN
     }
 
     /// Each arm to its wrist at `wrists` (the world), turning its hand
@@ -1025,6 +1127,158 @@ mod tests {
                 let off = (hanging.root() + turn * at[toe] - hanging.wall_balls[side]).length();
                 assert!(off < 0.01, "a wall facing {out:?}: foot {side}'s ball {off:.4} m off its hold");
             }
+        }
+    }
+
+    /// Hanging still from `ledge` (as lowered to it), from near the middle.
+    fn hung_from(ledge: &Ledge, others: &[Ledge]) -> Hanging {
+        let (stood, rig) = real_stood();
+        Hanging::hung(ledge, others, Vec3::new(0.2, 0.0, 1.0), 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig)
+    }
+
+    /// Letting go: the fall from where the hang is, with its velocity and
+    /// pose, to the ground below.
+    fn let_go(hanging: &Hanging) -> crate::character::anim::parkour::Falling {
+        let (stood, rig) = real_stood();
+        let pose = hanging.pose(&rig);
+        crate::character::anim::parkour::Falling::off(hanging.root(), hanging.facing(), hanging.let_go_velocity(), &pose, 0.0, 0.0, &stood, &rig)
+    }
+
+    /// The deepest any joint of `pose` at `root` turned `yaw` is inside the
+    /// block under `ledge` (in from its face, down from its top, along it).
+    fn into_block(ledge: &Ledge, pose: &LocalPose, root: Vec3, yaw: f32, rig: &RigGeometry) -> f32 {
+        let at = forward_kinematics_on(pose, rig);
+        let turn = Quat::from_rotation_y(yaw);
+        Bone::ALL
+            .iter()
+            .map(|&bone| {
+                let p = root + turn * at[bone];
+                let (into, down, along) = (-ledge.out_of(p), ledge.height() - p.y, (p - ledge.a).dot(ledge.along()));
+                let length = (ledge.b - ledge.a).length();
+                if into > 0.0 && into < ledge.depth && down > 0.0 && down < ledge.wall_below && along > 0.0 && along < length { into.min(down) } else { 0.0 }
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// Hung from a 3 m ledge, braced and free, it lets go: the pose
+    /// continuous as it does, nothing into the wall, landing and standing
+    /// below.
+    #[test]
+    fn letting_go_falls_and_lands() {
+        let (stood, rig) = real_stood();
+        for (below, name) in [(3.0, "braced"), (0.15, "free")] {
+            let ledge = Ledge { wall_below: below, ..Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, 3.0, 1.0) };
+            let mut hanging = hung_from(&ledge, &[]);
+            hanging.advance(1.0);
+            assert_eq!(hanging.is_braced(), below > 1.0, "{name}");
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let held = BoneSet::from_fn(|bone| hanging.root() + Quat::from_rotation_y(hanging.facing()) * at[bone]);
+            let mut falling = let_go(&hanging);
+            falling.advance(DT);
+            let turn = Quat::from_rotation_y(falling.facing());
+            let at = forward_kinematics_on(&falling.pose(&rig), &rig);
+            let first = BoneSet::from_fn(|bone| falling.root() + turn * at[bone]);
+            let jump = Bone::ALL.iter().map(|&bone| (first[bone] - held[bone]).length()).fold(0.0, f32::max);
+            let mut into = 0.0f32;
+            while !falling.is_done() {
+                into = into.max(into_block(&ledge, &falling.pose(&rig), falling.root(), falling.facing(), &rig));
+                falling.advance(DT);
+            }
+            let standing = forward_kinematics_on(&stood, &rig);
+            let end = forward_kinematics_on(&falling.pose(&rig), &rig);
+            let from_standing = Bone::ALL.iter().map(|&bone| (end[bone] - standing[bone]).length()).fold(0.0, f32::max);
+            assert!(jump < 0.03, "{name}: a joint moved {jump:.4} m the frame it let go");
+            assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the wall falling");
+            assert!(from_standing < 0.01 && falling.root().y.abs() < 1.0e-3, "{name}: {from_standing:.4} m from standing, the root {:.4} m up", falling.root().y);
+        }
+    }
+
+    /// Letting go from a slab 3.6 m up overhanging a 1.9 m wall by 0.35 m,
+    /// reaching up, it catches the wall's ledge as it falls past and hangs
+    /// from it: the hands on their hooks, nothing in either block, the
+    /// catch's load bounded, coming to rest.
+    #[test]
+    fn falling_past_a_ledge_it_catches_it() {
+        let (stood, rig) = real_stood();
+        let lower = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, 1.9, 1.0);
+        let upper = Ledge { wall_below: 0.15, ..Ledge::wall(Vec3::new(0.0, 0.0, -0.15), Vec3::Z, 4.0, 3.6, 1.35) };
+        let mut hanging = hung_from(&upper, &[]);
+        hanging.advance(1.0);
+        assert!(!hanging.is_braced(), "hanging braced from the slab");
+        let mut falling = let_go(&hanging);
+        falling.reach(true);
+        let (mut into, mut caught) = (0.0f32, None);
+        let mut hips = Vec::new();
+        for _ in 0..240 {
+            falling.advance(DT);
+            let pose = falling.pose(&rig);
+            into = into.max(into_block(&lower, &pose, falling.root(), falling.facing(), &rig));
+            hips.push(falling.hips());
+            if let Some(ledge) = falling.catches(&[lower], &rig) {
+                caught = Some(Hanging::caught(&ledge, &[], falling.hips(), falling.hips_velocity(), &pose, falling.root(), falling.facing(), 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig));
+                break;
+            }
+        }
+        let mut caught = caught.expect("never caught the lower ledge");
+        assert!(caught.is_braced(), "caught a wall's ledge free");
+        let mut held = 0.0f32;
+        for _ in 0..(3.0 / DT) as usize {
+            caught.advance(DT);
+            let pose = caught.pose(&rig);
+            into = into.max(into_block(&lower, &pose, caught.root(), caught.facing(), &rig));
+            let at = forward_kinematics_on(&pose, &rig);
+            let turn = Quat::from_rotation_y(caught.facing());
+            let wrists = caught.wrists();
+            for side in 0..2 {
+                held = held.max((caught.root() + turn * at[ARMS[side].wrist] - wrists[side]).length());
+            }
+            hips.push(caught.hang_hips());
+        }
+        let load = hips.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (DT * DT) + Vec3::Y * GRAVITY).length() / GRAVITY).fold(0.0, f32::max);
+        let settled = hips.windows(2).last().map_or(0.0, |w| (w[1] - w[0]).length() / DT);
+        assert!(held < 1.0e-3, "a caught wrist {held:.4} m off its hook");
+        assert!(into < 1.0e-3, "a joint {into:.4} m into the wall");
+        assert!(load < 6.0, "{load:.2} body weights at the hips catching");
+        assert!(settled < 0.01, "still moving at {settled:.3} m/s");
+    }
+
+    /// The catch is swept over the frame: tested at each frame's end alone,
+    /// at 9 fps (a hitch; live under lavapipe, 6) the shoulders fell past
+    /// the lip's reach between two frames and on to the ground. From the
+    /// slab over a wall, caught at 6-120 fps, held, nothing into the wall.
+    #[test]
+    fn a_ledge_falling_past_is_caught_at_any_frame_rate() {
+        let (stood, rig) = real_stood();
+        let lower = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, 1.9, 1.0);
+        let upper = Ledge { wall_below: 0.15, ..Ledge::wall(Vec3::new(0.0, 0.0, -0.15), Vec3::Z, 4.0, 3.6, 1.35) };
+        for dt in (0..=40).map(|i| 1.0 / (120.0 - 2.85 * i as f32)) {
+            let fps = 1.0 / dt;
+            let mut hanging = hung_from(&upper, &[]);
+            hanging.advance(1.0);
+            let mut falling = let_go(&hanging);
+            falling.reach(true);
+            let (mut into, mut caught) = (0.0f32, None);
+            for _ in 0..(4.0 / dt) as usize {
+                falling.advance(dt);
+                let pose = falling.pose(&rig);
+                into = into.max(into_block(&lower, &pose, falling.root(), falling.facing(), &rig));
+                if let Some(ledge) = falling.catches(&[lower], &rig) {
+                    caught = Some(Hanging::caught(&ledge, &[], falling.hips(), falling.hips_velocity(), &pose, falling.root(), falling.facing(), 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig));
+                    break;
+                }
+            }
+            let mut caught = caught.unwrap_or_else(|| panic!("at {fps:.0} fps: never caught the lower ledge"));
+            for _ in 0..(3.0 / dt) as usize {
+                caught.advance(dt);
+                let pose = caught.pose(&rig);
+                into = into.max(into_block(&lower, &pose, caught.root(), caught.facing(), &rig));
+            }
+            let pose = caught.pose(&rig);
+            let at = forward_kinematics_on(&pose, &rig);
+            let turn = Quat::from_rotation_y(caught.facing());
+            let held = (0..2).map(|side| (caught.root() + turn * at[ARMS[side].wrist] - caught.wrists()[side]).length()).fold(0.0, f32::max);
+            assert!(held < 1.0e-3, "at {fps:.0} fps: a caught wrist {held:.4} m off its hook");
+            assert!(into < 1.0e-3, "at {fps:.0} fps: a joint {into:.4} m into the wall");
         }
     }
 

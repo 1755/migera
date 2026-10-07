@@ -127,7 +127,7 @@ pub(super) fn hand_room(ledge: &Ledge, end: usize, others: &[Ledge]) -> f32 {
 }
 
 /// Whether two ledges are the same edge, either way round.
-fn same(a: &Ledge, b: &Ledge) -> bool {
+pub(super) fn same(a: &Ledge, b: &Ledge) -> bool {
     ((a.a - b.a).length() < 1.0e-3 && (a.b - b.b).length() < 1.0e-3) || ((a.a - b.b).length() < 1.0e-3 && (a.b - b.a).length() < 1.0e-3)
 }
 

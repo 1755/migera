@@ -59,6 +59,13 @@ enum Gait {
     /// Walking off a top at 1.4 m/s and landing: 0.9 m, squatting, or
     /// (`true`) 2.2 m, rolling.
     Drop(bool),
+    /// Lowering itself from standing on a 2.15 m wall's top into a braced
+    /// hang from it.
+    DropDown,
+    /// Letting go of a braced hang from a 3 m wall, falling and landing; or
+    /// (`true`) of a free hang from a 3.6 m slab, reaching to catch the
+    /// 1.9 m wall under it, the catch tested each frame.
+    LetGo(bool),
 }
 
 fn main() {
@@ -96,7 +103,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -133,6 +140,44 @@ fn main() {
                 }
                 _ => Some((hanging, 3.5)),
             }
+        }
+        // Dropping down: from its start to hanging (5 s).
+        Gait::DropDown => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0);
+            let mut hanging = Hanging::hung(&ledge, &[], Vec3::ZERO, 0.0, [None; 2], &stood, &rig);
+            hanging.lower_down(hanging.standing_spot());
+            Some((hanging, 5.0))
+        }
+        _ => None,
+    };
+    // Letting go: the clock is how far from letting go to standing below,
+    // or to the catch.
+    let catching = match gait {
+        Gait::LetGo(catch) => {
+            use migera::character::anim::parkour::{Falling, Hanging, Ledge};
+            let lower = Ledge::wall(Vec3::new(0.0, 0.0, -1.5), Vec3::Z, 3.0, 1.9, 1.0);
+            let ledge = if catch {
+                Ledge { wall_below: 0.15, ..Ledge::wall(Vec3::new(0.0, 0.0, -1.15), Vec3::Z, 3.0, 3.6, 1.35) }
+            } else {
+                Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 3.0, 1.0)
+            };
+            let mut hanging = Hanging::hung(&ledge, &[], Vec3::ZERO, 0.0, [None; 2], &stood, &rig);
+            hanging.advance(1.0);
+            let mut falling = Falling::off(hanging.root(), hanging.facing(), hanging.let_go_velocity(), &hanging.pose(&rig), 0.0, 0.0, &stood, &rig);
+            falling.reach(catch);
+            let seconds = if catch {
+                let (mut probe, mut seconds) = (falling.clone(), 0.0);
+                while probe.catches(&[lower], &rig).is_none() {
+                    assert!(probe.airborne() || seconds == 0.0, "never caught the 1.9 m wall");
+                    probe.advance(DT);
+                    seconds += DT;
+                }
+                seconds
+            } else {
+                falling.ends()[2]
+            };
+            Some((falling, seconds, catch.then_some(lower)))
         }
         _ => None,
     };
@@ -205,6 +250,17 @@ fn main() {
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
+        // Advanced to a frame before the clock, then a frame, so the catch
+        // sweeps a frame as the walker's does.
+        _ if let Some((falling, seconds, lower)) = &catching => {
+            let mut now = falling.clone();
+            now.advance((cycle * seconds - DT).max(0.0));
+            now.advance(DT);
+            if let Some(lower) = lower {
+                std::hint::black_box(now.catches(&[*lower], &rig));
+            }
+            Some((now.pose_led(&rig, &springs), None))
+        }
         _ if let Some(falling) = &falling => {
             let mut now = falling.clone();
             now.advance(cycle * falling.ends()[2]);
@@ -262,6 +318,8 @@ fn main() {
         Gait::HangUp => "   climbing up onto a ledge from a braced hang".to_string(),
         Gait::Shimmy(corner) => format!("   shimmying {}", if corner { "round a corner" } else { "along a ledge" }),
         Gait::Drop(roll) => format!("   walking off a top and {}", if roll { "rolling (2.2 m)" } else { "squatting (0.9 m)" }),
+        Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
+        Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -363,6 +421,9 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("shimmy-corner") => Gait::Shimmy(true),
         Some("drop") => Gait::Drop(false),
         Some("roll") => Gait::Drop(true),
+        Some("drop-down") => Gait::DropDown,
+        Some("let-go") => Gait::LetGo(false),
+        Some("catch") => Gait::LetGo(true),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

@@ -141,6 +141,9 @@ pub struct Walker {
     pub climb: Option<super::ladder::Climb>,
     /// The ledge to act on (`parkour`).
     pub ledge: Option<super::parkour::Ledge>,
+    /// Falling (letting go, or off an edge), reach up and catch a ledge it
+    /// falls past: [`Walker::ledge`] or any of [`Walker::ledges`] it faces.
+    pub catch: bool,
     /// Other ledges about it, which a hang shimmies onto round a corner
     /// where one meets its ledge's end.
     pub ledges: Vec<super::parkour::Ledge>,
@@ -176,6 +179,7 @@ impl Default for Walker {
             ladder: None,
             climb: None,
             ledge: None,
+            catch: false,
             ledges: Vec::new(),
             hang: None,
         }
@@ -611,8 +615,9 @@ type WalkingRig = (
     &'static mut WalkBalance,
     // Down or getting up, the walker stands.
     Option<&'static Ragdoll>,
-    // What it walks round, going to a chair.
-    Option<&'static super::obstacles::RouteObstacles>,
+    // What it walks round, going to a chair; and what it stands on (below a
+    // hang it lets go of, it falls to).
+    (Option<&'static super::obstacles::RouteObstacles>, Option<&'static AnimGround>),
     // The springs a jump's pose is led ahead of (`jump::Jump::pose_led`).
     Option<&'static super::plugin::AnimSprings>,
     // Its fingers, closed round a ladder's rungs and rails.
@@ -622,7 +627,7 @@ type WalkingRig = (
 /// Drives each walker's gait from its clock, in `AnimSet::Target`, so the
 /// phase layer composes on top and the springs smooth the result.
 pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
-    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll, route_obstacles, springs, mut hands) in
+    for (mut walker, mut target, mut phase, mut state, mut arm_ik, mut foot_ik, mut root, correction, mut layer, mut balance, mut walk_balance, ragdoll, (route_obstacles, ground), springs, mut hands) in
         &mut rigs
     {
         let state = &mut *state;
@@ -712,8 +717,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let square = super::parkour::Hanging::square(&ledge, rig.forward());
                 if state.ledge_spot.is_none_or(|(was, _, _)| was != ledge) {
                     let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
-                    let spot = super::parkour::Hanging::spot(&ledge, &walker.ledges, state.locomotion.position, square, &stood, rig);
-                    state.ledge_spot = Some((ledge, spot, false));
+                    // Dropping down, the spot on the top it lowers itself from
+                    // (where a climb up from the hang ends), walked to
+                    // directly: no lead-in in front of a wall.
+                    state.ledge_spot = Some(if walker.hang == Some(super::parkour::hang::HangAsk::DropDown) {
+                        let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
+                        let hung = super::parkour::Hanging::hung(&ledge, &walker.ledges, state.locomotion.position, foot_ik.pelvis_drop, grips, &stood, rig);
+                        (ledge, hung.standing_spot(), true)
+                    } else {
+                        (ledge, super::parkour::Hanging::spot(&ledge, &walker.ledges, state.locomotion.position, square, &stood, rig), false)
+                    });
                     state.approach = approach::Approach::Idle;
                 }
                 let (_, spot, led_in) = state.ledge_spot.expect("a spot");
@@ -1555,6 +1568,15 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 && let Some((ledge, _, _)) = state.ledge_spot
             {
                 let square = super::parkour::Hanging::square(&ledge, rig.forward());
+                // Dropping down: the hang below, lowered into from where it
+                // stands on the top.
+                if walker.hang == Some(super::parkour::hang::HangAsk::DropDown) {
+                    let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
+                    let mut hanging = super::parkour::Hanging::hung(&ledge, &walker.ledges, state.locomotion.position, foot_ik.pelvis_drop, grips, &stood, &rig);
+                    hanging.lower_down(state.locomotion.position);
+                    state.hanging = Some(hanging);
+                    walker.hang = None;
+                } else {
                 match super::parkour::Hanging::grab(&ledge, state.locomotion.position, square, foot_ik.pelvis_drop, &stood, &rig) {
                     Some(mut hanging) => {
                         // Each hand placed so its own fingers hook over the lip.
@@ -1566,8 +1588,27 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                     None => walker.hang = None,
                 }
+                }
                 state.approach = approach::Approach::Idle;
                 state.ledge_spot = None;
+            }
+            // Letting go (`parkour::fall`): hanging, not climbing up nor
+            // mid-step, it falls from where it hangs to the ground below,
+            // pushing off a wall braced, reaching up if asked to catch.
+            if walker.hang == Some(super::parkour::hang::HangAsk::LetGo)
+                && let Some(hanging) = state.hanging.as_ref()
+                && hanging.is_hanging()
+                && !hanging.is_climbing_up()
+                && !hanging.is_shimmying()
+            {
+                let pose = hanging.pose(&rig);
+                let from = hanging.root();
+                let below = ground.and_then(|ground| ground.0.sample(from)).map_or(0.0, |hit| hit.height);
+                let mut falling = super::parkour::Falling::off(from, hanging.facing(), hanging.let_go_velocity(), &pose, below, foot_ik.pelvis_drop, &stood, &rig);
+                falling.reach(walker.catch);
+                state.falling = Some(falling);
+                state.hanging = None;
+                walker.hang = None;
             }
             if let Some(hanging) = state.hanging.as_mut() {
                 // Climbing up is taken once it hangs (asked while it still
@@ -1644,10 +1685,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 foot_ik.gait_swing = None;
                 foot_ik.gait_bearing = None;
                 legs_free = true;
-                // Too far to land: at touchdown the body goes to the ragdoll,
-                // falling on with the velocity it hit with (a walker without
-                // one lands it as it can).
-                if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {
+                // Asked to catch: reaching up, the hands catch a ledge it
+                // falls past (its ledge, or any about it), hanging from it.
+                falling.reach(walker.catch);
+                let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                let caught = walker.catch && falling.airborne() && !ledges.is_empty();
+                if let Some(ledge) = caught.then(|| falling.catches(&ledges, &rig)).flatten() {
+                    let pose = falling.pose(&rig);
+                    let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
+                    let square = super::parkour::Hanging::square(&ledge, rig.forward());
+                    let hanging = super::parkour::Hanging::caught(&ledge, &ledges, falling.hips(), falling.hips_velocity(), &pose, falling.root(), square, foot_ik.pelvis_drop, grips, &stood, &rig);
+                    state.hanging = Some(hanging);
+                    state.falling = None;
+                } else if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {
+                    // Too far to land: at touchdown the body goes to the
+                    // ragdoll, falling on with the velocity it hit with (a
+                    // walker without one lands it as it can).
                     walker.fall_now = true;
                     state.falling = None;
                 } else if falling.is_done() {

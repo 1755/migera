@@ -1191,9 +1191,14 @@ fn steer_the_walker(
         if walker.ledges != hangs.others {
             walker.ledges = hangs.others.clone();
         }
-        // A climb up already asked grabs first: a later grab keeps it.
-        if grab.is_some() && walker.hang != Some(migera::character::anim::parkour::hang::HangAsk::ClimbUp) {
-            walker.hang = grab;
+        walker.catch = hangs.catch;
+        // A climb up or drop down already asked goes first: a later grab
+        // keeps it.
+        {
+            use migera::character::anim::parkour::hang::HangAsk;
+            if grab.is_some() && !matches!(walker.hang, Some(HangAsk::ClimbUp | HangAsk::DropDown)) {
+                walker.hang = grab;
+            }
         }
         {
             use migera::character::anim::parkour::hang::HangAsk;
@@ -1402,6 +1407,15 @@ struct HangSchedule {
     /// Shimmying: from when, which way, for how long (`--shimmy-at
     /// T,left|right,SECONDS`).
     shimmy: Option<(f32, migera::character::anim::parkour::hang::Shimmy, f32)>,
+    /// Letting go of the hang (`--let-go-at T`).
+    let_go_at: Option<f32>,
+    let_go_fired: bool,
+    /// Dropping down into a hang from standing on the ledge's top
+    /// (`--drop-down-at T`).
+    drop_at: Option<f32>,
+    drop_fired: bool,
+    /// Catching a ledge falling past (`--catch`).
+    catch: bool,
 }
 
 impl HangSchedule {
@@ -1441,6 +1455,9 @@ impl HangSchedule {
                 }
                 "--hang-at" => schedule.at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--climb-up-at" => schedule.up_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--let-go-at" => schedule.let_go_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--drop-down-at" => schedule.drop_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--catch" => schedule.catch = true,
                 "--shimmy-at" => {
                     use migera::character::anim::parkour::hang::Shimmy;
                     let given = args.next().unwrap_or_default();
@@ -1467,9 +1484,18 @@ impl HangSchedule {
         self.shimmy.filter(|&(at, _, seconds)| (at..at + seconds).contains(&elapsed)).map(|(_, way, _)| way)
     }
 
-    /// The grab, or the climb up, asked at `elapsed` seconds, each once.
+    /// The grab, climb up, let-go or drop down asked at `elapsed` seconds,
+    /// each once.
     fn due(&mut self, elapsed: f32) -> Option<migera::character::anim::parkour::hang::HangAsk> {
         use migera::character::anim::parkour::hang::HangAsk;
+        if !self.let_go_fired && self.let_go_at.is_some_and(|at| elapsed >= at) {
+            self.let_go_fired = true;
+            return Some(HangAsk::LetGo);
+        }
+        if !self.drop_fired && self.drop_at.is_some_and(|at| elapsed >= at) {
+            self.drop_fired = true;
+            return Some(HangAsk::DropDown);
+        }
         if !self.up_fired && self.up_at.is_some_and(|at| elapsed >= at) {
             self.up_fired = true;
             return Some(HangAsk::ClimbUp);

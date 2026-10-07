@@ -23,6 +23,8 @@
 
 use bevy::math::{Quat, Vec3};
 
+use super::Ledge;
+use crate::character::anim::armik::{solve_arm_toward_from, ArmChain};
 use crate::character::anim::gait::smoothstep;
 use crate::character::anim::jump::{GRAVITY, RECOVERY_ACCELERATION};
 use crate::character::anim::rig::{accumulate_world_rotations, delta_after_world_turn, forward_kinematics_on, BoneSet, LocalPose, RigGeometry};
@@ -55,6 +57,33 @@ const FLYING_LEAN: f32 = 0.05;
 /// landing (forward): swing and elbow bend, radians (`jump::upper`).
 const ARMS_FLYING: (f32, f32) = (0.9, 0.5);
 const ARMS_LANDING: (f32, f32) = (0.9, 0.7);
+/// Reaching up to catch a ledge falling past, the arms up overhead (swing
+/// and elbow bend, radians, `jump::upper`).
+const ARMS_REACHING: (f32, f32) = (2.6, 0.15);
+/// The trunk and arms go from where they were as it left to the flight's
+/// over this long, seconds.
+const ARMS_FREE: f32 = 0.35;
+/// The trunk's and arms' bones: let go from a hang, the trunk leant toward
+/// the wall would snap upright.
+const FREED_BONES: [Bone; 14] = [
+    Bone::Hips,
+    Bone::Spine,
+    Bone::Spine1,
+    Bone::Spine2,
+    Bone::Neck,
+    Bone::Head,
+    Bone::LeftShoulder,
+    Bone::LeftArm,
+    Bone::LeftForeArm,
+    Bone::LeftHand,
+    Bone::RightShoulder,
+    Bone::RightArm,
+    Bone::RightForeArm,
+    Bone::RightHand,
+];
+/// Falling past a ledge, the hands catch it once its lip comes within this
+/// share of the arm's length of the shoulders' middle, above them.
+const CATCH_REACH: f32 = 0.9;
 /// The quickest a landing rises back to standing, seconds.
 const QUICKEST_UP: f32 = 0.5;
 /// Dropping further than this, metres, it rolls: the guidance is to roll
@@ -65,6 +94,26 @@ pub const ROLL_DROP: f32 = 1.7;
 /// the ragdoll at touchdown (no data; past where the landings measured,
 /// 2.7 m, their loads climb steeply).
 pub const FATAL_DROP: f32 = 4.0;
+/// Moving on fast, it rolls from lower: a squat landing brakes the forward
+/// speed over its own time, and harder than this, m/s², it rolls (from
+/// 1.0 m at 3 m/s, 8 m/s², the feet planted 0.57 m ahead); but not from
+/// lower than this, metres (the lowest drop the landings measured). No
+/// data: set by eye.
+const MOST_BRAKING: f32 = 6.0;
+const ROLL_LOW: f32 = 0.75;
+/// Dropping further than this, metres, and not so far it is fatal, it lands
+/// hurt: deeper (the knees to this, degrees), down onto its hands, held
+/// down this long, seconds, and up this much slower. No data: past the
+/// measured 2.7 m, set by eye.
+pub const HURT_DROP: f32 = 3.0;
+const HURT_KNEE: f32 = 140.0;
+const HURT_HOLD: f32 = 0.8;
+const HURT_SLOWER: f32 = 2.0;
+/// Hurt, the trunk leans this much a metre of depth, radians: far enough
+/// over for the hands to reach the ground under the shoulders.
+const HURT_LEAN_PER_DEPTH: f32 = 2.6;
+/// A hand planted on the ground: its wrist this high, metres.
+const WRIST_ON_GROUND: f32 = 0.04;
 /// Rolling: the touchdown taken by the squat landing's first part (the feet
 /// planted, the knees giving), seconds; then tucking, the turn rising to the
 /// roll's, seconds; the turn's easing off as it comes up, seconds; and
@@ -138,16 +187,33 @@ struct Roll {
     #[cfg_attr(not(test), allow(dead_code))]
     end_root: Vec3,
     rests: Vec<f32>,
+    /// Tucking, how far the eased height is lifted, every `REST_STEP`.
+    lifts: Vec<f32>,
+}
+
+/// `samples` (every `REST_STEP` from the end of the squat's give) at `tau`
+/// after touchdown, linearly between them; 0 if there are none.
+fn sampled(samples: &[f32], tau: f32) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let at = ((tau - ROLL_ABSORB) / REST_STEP).max(0.0);
+    let last = samples.len() - 1;
+    let k = (at.floor() as usize).min(last);
+    let next = (k + 1).min(last);
+    let s = (at - k as f32).clamp(0.0, 1.0);
+    samples[k] + (samples[next] - samples[k]) * s
 }
 
 impl Roll {
     /// The resting height `tau` after touchdown.
     fn rest_at(&self, tau: f32) -> f32 {
-        let at = ((tau - ROLL_ABSORB) / REST_STEP).max(0.0);
-        let k = (at.floor() as usize).min(self.rests.len().saturating_sub(1));
-        let next = (k + 1).min(self.rests.len().saturating_sub(1));
-        let s = (at - k as f32).clamp(0.0, 1.0);
-        self.rests[k] + (self.rests[next] - self.rests[k]) * s
+        sampled(&self.rests, tau)
+    }
+
+    /// Tucking, the lift on the eased height `tau` after touchdown.
+    fn lift_at(&self, tau: f32) -> f32 {
+        sampled(&self.lifts, tau)
     }
 }
 
@@ -170,12 +236,18 @@ pub struct Falling {
     turn: Quat,
     /// The foot IK's pelvis drop standing.
     drop: f32,
-    /// Seconds since it left.
+    /// Seconds since it left; and before the last [`Self::advance`], the
+    /// frame a catch is swept over.
     t: f32,
+    last_t: f32,
     /// The hips and their velocity as it left; each ankle then (the world).
     from_hips: Vec3,
     velocity: Vec3,
     from_ankles: [Vec3; 2],
+    /// The pose as it left, its arms let go from; and whether it reaches up
+    /// to catch a ledge falling past ([`Self::reach`]).
+    from_pose: LocalPose,
+    reaching: bool,
     /// The ground it lands on.
     ground: f32,
     /// When it touches down, the bottom and standing again, seconds.
@@ -190,8 +262,9 @@ pub struct Falling {
     stand_height: f32,
     /// Each ankle planted on the ground (the world).
     feet: [Vec3; 2],
-    /// Rolling, not squatting; the rig it was measured on.
+    /// Rolling, not squatting; landing hurt; the rig it was measured on.
     roll: Option<Roll>,
+    hurt: bool,
     rig: std::sync::Arc<RigGeometry>,
 }
 
@@ -222,9 +295,12 @@ impl Falling {
             turn,
             drop,
             t: 0.0,
+            last_t: 0.0,
             from_hips,
             velocity,
             from_ankles,
+            from_pose: *pose,
+            reaching: false,
             ground,
             ends: [0.0; 3],
             touch_speed: 0.0,
@@ -234,13 +310,72 @@ impl Falling {
             stand_height: 0.0,
             feet: [Vec3::ZERO; 2],
             roll: None,
+            hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
         };
         falling.plan();
-        if falling.dropped() > ROLL_DROP {
+        // Rolling past standing height, or moving on too fast to brake in a
+        // squat; not hurt.
+        let drop = falling.dropped();
+        let braking = flat_of(velocity).length() / landing_for(drop).0;
+        if !falling.hurt && (drop > ROLL_DROP || (drop > ROLL_LOW && braking > MOST_BRAKING)) {
             falling.plan_roll(rig);
         }
         falling
+    }
+
+    /// Whether it lands hurt ([`HURT_DROP`]): down onto its hands, held
+    /// down, slow up.
+    pub fn is_hurt(&self) -> bool {
+        self.hurt
+    }
+
+    /// Reaching up, falling, to catch a ledge it falls past (or not).
+    pub fn reach(&mut self, up: bool) {
+        self.reaching = up;
+    }
+
+    /// The hips' velocity now (the world).
+    pub fn hips_velocity(&self) -> Vec3 {
+        let h = 1.0e-3;
+        let (before, after) = ((self.t - h).max(0.0), self.t + h);
+        (self.hips_at(after) - self.hips_at(before)) / (after - before)
+    }
+
+    /// Falling, the ledge among `ledges` it catches now, if any: one it
+    /// faces (square to within 45°), its hips out in front of the face and
+    /// along it, its lip within the arms' reach of the shoulders and above
+    /// them, falling. Reaching up ([`Self::reach`]), the hands meet it.
+    ///
+    /// Swept over the last frame: the shoulders where they passed the lip's
+    /// height (the frame's start, if already under it). Tested at the
+    /// frame's end alone, a frame of a tenth of a second (a hitch) fell
+    /// past the 0.36 m the lip is in reach and on to the ground.
+    pub fn catches(&self, ledges: &[Ledge], rig: &RigGeometry) -> Option<Ledge> {
+        if !self.airborne() || self.hips_velocity().y >= 0.0 {
+            return None;
+        }
+        let pose = self.pose(rig);
+        let at = forward_kinematics_on(&pose, rig);
+        let root = self.root();
+        let shoulders = root + self.turn * (0.5 * (at[ArmChain::LEFT.shoulder] + at[ArmChain::RIGHT.shoulder]));
+        let arm = (at[ArmChain::LEFT.elbow] - at[ArmChain::LEFT.shoulder]).length() + (at[ArmChain::LEFT.wrist] - at[ArmChain::LEFT.elbow]).length();
+        let hips = root + self.turn * at[Bone::Hips];
+        // The frame's start, the body moved as the hips did.
+        let before = shoulders + self.hips_at(self.last_t) - hips;
+        let forward = self.turn * rig.forward();
+        ledges.iter().copied().find(|ledge| {
+            let height = ledge.height();
+            if shoulders.y > height {
+                return false;
+            }
+            let passing = if before.y > height { before.lerp(shoulders, (before.y - height) / (before.y - shoulders.y)) } else { before };
+            let lip = ledge.nearest(passing, 0.3);
+            let out = ledge.out_of(hips);
+            forward.dot(-ledge.out) > std::f32::consts::FRAC_1_SQRT_2
+                && (0.05..0.8).contains(&out)
+                && (lip - passing).length() <= CATCH_REACH * arm
+        })
     }
 
     /// How far it drops, standing height to standing height, metres.
@@ -309,7 +444,7 @@ impl Falling {
         let end_root = Vec3::new(rolled.x, self.ground, rolled.z) + way * (0.5 * speed * ROLL_UP) - flat_of(self.turn * centroid_of(&stood, rig));
         let end = end_root + self.turn * centroid_of(&stood, rig);
         self.ends = [flight, flight + rolled_at, flight + rolled_at + ROLL_UP];
-        self.roll = Some(Roll { way, axis, speed, spin, tuck, radius, squat, stood, from, from_velocity, tucked, rolled, end, end_root, rests: Vec::new() });
+        self.roll = Some(Roll { way, axis, speed, spin, tuck, radius, squat, stood, from, from_velocity, tucked, rolled, end, end_root, rests: Vec::new(), lifts: Vec::new() });
         self.plan_rest(rig);
     }
 
@@ -329,7 +464,10 @@ impl Falling {
         self.stand_height = self.body.hips.y - self.drop;
         // The landing's time and the knees' deepest, from how far it drops,
         // standing height to standing height.
-        let (land, flexion) = landing_for(self.from_hips.y - self.drop_hips() - self.ground);
+        let drop = self.from_hips.y - self.drop_hips() - self.ground;
+        self.hurt = drop > HURT_DROP && drop <= FATAL_DROP;
+        let (land, flexion) = landing_for(drop);
+        let flexion = if self.hurt { HURT_KNEE } else { flexion };
         // Moving on, the feet plant ahead of the hips by half the braking
         // distance, the leg leant toward them: its height that much less
         // (taken upright, a planted ankle at 1.4 m/s was 3.5 mm short).
@@ -354,6 +492,7 @@ impl Falling {
         self.braking = (2.0 * v * land / self.depth - 2.0).max(0.0);
         let rise = (self.stand_height + self.ground) - (self.ground + self.touch_height - self.depth);
         let up_time = (6.0 * rise.max(0.0) / RECOVERY_ACCELERATION).sqrt().max(QUICKEST_UP);
+        let up_time = if self.hurt { HURT_HOLD + HURT_SLOWER * up_time } else { up_time };
         self.ends = [flight, flight + land, flight + land + up_time];
         // The feet planted under where the hips come to rest: braking the
         // forward speed over the landing goes on half its time's worth.
@@ -371,6 +510,7 @@ impl Falling {
 
     /// Moves it on `dt` seconds.
     pub fn advance(&mut self, dt: f32) {
+        self.last_t = self.t;
         self.t = (self.t + dt).min(self.ends[2]);
     }
 
@@ -417,12 +557,7 @@ impl Falling {
         // On the ground, at the planned resting height, eased in from the
         // squat's own over the tucking.
         let resting = self.ground + roll.rest_at(tau);
-        let height = if tucking < rise {
-            let squat = squatting();
-            squat.root().y + (resting - squat.root().y) * smoothstep(tucking / rise)
-        } else {
-            resting
-        };
+        let height = if tucking < rise { self.eased_height(roll, tau) + roll.lift_at(tau) } else { resting };
         let root = flat_of(anchor - self.turn * centroid_of(&pose, rig)) + Vec3::Y * height;
         (pose, root)
     }
@@ -487,6 +622,46 @@ impl Falling {
         if let Some(roll) = self.roll.as_mut() {
             roll.rests = rests;
         }
+        // Tucking, the height eases from the squat's own to the resting one,
+        // and may pass under what the joints need (a joint went 1 cm under
+        // rolling off a 1 m drop at a run; held up to it frame by frame, the
+        // hips jerked at 67 m/s²): what it falls short, planned the same way,
+        // ramped in from nothing as the tucking starts.
+        let Some(roll) = self.roll.as_ref() else { return };
+        let tucking = (ROLL_TUCK / REST_STEP).ceil() as usize + 1;
+        let short: Vec<f32> = (0..tucking)
+            .map(|k| {
+                let tau = ROLL_ABSORB + k as f32 * REST_STEP;
+                let need = standing - lowest(&self.rolled_pose(roll, tau, rig));
+                (need - (self.eased_height(roll, tau) - self.ground)).max(0.0)
+            })
+            .collect();
+        let window = |k: usize| k.saturating_sub(reach)..(k + reach + 1).min(tucking);
+        let highest: Vec<f32> = (0..tucking).map(|k| short[window(k)].iter().copied().fold(0.0, f32::max)).collect();
+        let lifts: Vec<f32> = (0..tucking)
+            .map(|k| {
+                let span = window(k);
+                // In from nothing as the tucking starts, out to nothing as
+                // it ends (where the resting height takes over; left on, the
+                // hips jumped there at 125 m/s²).
+                let at = k as f32 * REST_STEP;
+                let ramp = smoothstep((at / REST_WINDOW).clamp(0.0, 1.0)) * (1.0 - smoothstep(((at - (ROLL_TUCK - REST_WINDOW)) / REST_WINDOW).clamp(0.0, 1.0)));
+                ramp * highest[span.clone()].iter().sum::<f32>() / span.len() as f32
+            })
+            .collect();
+        if let Some(roll) = self.roll.as_mut() {
+            roll.lifts = lifts;
+        }
+    }
+
+    /// Tucking, the height eased from the squat's own root to the planned
+    /// resting one, `tau` after touchdown.
+    fn eased_height(&self, roll: &Roll, tau: f32) -> f32 {
+        let mut squat = (*roll.squat).clone();
+        squat.t = self.ends[0] + tau;
+        let squat = squat.root().y;
+        let resting = self.ground + roll.rest_at(tau);
+        squat + (resting - squat) * smoothstep(((tau - ROLL_ABSORB) / ROLL_TUCK).clamp(0.0, 1.0))
     }
 
     /// Whether it stands again.
@@ -539,7 +714,9 @@ impl Falling {
             return touch + flat * (u - 0.5 * u * u / h) - Vec3::Y * down;
         }
         let bottom = Vec3::new(touch.x, touch.y - self.depth, touch.z) + flat * (0.5 * land);
-        let up = smoothstep(((t - landed) / (self.ends[2] - landed)).clamp(0.0, 1.0));
+        // Hurt, it stays down a while first.
+        let held = if self.hurt { HURT_HOLD } else { 0.0 };
+        let up = smoothstep(((t - landed - held) / (self.ends[2] - landed - held)).clamp(0.0, 1.0));
         let standing = self.ground + self.stand_height;
         Vec3::new(bottom.x, bottom.y + (standing - bottom.y) * up, bottom.z)
     }
@@ -577,12 +754,22 @@ impl Falling {
             let depth = self.depth * squat;
             let recovering = self.phase() == FallPhase::Recover;
             let arms = if recovering { 1.0 - smoothstep(((self.t - self.ends[1]) / (self.ends[2] - self.ends[1])).clamp(0.0, 1.0)) } else { 1.0 };
-            (LEAN_PER_DEPTH * depth, (ARMS_LANDING.0 * arms, ARMS_LANDING.1 * arms))
+            let per_depth = if self.hurt { HURT_LEAN_PER_DEPTH } else { LEAN_PER_DEPTH };
+            (per_depth * depth, (ARMS_LANDING.0 * arms, ARMS_LANDING.1 * arms))
         } else {
             let into = smoothstep((self.t / (LEGS_REACH * flight).max(0.15)).clamp(0.0, 1.0));
-            (FLYING_LEAN * into, (ARMS_FLYING.0 * into, ARMS_FLYING.1 * into))
+            let flying = if self.reaching { ARMS_REACHING } else { ARMS_FLYING };
+            (FLYING_LEAN * into, (flying.0 * into, flying.1 * into))
         };
         let mut pose = crate::character::anim::jump::upper(&self.body.stood, rig, lean, arms);
+        // The trunk and arms from where they were as it left (holding a
+        // ledge, swinging in a walk), not snapped to the flight's.
+        let freed = smoothstep((self.t / ARMS_FREE).clamp(0.0, 1.0));
+        if freed < 1.0 {
+            for bone in FREED_BONES {
+                pose.rotations[bone] = self.from_pose.rotations[bone].slerp(pose.rotations[bone], freed);
+            }
+        }
         // The hips in the pose's frame: down from standing as far as they
         // are below it (the root rides the hips' height above the ground
         // only once standing again).
@@ -600,12 +787,45 @@ impl Falling {
                 hips + from.lerp(to, smoothstep((self.t / flight).clamp(0.0, 1.0)))
             };
             place_ankle(&mut pose, rig, bone, back * (ankle - root) - pose_hips);
-            // The feet level, turned with the body.
+            // The feet level, turned with the body: from how they were as it
+            // left (set level at once, a braced foot's toes, pitched up on the
+            // wall, jumped 17 cm the frame it let go).
             let now = accumulate_world_rotations(&pose, rig)[bone];
-            let wanted = accumulate_world_rotations(&self.body.stood, rig)[bone];
+            let level = accumulate_world_rotations(&self.body.stood, rig)[bone];
+            let left = accumulate_world_rotations(&self.from_pose, rig)[bone];
+            let wanted = left.slerp(level, smoothstep((self.t / ARMS_FREE).clamp(0.0, 1.0)));
             pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, wanted * now.inverse());
         }
+        // Hurt, down onto its hands: each planted on the ground under its
+        // shoulder as it goes down, held there, lifted as it gets up.
+        let planted = self.hands_down();
+        if planted > 0.0 {
+            let free = pose;
+            let at = forward_kinematics_on(&pose, rig);
+            for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
+                let shoulder = root + self.turn * at[chain.shoulder];
+                let hand = Vec3::new(shoulder.x, self.ground + WRIST_ON_GROUND, shoulder.z);
+                let pole = (rig.forward() * -0.5 + Vec3::Y * 0.2).normalize();
+                solve_arm_toward_from(&mut pose, &at, chain, back * (hand - root), pole, rig);
+                for bone in [chain.shoulder, chain.elbow, chain.wrist] {
+                    pose.rotations[bone] = free.rotations[bone].slerp(pose.rotations[bone], planted);
+                }
+            }
+        }
         pose
+    }
+
+    /// Hurt, how far the hands are down on the ground (0-1): going down over
+    /// the second half of the landing, held, lifting over the first half of
+    /// getting up.
+    pub fn hands_down(&self) -> f32 {
+        if !self.hurt || self.roll.is_some() {
+            return 0.0;
+        }
+        let [flight, landed, stood] = self.ends;
+        let lift = landed + HURT_HOLD;
+        let ease = |t: f32, (a, b): (f32, f32)| smoothstep(((t - a) / (b - a)).clamp(0.0, 1.0));
+        ease(self.t, (0.5 * (flight + landed), landed)) * (1.0 - ease(self.t, (lift, lift + 0.5 * (stood - lift))))
     }
 
     /// The hips in the world at `t`.
@@ -868,6 +1088,72 @@ mod tests {
         assert!(off(4.5).is_fatal(), "4.5 m landed");
         assert!(!off(3.5).is_fatal(), "3.5 m not landed");
         assert!(!off(1.2).rolls() && off(2.0).rolls(), "rolls from the wrong height");
+    }
+
+    /// Running on fast off a low drop it rolls, as from a high one; walking
+    /// it squats; off a drop lower than any landing measured it squats
+    /// whatever its speed.
+    #[test]
+    fn a_fast_run_off_a_low_drop_is_rolled() {
+        let (stood, rig) = real_stood();
+        let off = |height: f32, speed: f32| Falling::off(Vec3::new(0.0, height, 0.0), 0.0, rig.forward() * speed, &stood, 0.0, 0.0, &stood, &rig);
+        assert!(off(1.0, 3.5).rolls(), "1.0 m at 3.5 m/s squatted");
+        assert!(!off(1.0, 1.4).rolls(), "1.0 m walking rolled");
+        assert!(!off(0.5, 4.0).rolls(), "0.5 m rolled");
+        // And rolls well: nothing below the ground, standing at the end.
+        let mut falling = off(1.0, 3.5);
+        let mut below = 0.0f32;
+        loop {
+            let at = forward_kinematics_on(&falling.pose(&rig), &rig);
+            let root = falling.root();
+            below = below.max(at.iter().map(|(_, p)| -(root + *p).y).fold(0.0, f32::max));
+            if falling.is_done() {
+                break;
+            }
+            falling.advance(DT);
+        }
+        assert!(below < 1.0e-3, "a joint {below:.4} m below the ground");
+    }
+
+    /// From 3.5 m, past the measured drops and short of fatal, it lands
+    /// hurt: down onto its hands (the wrists on the ground under the
+    /// shoulders), the knees bent deep, held down, then up slowly to
+    /// standing; nothing below the ground.
+    #[test]
+    fn a_hurt_landing_goes_down_onto_the_hands() {
+        let (stood, rig) = real_stood();
+        let mut falling = Falling::off(Vec3::new(0.0, 3.5, 0.0), 0.0, Vec3::ZERO, &stood, 0.0, 0.0, &stood, &rig);
+        assert!(falling.is_hurt() && !falling.rolls() && !falling.is_fatal(), "3.5 m not landed hurt");
+        let (mut below, mut down_for, mut wrists_off, mut deepest_knee) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let ended;
+        loop {
+            let pose = falling.pose(&rig);
+            let at = forward_kinematics_on(&pose, &rig);
+            let root = falling.root();
+            below = below.max(at.iter().map(|(_, p)| -(root + *p).y).fold(0.0, f32::max));
+            if falling.hands_down() >= 1.0 {
+                down_for += DT;
+                for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
+                    wrists_off = wrists_off.max(((root + at[chain.wrist]).y - WRIST_ON_GROUND).abs());
+                }
+            }
+            for &(socket, knee, ankle, _) in &LEGS {
+                let (thigh, shin) = ((at[knee] - at[socket]).normalize(), (at[ankle] - at[knee]).normalize());
+                deepest_knee = deepest_knee.max(thigh.dot(shin).clamp(-1.0, 1.0).acos().to_degrees());
+            }
+            if falling.is_done() {
+                ended = Some(at);
+                break;
+            }
+            falling.advance(DT);
+        }
+        let standing = forward_kinematics_on(&stood, &rig);
+        let from_standing = Bone::ALL.iter().map(|&bone| (ended.expect("ended")[bone] - standing[bone]).length()).fold(0.0, f32::max);
+        assert!(below < 1.0e-3, "a joint {below:.4} m below the ground");
+        assert!(wrists_off < 0.01, "a planted wrist {wrists_off:.4} m off the ground");
+        assert!(down_for > 0.75 * HURT_HOLD, "on its hands only {down_for:.2} s");
+        assert!(deepest_knee > HURT_KNEE - 12.0, "the knees at most {deepest_knee:.0}°");
+        assert!(from_standing < 0.01, "{from_standing:.4} m from standing at the end");
     }
 
     /// Dropping from 0.9 and 1.6 m (a measured drop, and between them),

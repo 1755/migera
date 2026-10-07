@@ -99,6 +99,13 @@ const FOOT_LIFT: (f32, f32) = (0.25, 0.7);
 /// The legs go from where the hang had them to the climb's over this long,
 /// seconds.
 const SETTLE_IN: f32 = 0.25;
+/// Lowering down into a hang plays the climb up backward this much slower:
+/// letting the body down (eccentric) slower than pulling it up (no data:
+/// set by eye).
+pub const LOWER_RATE: f32 = 0.75;
+/// Lowering down, the walker's miss of its standing spot is eased out over
+/// this long, seconds.
+const MISS_EASED: f32 = 0.6;
 /// Asked mid-swing, the climb starts once the hips move slower than this,
 /// m/s: begun at 1.05 m/s toward the wall, the pull had to turn the swing
 /// round at 6.7 m/s².
@@ -202,9 +209,66 @@ pub(super) struct ClimbUp {
     end_root: Vec3,
     /// The side whose hand turns over and foot steps on first.
     lead: usize,
+    /// Played backward, lowering down from the top into the hang
+    /// ([`Hanging::lower_down`]); and how far the walker stood from the
+    /// standing spot as it began, eased out over the first of it.
+    lowering: bool,
+    missed: Vec3,
+}
+
+impl ClimbUp {
+    /// The walker's miss of the standing spot, left now: all of it as it
+    /// starts lowering, none after `MISS_EASED` seconds.
+    fn shift(&self) -> Vec3 {
+        if !self.lowering {
+            return Vec3::ZERO;
+        }
+        let lowered = (self.ends[4] - self.t) / LOWER_RATE;
+        self.missed * (1.0 - smoothstep((lowered / MISS_EASED).clamp(0.0, 1.0)))
+    }
+
+    /// Moves it on `dt` seconds: forward climbing, backward (slower)
+    /// lowering.
+    pub(super) fn advance(&mut self, dt: f32) {
+        if self.lowering {
+            self.t = (self.t - dt * LOWER_RATE).max(0.0);
+        } else {
+            self.t += dt;
+        }
+    }
+
+    /// Whether it has lowered itself into the hang.
+    pub(super) fn lowered(&self) -> bool {
+        self.lowering && self.t <= 0.0
+    }
 }
 
 impl Hanging {
+    /// Where a walker stands on the top to lower itself down into this hang
+    /// (as a climb up from it would end): its root, facing as the hang does
+    /// (in, its back to the drop).
+    pub fn standing_spot(&self) -> Vec3 {
+        let rig = self.rig.clone();
+        self.plan_up(&rig).end_root
+    }
+
+    /// Lowers itself down into this hang from standing on the top at
+    /// `from` (near its standing spot): the climb up played backward,
+    /// slower ([`LOWER_RATE`]), the miss of the spot eased out.
+    pub fn lower_down(&mut self, from: Vec3) {
+        let rig = self.rig.clone();
+        let mut up = self.plan_up(&rig);
+        up.lowering = true;
+        up.t = up.ends[4];
+        up.missed = from - up.end_root;
+        self.up = Some(up);
+    }
+
+    /// Whether it is lowering itself down into the hang.
+    pub fn is_lowering(&self) -> bool {
+        self.up.as_ref().is_some_and(|up| up.lowering)
+    }
+
     /// Asks it to climb up onto the top: `false` (still hanging) if it is
     /// not hanging yet, or the top has no room to stand. Swinging, it starts
     /// once the swing has slowed (`START_SPEED`), at the end of a swing.
@@ -232,7 +296,7 @@ impl Hanging {
 
     /// Whether it has climbed up and stands on the top.
     pub fn is_done(&self) -> bool {
-        self.up.as_ref().is_some_and(|up| up.t >= up.ends[4])
+        self.up.as_ref().is_some_and(|up| !up.lowering && up.t >= up.ends[4])
     }
 
     /// The trunk's world turn leant `lean` toward the wall.
@@ -241,7 +305,7 @@ impl Hanging {
     }
 
     /// The hips' velocity hanging now, in the world.
-    fn hang_velocity(&self) -> Vec3 {
+    pub(super) fn hang_velocity(&self) -> Vec3 {
         let s = &self.swing;
         let (sin, cos) = s.theta.sin_cos();
         let (out, along) = self.face();
@@ -335,13 +399,13 @@ impl Hanging {
         });
 
         let hooks = self.wrists();
-        ClimbUp { t: 0.0, ends, hips, lean, from_ankles, from_attitudes, holds, hooks, presses, press_turns, spots, end_root, lead: 0 }
+        ClimbUp { t: 0.0, ends, hips, lean, from_ankles, from_attitudes, holds, hooks, presses, press_turns, spots, end_root, lead: 0, lowering: false, missed: Vec3::ZERO }
     }
 
     /// The root, in the world, climbing up: under the hips as the standing
     /// pose has them, less the foot IK's drop as it stands.
     pub(super) fn up_root(&self, up: &ClimbUp) -> Vec3 {
-        up.hips.at(up.t) - self.turn * self.body.hips + Vec3::Y * self.up_sink(up)
+        up.hips.at(up.t) - self.turn * self.body.hips + Vec3::Y * self.up_sink(up) + up.shift()
     }
 
     /// How far the hips are below standing as it stands up: the foot IK's
@@ -362,7 +426,11 @@ impl Hanging {
         for side in 0..2 {
             let window = if side == up.lead { (pulled, pulled + 0.65 * span) } else { (pulled + 0.35 * span, turned) };
             let s = across(up.t, window);
-            pressing[side] = s;
+            // The elbow turns from the hang's way to the press's over the
+            // second half of the hand's move, the arm opening out: over the
+            // whole of it, folded tight with the hand just in front of the
+            // shoulder, the elbow swept 20 cm in four frames.
+            pressing[side] = across(up.t, (0.5 * (window.0 + window.1), window.1));
             if s <= 0.0 {
                 continue;
             }
@@ -461,7 +529,7 @@ impl Hanging {
         let hips = self.body.hips - Vec3::Y * sink;
         for (side, &leg) in LEGS.iter().enumerate() {
             let (ankle, attitude, knee) = self.foot_up(up, side);
-            place_ankle(&mut pose, rig, leg.2, back * (ankle - root) - hips);
+            place_ankle(&mut pose, rig, leg.2, back * (ankle + up.shift() - root) - hips);
             // Against the wall the knee turned out to the side, not into it;
             // coming over the edge, up over it.
             if knee.length_squared() > 1.0e-8 {
@@ -471,6 +539,7 @@ impl Hanging {
             pose.rotations[leg.2] = delta_after_world_turn(&pose, rig, leg.2, (back * attitude) * now.inverse());
         }
         let (wrists, turns, pressing, holding) = self.hands_up(up);
+        let wrists = wrists.map(|wrist| wrist + up.shift());
         let free = pose;
         self.arms_to(&mut pose, rig, root, wrists, turns, pressing, 1.0);
         if holding < 1.0 {
@@ -716,6 +785,56 @@ mod tests {
         let (now, then) = (forward_kinematics_on(&pose, &rig), forward_kinematics_on(&stood, &rig));
         for bone in [Bone::Head, Bone::LeftHand, Bone::RightHand, Bone::LeftShoulder, Bone::RightShoulder] {
             assert!((now[bone] - then[bone]).length() < 0.01, "{bone:?} {:.4} m from standing", (now[bone] - then[bone]).length());
+        }
+    }
+
+    /// Standing on the top 7 cm off its spot, it lowers itself down into
+    /// the hang, braced and free: it starts in the standing pose where it
+    /// stands, nothing goes into the block, no joint moves faster than a
+    /// limb swings, and it ends hanging, its hands hooked over the lip.
+    #[test]
+    fn it_lowers_itself_down_into_the_hang() {
+        let (stood, rig) = real_stood();
+        for below in [2.15, 0.15] {
+            let ledge = wall(2.15, below);
+            let name = format!("{below} m of wall");
+            let mut hanging = Hanging::hung(&ledge, &[], Vec3::new(0.2, 0.0, 1.0), 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig);
+            let from = hanging.standing_spot() + Vec3::new(0.06, 0.0, -0.04);
+            hanging.lower_down(from);
+            let world = |hanging: &Hanging| {
+                let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+                let turn = Quat::from_rotation_y(hanging.facing());
+                BoneSet::from_fn(|bone| hanging.root() + turn * at[bone])
+            };
+            let standing = forward_kinematics_on(&stood, &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            let first = world(&hanging);
+            let from_standing = Bone::ALL.iter().map(|&bone| (first[bone] - (from + turn * standing[bone])).length()).fold(0.0, f32::max);
+            let (mut into, mut fastest, mut last) = (0.0f32, 0.0f32, first);
+            let mut seconds = 0.0;
+            while hanging.is_lowering() {
+                hanging.advance(DT);
+                seconds += DT;
+                let now = world(&hanging);
+                for bone in Bone::ALL {
+                    into = into.max(inside(&ledge, now[bone]));
+                    fastest = fastest.max((now[bone] - last[bone]).length() / DT);
+                }
+                last = now;
+                assert!(seconds < 10.0, "{name}: never hanging");
+            }
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            let wrists = hanging.wrists();
+            let held = (0..2).map(|side| (hanging.root() + turn * at[ARMS[side].wrist] - wrists[side]).length()).fold(0.0, f32::max);
+            assert!(from_standing < 0.01, "{name}: started {from_standing:.4} m from standing where it stood");
+            assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the block");
+            // A hand going over the lip in a quarter second swings its elbow
+            // round the folded arm at up to 4.9 m/s; an elbow flipping round
+            // it went 17 cm in a frame (10 m/s).
+            assert!(fastest < 5.5, "{name}: a joint moved at {fastest:.2} m/s");
+            assert!(hanging.is_hanging() && !hanging.is_climbing_up(), "{name}: not hanging at the end");
+            assert!(held < 1.0e-3, "{name}: a wrist {held:.4} m off its hook");
         }
     }
 

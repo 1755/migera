@@ -311,7 +311,11 @@ its API, its tests, and when it is done.
   note](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md)):
   falling off an edge, the squat landing, the roll past 1.7 m, the ragdoll
   past 4 m. The airborne body (0c) is `parkour::Falling`'s flight.
-- Steps 5-10: not started.
+- **Step 5**, drop to a hang, let go, catch: built 2026-10-08 ([the
+  note](./a-hang-is-dropped-into-let-go-of-and-caught-from-a-fall.md)):
+  the climb-up run backward, slower; letting go into `Falling`; catching
+  from any fall, swept over the frame. A missed `Jump` does not catch yet.
+- Steps 6-10: not started.
 
 ## Related
 

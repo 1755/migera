@@ -41,6 +41,53 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 5: dropping down to a hang, letting go, catching from a fall
+
+Standing on a top, asked `HangAsk::DropDown`, the walker walks to where a
+climb up would end. It turns its back to the edge and lowers itself into the
+hang: the climb-up's plan run backward at 0.75 of its rate, with the miss of
+the spot eased out over 0.6 s. Hanging, asked `HangAsk::LetGo`, it falls
+(`parkour::Falling`, step 4) and pushes off the wall with its feet if
+braced. With `Walker::catch`, a fall reaches up and catches a ledge it falls
+past (`Falling::catches`, `Hanging::caught`). Note: [a hang is dropped
+into, let go of, and caught from a
+fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-of-and-caught-from-a-fall.md).
+
+- **Fixed on the way:**
+  - lowering, an elbow flipped at 10 m/s, because the press's pole lay
+    along the arm (now 4.9 m/s);
+  - letting go, a toe jumped 17 cm, and braced, a hand landed 13 cm into
+    the wall;
+  - catching, a knee went 6.8 cm into the wall;
+  - the catch was tested only at the frame's end, so at 9 fps it fell past
+    the ledge. It is now swept over the frame, and a test that failed before
+    the fix catches at 41 rates from 6 to 120 fps.
+- **Headless:**
+  - dropping down (2.15 m, braced and free, 7 cm off the spot) starts
+    within 1 cm of standing, goes nothing into the block and ends hanging;
+  - letting go of a 3 m hang jumps no joint more than 3 cm, then lands;
+  - catching the wall under a 3.6 m slab holds the wrists within 0.09 mm, at
+    3.5 body weights.
+- **Live** (BRP, gizmos on, mesh off, back and side views):
+  - dropped down off a 2.0 m top, the wrists end 10 cm under the lip and the
+    balls of the feet on the face;
+  - let go, it lands standing;
+  - off a 3.6 m slab it drops down, lets go, and catches the 1.9 m wall
+    below.
+- **Gallery:** `--drop-down-at T`, `--let-go-at T`, `--catch`. For example:
+  `--block 0,1,180,3.6,1.2,3.0,0.15 --side-ledge 0,0.65,180,1.9,1.2
+  --start-height 3.6 --drop-down-at 2 --let-go-at 30 --catch`.
+- **Cost** (`anim_bench --characters 20`, a character a frame):
+  - `--gait drop-down`: 42 µs, the same as climbing up;
+  - `let-go`: 19 µs;
+  - `catch`: 24 µs.
+- **Not covered yet:**
+  - a missed jump catching: a `Jump` is not a `Falling`;
+  - landing on a step under the feet after letting go: the fall lands on the
+    ground under the root.
+
+1239 library tests pass; clippy is clean.
+
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 
 Second part: **past 1.7 m it rolls**; **past 4 m it goes to the ragdoll** at
@@ -63,6 +110,15 @@ touchdown.
 - **Seen:** from the left, a 2.2 m drop: the squat's give, tucking, rolling,
   standing.
 - **Cost** (`anim_bench --gait roll`): 20 µs a character a frame.
+- **Follow-up, rolling from speed and landing hurt:** moving on so fast a
+  squat would brake harder than 6 m/s², it rolls from 0.75 m up (from 1 m
+  at 3.5 m/s it rolls, at 1.4 it squats). From 3 to 4 m it lands hurt
+  (`is_hurt`): knees to 140°, down onto its hands under the shoulders, held
+  0.8 s, up twice as slowly. Rolling off a 1 m drop at a run a joint went
+  1 cm under while tucking: the shortfall is planned like the resting
+  height, ramped in and out (held up frame by frame, 67 m/s²; left on at the
+  end, 125). Seen hurt from the left, down on its hands through the hold.
+  1235 library tests pass.
 
 ### Parkour, step 4 (first part): falling off an edge and landing from height
 
