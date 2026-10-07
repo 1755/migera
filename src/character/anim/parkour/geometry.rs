@@ -140,14 +140,22 @@ const TOP_BELOW: f32 = 0.3;
 
 impl crate::character::anim::ground::GroundProbe for LedgeGround {
     fn sample(&self, at: Vec3) -> Option<crate::character::anim::ground::GroundHit> {
-        for ledge in &self.ledges {
-            let along = (at - ledge.a).dot(ledge.along());
-            let back = -ledge.out_of(at);
-            if (0.0..=(ledge.b - ledge.a).length()).contains(&along) && (0.0..=ledge.depth).contains(&back) && at.y > ledge.height() - TOP_BELOW {
-                return Some(crate::character::anim::ground::GroundHit { height: ledge.height(), normal: Vec3::Y });
-            }
+        // The highest top under it: overlapping blocks (a step built into a
+        // wall), the first listed read a top 2.2 m under the one stood on.
+        let top = self
+            .ledges
+            .iter()
+            .filter(|ledge| {
+                let along = (at - ledge.a).dot(ledge.along());
+                let back = -ledge.out_of(at);
+                (0.0..=(ledge.b - ledge.a).length()).contains(&along) && (0.0..=ledge.depth).contains(&back) && at.y > ledge.height() - TOP_BELOW
+            })
+            .map(Ledge::height)
+            .fold(None, |most: Option<f32>, height| Some(most.map_or(height, |most| most.max(height))));
+        match top {
+            Some(height) => Some(crate::character::anim::ground::GroundHit { height, normal: Vec3::Y }),
+            None => self.under.sample(at),
         }
-        self.under.sample(at)
     }
 }
 
@@ -190,6 +198,13 @@ mod tests {
         assert_eq!(height(Vec3::new(0.2, 2.1, -0.6)), Some(0.0), "in front of the face");
         assert_eq!(height(Vec3::new(0.2, 0.5, -1.4)), Some(0.0), "well below the top");
         assert_eq!(height(Vec3::new(1.5, 2.1, -1.4)), Some(0.0), "past its end");
+        // A lower block built into it, listed first: the higher top where
+        // they overlap.
+        let step = Ledge::wall(Vec3::new(0.0, 0.0, -0.7), Vec3::Z, 2.0, 0.8, 1.0);
+        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![step, ledge] };
+        let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
+        assert_eq!(height(Vec3::new(0.2, 2.1, -1.4)), Some(2.0), "on the top over the step");
+        assert_eq!(height(Vec3::new(0.2, 2.1, -0.85)), Some(0.8), "past the top, over the step");
     }
 
     #[test]

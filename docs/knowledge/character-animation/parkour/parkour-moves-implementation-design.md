@@ -313,8 +313,10 @@ its API, its tests, and when it is done.
   past 4 m. The airborne body (0c) is `parkour::Falling`'s flight.
 - **Step 5**, drop to a hang, let go, catch: built 2026-10-08 ([the
   note](./a-hang-is-dropped-into-let-go-of-and-caught-from-a-fall.md)):
-  the climb-up run backward, slower; letting go into `Falling`; catching
-  from any fall, swept over the frame. A missed `Jump` does not catch yet.
+  the climb-up run backward, slower; letting go into `Falling`, onto a step
+  under the feet if there is room; a jump over an edge falling on; catching
+  from any fall, swept over the frame; a fall facing a wall held off it
+  ([its note](./a-fall-facing-a-wall-is-held-off-it.md)).
 - Steps 6-10: not started.
 
 ## Related

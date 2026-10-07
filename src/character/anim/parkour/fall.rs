@@ -49,6 +49,11 @@ pub const STEP_DOWN: f32 = 0.3;
 /// The legs come to the landing's shape over this share of the flight, at
 /// least this long, seconds.
 const LEGS_REACH: f32 = 0.25;
+/// Leaving a jump, the legs coast on their own swing this long, seconds;
+/// the trunk's and arms' swing is read off this far ahead in the jump
+/// (over 75 ms, a hand's curved swing left 1.1 cm a frame off).
+const LEGS_COAST: f32 = 0.15;
+const AHEAD: f32 = 0.01;
 /// The trunk leans forward this much a metre of the landing's depth,
 /// radians; flying, this much.
 const LEAN_PER_DEPTH: f32 = 1.1;
@@ -63,6 +68,27 @@ const ARMS_REACHING: (f32, f32) = (2.6, 0.15);
 /// The trunk and arms go from where they were as it left to the flight's
 /// over this long, seconds.
 const ARMS_FREE: f32 = 0.35;
+/// Facing a wall, how far the wrists keep off it, metres: a hand's length,
+/// its fingers up the wall.
+const HANDS_OFF_WALL: f32 = 0.1;
+/// ... over this far under its top, metres.
+const WALL_EASED: f32 = 0.2;
+/// Falling into a wall it faces, the hips stop this far out from it,
+/// metres (standing facing it, the hips are about this far off it),
+/// slowing from this much and as far again further out: the arms taking
+/// it, about 2.3 g from 3 m/s (over 0.1 m, a jump falling short at 3 m/s
+/// stopped at 7.5 g); landing, the room the landing's shape needs this
+/// much more.
+const HIPS_OFF_WALL: f32 = 0.25;
+const WALL_GIVE: f32 = 0.2;
+const ROOM_MARGIN: f32 = 0.05;
+/// A wall faced within this of where it would come to rest is fallen
+/// against, metres: a landing's shape reaches 0.65 m ahead of the hips.
+const WALL_NEAR: f32 = 1.0;
+/// Landing facing it, the hips' room is planned every this many seconds,
+/// held up and averaged over this long either side.
+const ROOM_STEP: f32 = 0.01;
+const ROOM_WINDOW: f32 = 0.08;
 /// The trunk's and arms' bones: let go from a hang, the trunk leant toward
 /// the wall would snap upright.
 const FREED_BONES: [Bone; 14] = [
@@ -262,6 +288,18 @@ pub struct Falling {
     stand_height: f32,
     /// Each ankle planted on the ground (the world).
     feet: [Vec3; 2],
+    /// A wall it faces, its hands kept off ([`Self::facing_wall`]): a point
+    /// on its top edge and the face's way out.
+    wall: Option<(Vec3, Vec3)>,
+    /// How far the hips keep off it, metres, every [`ROOM_STEP`] seconds
+    /// from leaving (empty: [`HIPS_OFF_WALL`]).
+    wall_rooms: Vec<f32>,
+    /// Each ankle's velocity as it left, relative to the hips (the world):
+    /// the legs swinging in a jump ([`Self::from_jump`]).
+    ankle_velocities: [Vec3; 2],
+    /// Leaving a jump, its pose [`AHEAD`] later: the trunk and arms leave
+    /// turning toward it (and on past) as the jump turned them.
+    from_ahead: Option<LocalPose>,
     /// Rolling, not squatting; landing hurt; the rig it was measured on.
     roll: Option<Roll>,
     hurt: bool,
@@ -309,19 +347,186 @@ impl Falling {
             touch_height: 0.0,
             stand_height: 0.0,
             feet: [Vec3::ZERO; 2],
+            wall: None,
+            wall_rooms: Vec::new(),
+            ankle_velocities: [Vec3::ZERO; 2],
+            from_ahead: None,
             roll: None,
             hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
         };
-        falling.plan();
+        falling.replan(rig);
+        falling
+    }
+
+    /// A jump in the air (`jump::Jump`) gone over an edge, falling on to
+    /// the ground `ground` high below: its pose now, from the walker's root
+    /// `root` turned `yaw`, the hips' velocity the jump's (its root motion
+    /// and its pose's together).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_jump(jump: &crate::character::anim::jump::Jump, root: Vec3, yaw: f32, ground: f32, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let turn = Quat::from_rotation_y(yaw);
+        let t = jump.elapsed();
+        // The centre of mass's velocity, the ballistic one: the hips swing
+        // about it as the legs tuck (their own, 1.43 m/s forward one frame
+        // and 1.04 two later, flung the fall short of a ledge in reach).
+        let h = 1.0e-3;
+        let com_at = |t: f32| turn * rig.forward() * jump.travelled_at(t) + Vec3::Y * jump.com_height_at(t);
+        let velocity = (com_at(t + h) - com_at(t - h)) / (2.0 * h);
+        let mut falling = Self::off(root, yaw, velocity, &jump.pose_at(t, stood, rig), ground, drop, stood, rig);
+        // The legs' own swing, the hips' aside: from rest, the feet stopped
+        // dead (1.7 m/s) as the fall took over.
+        let ankles = |t: f32| {
+            let at = forward_kinematics_on(&jump.pose_at(t, stood, rig), rig);
+            LEGS.map(|(_, _, ankle, _)| turn * (at[ankle] - at[Bone::Hips]))
+        };
+        let (after, before) = (ankles(t + h), ankles(t - h));
+        falling.ankle_velocities = [0, 1].map(|side| (after[side] - before[side]) / (2.0 * h));
+        falling.from_ahead = Some(jump.pose_at(t + AHEAD, stood, rig));
+        let rig = falling.rig.clone();
+        falling.replan(&rig);
+        falling
+    }
+
+    /// Plans the landing for the velocity it left with: a squat, a roll or
+    /// hurt.
+    fn replan(&mut self, rig: &RigGeometry) {
+        self.roll = None;
+        self.plan();
         // Rolling past standing height, or moving on too fast to brake in a
         // squat; not hurt.
-        let drop = falling.dropped();
-        let braking = flat_of(velocity).length() / landing_for(drop).0;
-        if !falling.hurt && (drop > ROLL_DROP || (drop > ROLL_LOW && braking > MOST_BRAKING)) {
-            falling.plan_roll(rig);
+        let drop = self.dropped();
+        let braking = flat_of(self.velocity).length() / landing_for(drop).0;
+        if !self.hurt && self.wall.is_none() && (drop > ROLL_DROP || (drop > ROLL_LOW && braking > MOST_BRAKING)) {
+            self.plan_roll(rig);
         }
-        falling
+    }
+
+    /// Leaving with the horizontal velocity that brings its hips to rest
+    /// over `spot` (the world; its height not read): on a step under the
+    /// feet letting go, or clear past its edge. Squatting only: a roll
+    /// goes on past where a squat comes to rest.
+    pub fn land_at(&mut self, spot: Vec3, rig: &RigGeometry) {
+        // The time to rest depends on the speed only through where the feet
+        // plant ahead, and a wall faced holds the rest off it: a few rounds
+        // of correcting by the miss settle it.
+        let [flight, landed, _] = self.ends;
+        let flat = flat_of(spot - self.from_hips) / (flight + 0.5 * (landed - flight)).max(1.0e-3);
+        self.velocity = Vec3::new(flat.x, self.velocity.y, flat.z);
+        self.replan(rig);
+        for _ in 0..8 {
+            let [flight, landed, _] = self.ends;
+            self.velocity += flat_of(spot - self.rest()) / (flight + 0.5 * (landed - flight)).max(1.0e-3);
+            self.replan(rig);
+        }
+    }
+
+    /// Facing a wall close enough to touch (a point on its top edge, the
+    /// face's way out): under its top, the hands kept [`HANDS_OFF_WALL`]
+    /// off it and the toes out of it.
+    ///
+    /// Landed, the hips come back from it as far as the landing's shape
+    /// reaches ahead of them (the hands, kept off, aside): stopped at
+    /// [`HIPS_OFF_WALL`], a 3 m drop's landing put the head 34 cm into
+    /// it. It does not roll.
+    pub fn facing_wall(&mut self, point: Vec3, out: Vec3) {
+        self.wall = Some((point, out));
+        self.wall_rooms.clear();
+        let rig = self.rig.clone();
+        self.replan(&rig);
+        let forward = self.turn * rig.forward();
+        // Twice: the room moves the hips against the planted feet, which
+        // moves the knees.
+        for _ in 0..2 {
+            let mut probe = self.clone();
+            let [flight, _, end] = self.ends;
+            let needs: Vec<f32> = (0..=(end / ROOM_STEP).ceil() as usize)
+                .map(|i| {
+                    probe.t = (ROOM_STEP * i as f32).min(end);
+                    // In the air, the hips' stop (braced feet let go from a
+                    // wall are ahead of them on it).
+                    if probe.t < flight {
+                        return HIPS_OFF_WALL;
+                    }
+                    let at = forward_kinematics_on(&probe.pose(&rig), &rig);
+                    let arms = [ArmChain::LEFT, ArmChain::RIGHT].map(|chain| [chain.elbow, chain.wrist]).concat();
+                    let ahead = Bone::ALL
+                        .into_iter()
+                        .filter(|bone| !arms.contains(bone) && !matches!(bone, Bone::LeftArm | Bone::RightArm))
+                        .map(|bone| (self.turn * (at[bone] - at[Bone::Hips])).dot(forward))
+                        .fold(0.0, f32::max);
+                    HIPS_OFF_WALL.max(ahead + ROOM_MARGIN)
+                })
+                .scan(0.0f32, |most, need| {
+                    *most = most.max(need);
+                    Some(*most)
+                })
+                .collect();
+            // Held up to the most over twice a window ahead, then averaged
+            // over it either side twice: smooth (a ramp once averaged kinked
+            // at 6 g), and never short of the need, which only grows.
+            let w = (ROOM_WINDOW / ROOM_STEP).round() as usize;
+            let held: Vec<f32> = (0..needs.len()).map(|i| needs[i..(i + 2 * w + 1).min(needs.len())].iter().copied().fold(0.0, f32::max)).collect();
+            let average = |values: &[f32]| -> Vec<f32> {
+                (0..values.len()).map(|i| {
+                    let window = &values[i.saturating_sub(w)..(i + w + 1).min(values.len())];
+                    window.iter().sum::<f32>() / window.len() as f32
+                }).collect()
+            };
+            self.wall_rooms = average(&average(&held));
+            self.replan(&rig);
+        }
+    }
+
+    /// How far the hips keep off the wall `t` seconds in, metres (planned
+    /// by [`Self::facing_wall`]).
+    fn wall_room_at(&self, t: f32) -> f32 {
+        let Some(&last) = self.wall_rooms.last() else {
+            return HIPS_OFF_WALL;
+        };
+        let at = t / ROOM_STEP;
+        let i = (at.floor() as usize).min(self.wall_rooms.len() - 1);
+        let next = self.wall_rooms.get(i + 1).copied().unwrap_or(last);
+        self.wall_rooms[i] + (next - self.wall_rooms[i]) * (at - i as f32).clamp(0.0, 1.0)
+    }
+
+    /// The room the hips keep landed.
+    fn wall_room(&self) -> f32 {
+        self.wall_rooms.last().copied().unwrap_or(HIPS_OFF_WALL)
+    }
+
+    /// The wall among `ledges` it would fall into, if any, faced: one it
+    /// faces (within 60°), in front of where it leaves, coming to rest
+    /// within [`WALL_NEAR`] of its face, its top above the ground it lands
+    /// on by more than a step and its face reaching down to it (not a slab
+    /// it falls out from under).
+    pub fn against(&mut self, ledges: &[Ledge], rig: &RigGeometry) {
+        let forward = self.turn * rig.forward();
+        let rest = self.rest();
+        let wall = ledges.iter().find(|ledge| {
+            let along = (rest - ledge.a).dot(ledge.along());
+            forward.dot(-ledge.out) > 0.5
+                && (0.0..=(ledge.b - ledge.a).length()).contains(&along)
+                && ledge.out_of(self.from_hips) > 0.0
+                && ledge.out_of(rest) < WALL_NEAR
+                && ledge.height() > self.ground + STEP_DOWN
+                && ledge.height() - ledge.wall_below <= self.ground + STEP_DOWN
+        });
+        if let Some(ledge) = wall {
+            self.facing_wall(ledge.nearest(rest, 0.0), ledge.out);
+        }
+    }
+
+    /// Where its hips come to rest landing, the world (a squat's).
+    pub fn rest(&self) -> Vec3 {
+        let [flight, landed, _] = self.ends;
+        let rest = self.off_wall(self.from_hips + flat_of(self.velocity) * (flight + 0.5 * (landed - flight)), self.wall_room());
+        Vec3::new(rest.x, self.ground + self.stand_height, rest.z)
+    }
+
+    /// The ground it lands on, metres up.
+    pub fn ground(&self) -> f32 {
+        self.ground
     }
 
     /// Whether it lands hurt ([`HURT_DROP`]): down onto its hands, held
@@ -497,7 +702,7 @@ impl Falling {
         // The feet planted under where the hips come to rest: braking the
         // forward speed over the landing goes on half its time's worth.
         let flat = Vec3::new(self.velocity.x, 0.0, self.velocity.z);
-        let rest = self.from_hips + flat * (flight + 0.5 * land);
+        let rest = self.off_wall(self.from_hips + flat * (flight + 0.5 * land), self.wall_room());
         let root = Vec3::new(rest.x, self.ground, rest.z) - self.turn * Vec3::new(self.body.hips.x, 0.0, self.body.hips.z);
         self.feet = self.body.ankles.map(|ankle| root + self.turn * ankle);
     }
@@ -695,6 +900,29 @@ impl Falling {
             let (pose, root) = self.rolling(roll, &self.rig);
             return root + self.turn * forward_kinematics_on(&pose, &self.rig)[Bone::Hips];
         }
+        self.off_wall(self.free_hips(), self.wall_room_at(self.t))
+    }
+
+    /// `point` held `room` out from the wall it faces, if any: coming to
+    /// it, eased to a stop over [`WALL_GIVE`] (going on into it, a jump
+    /// falling short landed with its shoulders 18 cm into the wall).
+    fn off_wall(&self, point: Vec3, room: f32) -> Vec3 {
+        let Some((top, out)) = self.wall else {
+            return point;
+        };
+        let (x, s) = ((point - top).dot(out) - room, WALL_GIVE);
+        let kept = if x >= s {
+            x
+        } else if x > -s {
+            (x + s) * (x + s) / (4.0 * s)
+        } else {
+            0.0
+        };
+        point + out * (kept - x)
+    }
+
+    /// The hips with no wall in the way.
+    fn free_hips(&self) -> Vec3 {
         let [flight, landed, _] = self.ends;
         let flat = Vec3::new(self.velocity.x, 0.0, self.velocity.z);
         let t = self.t;
@@ -754,7 +982,9 @@ impl Falling {
             let depth = self.depth * squat;
             let recovering = self.phase() == FallPhase::Recover;
             let arms = if recovering { 1.0 - smoothstep(((self.t - self.ends[1]) / (self.ends[2] - self.ends[1])).clamp(0.0, 1.0)) } else { 1.0 };
-            let per_depth = if self.hurt { HURT_LEAN_PER_DEPTH } else { LEAN_PER_DEPTH };
+            // Hurt, over onto the hands; not facing a wall, whose room for
+            // that pushed the hips back off it while still in the air.
+            let per_depth = if self.hurt && self.wall.is_none() { HURT_LEAN_PER_DEPTH } else { LEAN_PER_DEPTH };
             (per_depth * depth, (ARMS_LANDING.0 * arms, ARMS_LANDING.1 * arms))
         } else {
             let into = smoothstep((self.t / (LEGS_REACH * flight).max(0.15)).clamp(0.0, 1.0));
@@ -764,10 +994,18 @@ impl Falling {
         let mut pose = crate::character::anim::jump::upper(&self.body.stood, rig, lean, arms);
         // The trunk and arms from where they were as it left (holding a
         // ledge, swinging in a walk), not snapped to the flight's.
+        // Leaving a jump, coasting on their own swing as the legs do: from
+        // rest, the hands stopped dead (1.7 cm a frame off the jump's).
         let freed = smoothstep((self.t / ARMS_FREE).clamp(0.0, 1.0));
         if freed < 1.0 {
+            let coast = self.t.min(LEGS_COAST);
+            let swung = (coast - 0.5 * coast * coast / LEGS_COAST) / AHEAD;
             for bone in FREED_BONES {
-                pose.rotations[bone] = self.from_pose.rotations[bone].slerp(pose.rotations[bone], freed);
+                let from = match self.from_ahead.as_ref() {
+                    Some(ahead) => self.from_pose.rotations[bone].slerp(ahead.rotations[bone], swung),
+                    None => self.from_pose.rotations[bone],
+                };
+                pose.rotations[bone] = from.slerp(pose.rotations[bone], freed);
             }
         }
         // The hips in the pose's frame: down from standing as far as they
@@ -782,7 +1020,10 @@ impl Falling {
             let ankle = if landed {
                 self.feet[side]
             } else {
-                let from = self.from_ankles[side] - self.from_hips;
+                // Coasting on their own swing as they left, slowing evenly
+                // to a stop over `LEGS_COAST`.
+                let coast = self.t.min(LEGS_COAST);
+                let from = self.from_ankles[side] - self.from_hips + self.ankle_velocities[side] * (coast - 0.5 * coast * coast / LEGS_COAST);
                 let to = self.feet[side] - touch_hips;
                 hips + from.lerp(to, smoothstep((self.t / flight).clamp(0.0, 1.0)))
             };
@@ -790,11 +1031,41 @@ impl Falling {
             // The feet level, turned with the body: from how they were as it
             // left (set level at once, a braced foot's toes, pitched up on the
             // wall, jumped 17 cm the frame it let go).
-            let now = accumulate_world_rotations(&pose, rig)[bone];
             let level = accumulate_world_rotations(&self.body.stood, rig)[bone];
             let left = accumulate_world_rotations(&self.from_pose, rig)[bone];
             let wanted = left.slerp(level, smoothstep((self.t / ARMS_FREE).clamp(0.0, 1.0)));
+            let now = accumulate_world_rotations(&pose, rig)[bone];
             pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, wanted * now.inverse());
+            // Facing a wall, the ankle out as far as its toes would go into
+            // it levelling (let go onto a step, coming in to it, 7 mm).
+            if let Some((top, out)) = self.wall {
+                let toe = root + self.turn * forward_kinematics_on(&pose, rig)[LEGS[side].3];
+                let short = (top - toe).dot(out);
+                if short > 0.0 && toe.y < top.y {
+                    place_ankle(&mut pose, rig, bone, back * (ankle + out * short - root) - pose_hips);
+                    let now = accumulate_world_rotations(&pose, rig)[bone];
+                    pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, wanted * now.inverse());
+                }
+            }
+        }
+        // A wall it faces: the hands kept off it, sliding down it (let go
+        // onto a step, the hands still up from the hang went 0.2 m into the
+        // wall as it landed nearer it). Only under its top; and off it by
+        // nothing at first, more as they are let go: held hooked on the
+        // lip, kept off it at once, they jumped 4-15 cm the frame it let go.
+        if let Some((top, out)) = self.wall {
+            let at = forward_kinematics_on(&pose, rig);
+            for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
+                let wrist = root + self.turn * at[chain.wrist];
+                let under = smoothstep(((top.y - wrist.y) / WALL_EASED).clamp(0.0, 1.0));
+                let short = HANDS_OFF_WALL * under * freed - (wrist - top).dot(out);
+                if short > 0.0 {
+                    // The elbow's own way: turned to another, it jumped
+                    // 12 cm as the hands began to be kept off.
+                    let pole = (at[chain.elbow] - 0.5 * (at[chain.shoulder] + at[chain.wrist])).normalize_or(back * out);
+                    solve_arm_toward_from(&mut pose, &at, chain, back * (wrist + out * short - root), pole, rig);
+                }
+            }
         }
         // Hurt, down onto its hands: each planted on the ground under its
         // shoulder as it goes down, held there, lifted as it gets up.
@@ -819,7 +1090,7 @@ impl Falling {
     /// the second half of the landing, held, lifting over the first half of
     /// getting up.
     pub fn hands_down(&self) -> f32 {
-        if !self.hurt || self.roll.is_some() {
+        if !self.hurt || self.roll.is_some() || self.wall.is_some() {
             return 0.0;
         }
         let [flight, landed, stood] = self.ends;

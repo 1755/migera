@@ -66,6 +66,9 @@ enum Gait {
     /// (`true`) of a free hang from a 3.6 m slab, reaching to catch the
     /// 1.9 m wall under it, the catch tested each frame.
     LetGo(bool),
+    /// A standing jump off a 3 m top falling short of a wall as high
+    /// across the gap, catching its lip.
+    JumpShort,
 }
 
 fn main() {
@@ -103,7 +106,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -155,8 +158,8 @@ fn main() {
     // or to the catch.
     let catching = match gait {
         Gait::LetGo(catch) => {
-            use migera::character::anim::parkour::{Falling, Hanging, Ledge};
-            let lower = Ledge::wall(Vec3::new(0.0, 0.0, -1.5), Vec3::Z, 3.0, 1.9, 1.0);
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let lower =Ledge::wall(Vec3::new(0.0, 0.0, -1.5), Vec3::Z, 3.0, 1.9, 1.0);
             let ledge = if catch {
                 Ledge { wall_below: 0.15, ..Ledge::wall(Vec3::new(0.0, 0.0, -1.15), Vec3::Z, 3.0, 3.6, 1.35) }
             } else {
@@ -164,7 +167,7 @@ fn main() {
             };
             let mut hanging = Hanging::hung(&ledge, &[], Vec3::ZERO, 0.0, [None; 2], &stood, &rig);
             hanging.advance(1.0);
-            let mut falling = Falling::off(hanging.root(), hanging.facing(), hanging.let_go_velocity(), &hanging.pose(&rig), 0.0, 0.0, &stood, &rig);
+            let mut falling = hanging.let_go(&|_| Some(0.0), &stood, &rig);
             falling.reach(catch);
             let seconds = if catch {
                 let (mut probe, mut seconds) = (falling.clone(), 0.0);
@@ -178,6 +181,28 @@ fn main() {
                 falling.ends()[2]
             };
             Some((falling, seconds, catch.then_some(lower)))
+        }
+        // A standing jump off a 3 m top falling short of a wall as high
+        // 1.7 m off: from leaving the top to the catch.
+        Gait::JumpShort => {
+            use migera::character::anim::jump::{Jump, JumpAsk};
+            use migera::character::anim::parkour::{Falling, Ledge};
+            let start = Vec3::new(0.0, 3.0, 0.0);
+            let far = Ledge::wall(Vec3::new(0.0, 0.0, 0.0) + rig.forward() * 1.7, -rig.forward(), 3.0, 3.0, 1.0);
+            let mut jump = Jump::plan(JumpAsk::forward(0.3, 1.2), &stood, &rig);
+            while !jump.airborne() {
+                jump.advance(DT);
+            }
+            let mut falling = Falling::from_jump(&jump, start + rig.forward() * jump.travelled(), 0.0, 0.0, 0.0, &stood, &rig);
+            falling.against(&[far], &rig);
+            falling.reach(true);
+            let (mut probe, mut seconds) = (falling.clone(), 0.0);
+            while probe.catches(&[far], &rig).is_none() {
+                assert!(probe.airborne() || seconds == 0.0, "never caught the far wall");
+                probe.advance(DT);
+                seconds += DT;
+            }
+            Some((falling, seconds, Some(far)))
         }
         _ => None,
     };
@@ -320,6 +345,7 @@ fn main() {
         Gait::Drop(roll) => format!("   walking off a top and {}", if roll { "rolling (2.2 m)" } else { "squatting (0.9 m)" }),
         Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
+        Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -424,6 +450,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("drop-down") => Gait::DropDown,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
+        Some("jump-catch") => Gait::JumpShort,
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

@@ -1601,10 +1601,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 && !hanging.is_climbing_up()
                 && !hanging.is_shimmying()
             {
-                let pose = hanging.pose(&rig);
-                let from = hanging.root();
-                let below = ground.and_then(|ground| ground.0.sample(from)).map_or(0.0, |hit| hit.height);
-                let mut falling = super::parkour::Falling::off(from, hanging.facing(), hanging.let_go_velocity(), &pose, below, foot_ik.pelvis_drop, &stood, &rig);
+                let mut falling = hanging.let_go(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height), &stood, &rig);
                 falling.reach(walker.catch);
                 state.falling = Some(falling);
                 state.hanging = None;
@@ -1662,15 +1659,34 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // velocity it falls to the ground found below and lands, posed off
         // the floor, the root riding its hips; stood again, it walks on.
         if let Some(rig) = foot_ik.rig.clone() {
+            // Started from this frame's pose, it moves on from the next.
+            let mut started = false;
             if let Some(ground) = state.fall_to.take()
                 && state.falling.is_none()
                 && !fallen
             {
-                let velocity = Vec3::new(state.locomotion.root_velocity.x, 0.0, state.locomotion.root_velocity.z);
-                state.falling = Some(super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, ground, foot_ik.pelvis_drop, &stood, &rig));
+                started = true;
+                let mut falling = match state.jump.take() {
+                    // A jump in the air goes on falling as it flew, from
+                    // where its travel this frame (not yet ridden) puts it.
+                    Some(jump) => {
+                        let root = state.locomotion.position + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
+                        super::parkour::Falling::from_jump(&jump, root, state.facing.yaw, ground, foot_ik.pelvis_drop, &stood, &rig)
+                    }
+                    None => {
+                        let velocity = Vec3::new(state.locomotion.root_velocity.x, 0.0, state.locomotion.root_velocity.z);
+                        super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, ground, foot_ik.pelvis_drop, &stood, &rig)
+                    }
+                };
+                // Falling against a wall faced, kept off it.
+                let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                falling.against(&ledges, &rig);
+                state.falling = Some(falling);
             }
             if let Some(falling) = state.falling.as_mut() {
-                falling.advance(dt);
+                if !started {
+                    falling.advance(dt);
+                }
                 target.pose = match springs {
                     Some(springs) => falling.pose_led(&rig, &springs.0),
                     None => falling.pose(&rig),
@@ -1842,6 +1858,12 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             // run, the run's clock goes on under it, and its velocity would
             // carry the body a second time.
             _ if state.jump.is_some() || std::mem::take(&mut state.stride.given) => Vec3::ZERO,
+            // Falling, where it is is the fall's (`parkour::Falling::root`),
+            // set each frame: the gait's motion added on was a frame's lag.
+            _ if state.falling.is_some() => {
+                state.stride.stepped = Vec3::ZERO;
+                Vec3::ZERO
+            }
             // Running, at the run's own speed: its clock is set so a stride
             // covers exactly that, so over a stride the feet do not drift.
             // A runner's body changes speed by a few per cent through a
@@ -1893,8 +1915,17 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             && let Some(height) = locomotion::ground_following_height(root.translation, 0.0, ground.0.as_ref())
         {
             // Over an edge, the ground more than a step below: it falls
-            // (`parkour::fall`, started next frame), not snapped down to it.
-            if height < height_before - super::parkour::fall::STEP_DOWN && state.jump.is_none() {
+            // (`parkour::fall`, started next frame), not snapped down to it;
+            // in a jump's flight too (a jump falling short of the far side
+            // was snapped down to the floor of the gap).
+            // Pushing off the edge, the root over the drop already, the
+            // feet still on the top: held up until it leaves (snapped down,
+            // a jump from 0.3 m back landed on the floor of the gap).
+            let drops = height < height_before - super::parkour::fall::STEP_DOWN;
+            if drops && state.jump.as_ref().is_some_and(|jump| !jump.airborne() && jump.elapsed() < jump.ends(super::jump::JumpPhase::Flight)) {
+                root.translation.y = height_before;
+                state.locomotion.position.y = height_before;
+            } else if drops && state.jump.as_ref().is_none_or(|jump| jump.airborne()) {
                 root.translation.y = height_before;
                 state.locomotion.position.y = height_before;
                 state.fall_to = Some(height);

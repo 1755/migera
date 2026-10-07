@@ -81,12 +81,36 @@ fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-o
   - `--gait drop-down`: 42 µs, the same as climbing up;
   - `let-go`: 19 µs;
   - `catch`: 24 µs.
-- **Not covered yet:**
-  - a missed jump catching: a `Jump` is not a `Falling`;
-  - landing on a step under the feet after letting go: the fall lands on the
-    ground under the root.
+- **Follow-up, a missed jump and a step under the feet:**
+  - an airborne jump over an edge falls on (`Falling::from_jump`) at its
+    centre of mass's velocity. Thrown at the hips' own velocity, it fell
+    0.3 m shorter at 30 fps than at 60. The legs and arms coast on their
+    swing, so the hand-off is within 1 cm a frame. While it still pushes
+    off, the root is held over the drop (snapped down, it landed in the
+    gap). With `--catch`, a standing jump off a 3 m top catches a wall as
+    high 1.7 m off, at 5-60 fps.
+  - letting go (`Hanging::let_go`) reads the ground where it would come to
+    rest, at the feet's height. Over a step with room it lands standing on
+    it; over a narrow one it clears it. The feet had gone 0.99 m into it.
+  - a fall facing a wall is held off it
+    ([note](docs/knowledge/character-animation/parkour/a-fall-facing-a-wall-is-held-off-it.md)):
+    - the hips stop 0.25 m off over a 0.2 m give (2.3 g, not 7.5);
+    - the landing's room is planned over time, smoothed (1.9 g, not 6);
+    - the hands and toes are kept off it;
+    - no hurt lean against it;
+    - a hang caught there keeps its knees and hips out.
+  - `LedgeGround` reads the highest of overlapping tops. A step built into
+    a wall had read 2.2 m low near the top's edge, and the walker shuffled
+    55 s before dropping down.
+  - the walker's ride no longer adds the gait's motion to a falling root,
+    and a fall does not advance on its first frame.
+  - live, both: caught from the jump (left and top views), standing on the
+    step (side and back views), gizmos on, mesh off.
+  - cost: `--gait jump-catch` 30 µs; `let-go` 25 µs (was 19, the wall
+    checks).
+  - not covered: a running jump; a step under one foot only.
 
-1239 library tests pass; clippy is clean.
+1242 library tests pass; clippy is clean.
 
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 
