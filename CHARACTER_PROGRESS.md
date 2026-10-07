@@ -82,6 +82,12 @@ four). See
   a braced ball on the face.
 - **Seen:** Back mid-step along a wall; from above coming to, round and past
   a block's corner; gizmos on, mesh off.
+- **Follow-up, corners of any angle and near an inside corner:** the grab
+  keeps the grip clear of corners (given the other ledges); `joined` finds
+  corners within 20° of parallel (it ruled out 60°); round 45°, 90°, 120°
+  outward and 45°, 90° inward, braced and free; sharper (135° out, 120° in)
+  it stops there. Fixed a one-frame seam putting a hand back on its old
+  hold as its move ended (a wrist jumping 6.4 cm).
 - **Gallery:** `--shimmy-at T,left|right,SECONDS`, `--block
   X,Z,HEADING,HEIGHT,WIDTH,DEPTH[,BELOW]`, `--side-ledge` (as `--ledge`).
 - **Cost** (`anim_bench --gait shimmy|shimmy-corner --characters 20`): 48 µs

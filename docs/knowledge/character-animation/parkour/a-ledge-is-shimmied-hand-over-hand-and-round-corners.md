@@ -67,7 +67,19 @@ of the end.
 4. the next steps spread the hands to a shoulder's width again.
 
 Outside and inside corners time their hands differently (see the trap
-below).
+below), and so do sharp outside ones (past 100°). The step lasts longer the
+further it turns.
+
+**Corners of other angles**: it goes round outward up to 120° and inward
+up to 90°; sharper, it stops there, still keeping its room from the corner.
+An inside corner's room grows with how far its wall turns in (0.3 m at 90°,
+about 0.21 m at 45°), and a hand's way round an outside one stays as far
+from each face as at a right angle. `Ledge::joined` finds any corner whose
+edges are more than 20° from parallel.
+
+**The grab keeps clear of corners**: given the other ledges
+(`Hanging::spot`, `set_others` before the jump), the grip stays its corner
+room plus a lane from each end.
 
 ## Alternatives considered
 
@@ -101,12 +113,23 @@ below).
   outside one that early, the lead hand was 1.2 cm out of reach. Each has
   its own timing.
 - **Too near an inside corner to turn**: grabbed with the lead hand 0.19 m
-  from it, the shoulder was against the side wall. It stops there.
+  from it, the shoulder was against the side wall. The grab placed the
+  hands knowing only its own ledge; it now keeps clear of corners (the test
+  fails without it, stopping on the first face).
+- **Corners only at right angles found**: `joined` ruled out edges within
+  60° of parallel, so a 45° or 135° corner was never found.
+- **A one-frame seam**: a hand's move done (progress 1) the frame before
+  the step's share passed its window, it was put back on its old hold, the
+  wrist jumping 6.4 cm.
+- **Sharp corners**: round 135° outward one turn leaves either the lead hand
+  short going on or the trail hand short leaving, whatever the timing; at
+  120° a timing of its own fits.
 
 ## Consequences
 
-**Headless** (`puppet_base`, 2.15 m; braced and free; left and right; a
-block's corner and an inside corner):
+**Headless** (`puppet_base`, 2.15 m; braced and free; left and right;
+corners outward 45°, 90° (a block's), 120°, inward 45° and 90° (grabbed as
+near as the walk in comes); and stopping at 135° outward and 120° inward):
 - a hand always on the lip; held and moving wrists within 0.1 mm of their
   hooks and ways;
 - nothing inside any block;
@@ -130,8 +153,8 @@ look to be over the top: perspective, which BRP settled.
 
 - **The move controller arrives**: it asks the way from input, and turns a
   shimmy into a climb up or a drop.
-- **Corners other than right angles**: `joined` takes any turn over 0.5 rad,
-  but only right angles are tested.
+- **Sharper corners**: a two-turn way round (both hands on the apex
+  between) would take outward corners past 120°.
 
 ## Related
 

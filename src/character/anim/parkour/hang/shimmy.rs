@@ -56,6 +56,17 @@ const TRAIL_FOOT: (f32, f32) = (0.55, 0.9);
 /// (hanging free). Round an outside corner, so early, the lead hand was
 /// 1.2 cm out of reach on the face it went onto.
 const OUTSIDE_TIMING: [(f32, f32); 3] = [(0.0, 0.35), (0.45, 0.8), (0.0, 0.75)];
+/// Round a sharp outside corner (past `SHARP`), the trail hand goes
+/// earlier: as round a right angle, the body had turned 85° of 135° and the
+/// trail hand was 1.3 cm out of reach on the face it left.
+const SHARP_TIMING: [(f32, f32); 3] = [(0.0, 0.35), (0.4, 0.75), (0.0, 0.75)];
+const SHARP: f32 = 1.75;
+/// The sharpest corners it goes round, radians the face turns: outward,
+/// 120° (round 135°, one turn left either the lead hand short going on or
+/// the trail hand short leaving); inward, 90° (a narrower wedge than the
+/// body). Sharper, it stops there.
+const SHARPEST_OUTSIDE: f32 = 2.2;
+const SHARPEST_INSIDE: f32 = 1.65;
 const INSIDE_TIMING: [(f32, f32); 3] = [(0.0, 0.35), (0.4, 0.72), (0.0, 0.82)];
 /// A moving hand comes up off the lip this far, and out from the face,
 /// metres, at the middle of its move; a moving foot out from the wall.
@@ -95,6 +106,26 @@ fn across(s: f32, (from, to): (f32, f32)) -> f32 {
     smoothstep(((s - from) / (to - from)).clamp(0.0, 1.0))
 }
 
+/// How near a hand comes to the corner where `next` carries `ledge` on:
+/// round a block's corner, or into a wall's.
+fn corner_room(ledge: &Ledge, next: &Ledge) -> f32 {
+    if next.along().dot(ledge.out) < 0.0 {
+        OUTSIDE_CORNER
+    } else {
+        // The side wall the less in the way the less it turns in (at 0.3 m
+        // round 45°, the lead hand hanging free was 9.7 mm short reaching
+        // across): as much room as the wall's turn in from the edge.
+        let turn = ledge.out.cross(next.out).y.atan2(ledge.out.dot(next.out)).abs().min(std::f32::consts::FRAC_PI_2);
+        (INSIDE_CORNER * turn.sin()).max(OUTSIDE_CORNER)
+    }
+}
+
+/// How near a hand on `ledge` comes to its end `end`, among `others`: to a
+/// corner where one meets it there that it turns, else the edge's end.
+pub(super) fn hand_room(ledge: &Ledge, end: usize, others: &[Ledge]) -> f32 {
+    ledge.joined(end, others).filter(|(_, turn)| turn.abs() > 0.5).map_or(END_MARGIN, |(next, _)| corner_room(ledge, &next))
+}
+
 /// Whether two ledges are the same edge, either way round.
 fn same(a: &Ledge, b: &Ledge) -> bool {
     ((a.a - b.a).length() < 1.0e-3 && (a.b - b.b).length() < 1.0e-3) || ((a.a - b.b).length() < 1.0e-3 && (a.b - b.a).length() < 1.0e-3)
@@ -121,7 +152,11 @@ struct Corner {
 impl Corner {
     /// When the lead hand, the trail hand and the body move.
     fn timing(&self) -> [(f32, f32); 3] {
-        if self.inside { INSIDE_TIMING } else { OUTSIDE_TIMING }
+        match (self.inside, self.turn.abs() > SHARP) {
+            (true, _) => INSIDE_TIMING,
+            (false, true) => SHARP_TIMING,
+            (false, false) => OUTSIDE_TIMING,
+        }
     }
 }
 
@@ -201,9 +236,20 @@ impl Hanging {
         self.shimmy_ask = ask;
     }
 
-    /// The other ledges it may shimmy onto round a corner.
+    /// The other ledges it may shimmy onto round a corner. Given before the
+    /// jump, the hands are placed clear of an inside corner, and the jump
+    /// replanned: grabbed with the lead hand 0.19 m from one, the shoulder
+    /// was against its side wall and it could not turn it.
     pub fn set_others(&mut self, ledges: &[Ledge]) {
         self.others = ledges.iter().filter(|other| !same(other, &self.ledge)).copied().collect();
+        if self.phase == super::Phase::Jumping && self.jump.elapsed() <= 0.0 {
+            let rig = self.rig.clone();
+            let stood = self.body.stood;
+            self.place_hands(&rig);
+            if self.plan_jump(&stood, &rig).is_some() {
+                self.plan_hang(&rig);
+            }
+        }
     }
 
     /// Whether it is shimmying, a step under way.
@@ -247,9 +293,12 @@ impl Hanging {
         let along = self.ledge.along();
         let way = if along.dot(toward) >= 0.0 { along } else { -along };
         let end = usize::from(way.dot(along) > 0.0);
-        let corner = self.ledge.joined(end, &self.others).filter(|(_, turn)| turn.abs() > 0.5);
-        let near = |next: &Ledge| if next.along().dot(self.ledge.out) < 0.0 { OUTSIDE_CORNER } else { INSIDE_CORNER };
-        let margin = corner.as_ref().map_or(END_MARGIN, |(next, _)| near(next));
+        let met = self.ledge.joined(end, &self.others).filter(|(_, turn)| turn.abs() > 0.5);
+        let near = |next: &Ledge| corner_room(&self.ledge, next);
+        // Keeping its room at any corner, a side wall too; too sharp to go
+        // round, it stops there.
+        let margin = met.as_ref().map_or(END_MARGIN, |(next, _)| near(next));
+        let corner = met.filter(|(next, turn)| turn.abs() <= if next.along().dot(self.ledge.out) < 0.0 { SHARPEST_OUTSIDE } else { SHARPEST_INSIDE });
         let end_at = if end == 1 { self.ledge.b } else { self.ledge.a };
         let room = (end_at - self.lips[lead]).dot(way) - margin;
         let length = STRIDE.min(room);
@@ -312,9 +361,11 @@ impl Hanging {
             from_turn: self.turn,
             from_out: self.ledge.out,
             from_along: self.ledge.along(),
-            inside: reach == INSIDE_CORNER,
+            inside: next.along().dot(self.ledge.out) >= 0.0,
         };
-        Some(step(to_lips, CORNER_CYCLE, Some(corner)))
+        // Longer the further it turns: no faster round than a right angle.
+        let cycle = CORNER_CYCLE * (turn.abs() / std::f32::consts::FRAC_PI_2).max(1.0);
+        Some(step(to_lips, cycle, Some(corner)))
     }
 
     /// Moves the step under way on `dt`, starting the next if still asked:
@@ -395,14 +446,23 @@ impl Hanging {
     pub(super) fn lip_now(&self, side: usize) -> Vec3 {
         let Some(step) = self.step.as_ref() else { return self.lips[side] };
         let u = step.hand(side);
-        if u <= 0.0 || u >= 1.0 || step.stays(side) {
+        if u <= 0.0 || step.stays(side) {
             return self.lips[side];
+        }
+        // Done moving: on its new hold, even the frame before the step marks
+        // it landed (the old hold that frame, a wrist jumped 6.4 cm back).
+        if u >= 1.0 {
+            return step.to_lips[side];
         }
         let (from, to) = (step.from_lips[side], step.to_lips[side]);
         let hump = (std::f32::consts::PI * u).sin();
         match step.corner.as_ref() {
             Some(corner) => {
-                let round = corner.at + (corner.from_out + corner.next.out).normalize_or(corner.from_out) * CORNER_HAND_OUT;
+                // Out along the corner's bisector, the further the sharper
+                // (as far from each face as round a right angle: at 0.1 m
+                // round 120° a wrist grazed the block by 4.9 mm).
+                let out = CORNER_HAND_OUT * std::f32::consts::FRAC_PI_4.cos() / (0.5 * corner.turn.abs()).cos().max(0.3);
+                let round = corner.at + (corner.from_out + corner.next.out).normalize_or(corner.from_out) * out;
                 let r = 1.0 - u;
                 from * (r * r) + round * (2.0 * r * u) + to * (u * u) + Vec3::Y * (HAND_LIFT * hump)
             }
@@ -432,8 +492,11 @@ impl Hanging {
             return corner.pivot + turned * (step.from_balls[side] - corner.pivot);
         }
         let u = across(step.share(), step.foot_window(side));
-        if u <= 0.0 || u >= 1.0 {
+        if u <= 0.0 {
             return self.wall_balls[side];
+        }
+        if u >= 1.0 {
+            return step.from_balls[side] + step.moved();
         }
         step.from_balls[side] + step.moved() * u + self.ledge.out * (FOOT_OUT * (std::f32::consts::PI * u).sin())
     }
@@ -489,7 +552,7 @@ impl Hanging {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{grabbing, real_stood, wall};
+    use super::super::tests::{grabbing, grabbing_among, real_stood, wall};
     use super::super::{ARMS, LEGS};
     use super::*;
     use crate::character::anim::rig::{forward_kinematics_on, BoneSet};
@@ -548,10 +611,37 @@ mod tests {
         }
     }
 
+    /// What the ledges' blocks are, for what is inside them: each its own
+    /// slab (walls meeting at an inside corner, a straight wall), or the
+    /// one solid behind every face (a block's outside corner, of any angle:
+    /// a sharp one's slabs would reach out in front of each other's face).
+    enum Solid {
+        Slabs,
+        Behind,
+    }
+
+    /// How deep `p` is inside the solid under `ledges`, metres.
+    fn inside_solid(solid: &Solid, ledges: &[Ledge], p: Vec3) -> f32 {
+        match solid {
+            Solid::Slabs => ledges.iter().map(|ledge| inside(ledge, p)).fold(0.0, f32::max),
+            Solid::Behind => {
+                let top = ledges[0];
+                let down = top.height() - p.y;
+                if down <= 0.0 || down >= top.wall_below {
+                    return 0.0;
+                }
+                ledges.iter().map(|ledge| -ledge.out_of(p)).fold(down, f32::min).max(0.0)
+            }
+        }
+    }
+
     fn shimmied(ledge: &Ledge, others: &[Ledge], ask: Shimmy, seconds: f32, then: f32) -> (Measured, Hanging) {
+        shimmied_in(ledge, others, &Solid::Slabs, ask, seconds, then)
+    }
+
+    fn shimmied_in(ledge: &Ledge, others: &[Ledge], solid: &Solid, ask: Shimmy, seconds: f32, then: f32) -> (Measured, Hanging) {
         let (_, rig) = real_stood();
-        let mut hanging = grabbing(ledge).expect("in reach");
-        hanging.set_others(others);
+        let mut hanging = grabbing_among(ledge, others, Vec3::new(0.2, 0.0, 1.0)).expect("in reach");
         hanging.advance(if hanging.is_braced() { 3.0 } else { 10.0 });
         let mut m = Measured { least_gap: f32::MAX, end_room: f32::MAX, ..Default::default() };
         let mut hips = Vec::new();
@@ -605,11 +695,9 @@ mod tests {
                 }
             }
             for bone in Bone::ALL {
-                for block in &blocks {
-                    let depth = inside(block, world[bone]);
-                    if depth > m.into_block {
-                        (m.into_block, m.deepest) = (depth, Some((bone, frame as f32 * DT)));
-                    }
+                let depth = inside_solid(solid, &blocks, world[bone]);
+                if depth > m.into_block {
+                    (m.into_block, m.deepest) = (depth, Some((bone, frame as f32 * DT)));
                 }
             }
         }
@@ -648,6 +736,23 @@ mod tests {
         }
     }
 
+    /// At a corner too sharp to go round (outward 135°, inward 120°) it stops
+    /// on its ledge, a hand always held, nothing in the block.
+    #[test]
+    fn it_stops_at_a_corner_too_sharp() {
+        let height = 2.15;
+        let front = Ledge::wall(Vec3::new(-0.2, 0.0, -0.5), Vec3::Z, 1.6, height, 1.0);
+        for (name, turn, solid) in [("outside 135°", 3.0 * std::f32::consts::FRAC_PI_4, Solid::Behind), ("inside 120°", -2.0 * std::f32::consts::FRAC_PI_3, Solid::Slabs)] {
+            let along = Quat::from_rotation_y(turn) * Vec3::X;
+            let next = Ledge { a: front.b, b: front.b + along * 1.2, out: along.cross(Vec3::Y), depth: 1.0, wall_below: height };
+            let (m, hanging) = shimmied_in(&front, &[next], &solid, Shimmy::Right, 6.0, 3.0);
+            assert!(same(hanging.ledge(), &front), "{name}: went round");
+            assert_eq!(m.none_held, 0, "{name}: frames with no hand on the lip");
+            assert!(m.held < 1.0e-3, "{name}: a held wrist {:.4} m off its hook", m.held);
+            assert!(m.into_block < 1.0e-3, "{name}: {:?} {:.4} m into a block", m.deepest, m.into_block);
+        }
+    }
+
     /// Shimmying on to the edge's end, it stops with its hands short of it.
     #[test]
     fn it_stops_at_the_edges_end() {
@@ -663,20 +768,34 @@ mod tests {
     /// either block, and at rest hanging square to the new face.
     #[test]
     fn it_shimmies_round_outside_and_inside_corners() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
         let height = 2.15;
         for below in [height, 0.15] {
             let with_wall = |ledge: Ledge| Ledge { wall_below: below, ..ledge };
             let block = Ledge::block(Vec3::new(-0.2, 0.0, -0.5), Vec3::Z, 1.6, 1.0, height).map(with_wall);
-            // The inside corner far enough on to come up to it (grabbed with
-            // the lead hand 0.19 m from it, the shoulder was against the
-            // side wall).
-            let front = with_wall(Ledge::wall(Vec3::new(-0.25, 0.0, -0.5), Vec3::Z, 2.3, height, 1.0));
-            let side = with_wall(Ledge::wall(Vec3::new(0.9, 0.0, 0.0), Vec3::NEG_X, 1.0, height, 0.5));
-            for (name, first, others, turn) in [("outside", block[0], block.to_vec(), std::f32::consts::FRAC_PI_2), ("inside", front, vec![side], -std::f32::consts::FRAC_PI_2)] {
+            // A wall's front, 1.6 m along +X to a corner at x 0.6, and the
+            // ledge carrying it on from there turned `turn` about +Y (outward
+            // positive), 1.2 m long.
+            let front = with_wall(Ledge::wall(Vec3::new(-0.2, 0.0, -0.5), Vec3::Z, 1.6, height, 1.0));
+            let turned_on = |turn: f32| {
+                let along = Quat::from_rotation_y(turn) * Vec3::X;
+                with_wall(Ledge { a: front.b, b: front.b + along * 1.2, out: along.cross(Vec3::Y), depth: 1.0, wall_below: height })
+            };
+            // The inside corner as near as the walk in grabs (the grab once
+            // put the lead hand 0.19 m from it, the shoulder against the
+            // side wall: it now keeps clear of it).
+            let cases = [
+                ("outside 90°", block[0], block.to_vec(), FRAC_PI_2, Solid::Slabs),
+                ("inside 90°", front, vec![turned_on(-FRAC_PI_2)], -FRAC_PI_2, Solid::Slabs),
+                ("outside 45°", front, vec![turned_on(FRAC_PI_4)], FRAC_PI_4, Solid::Behind),
+                ("outside 120°", front, vec![turned_on(2.0 * std::f32::consts::FRAC_PI_3)], 2.0 * std::f32::consts::FRAC_PI_3, Solid::Behind),
+                ("inside 45°", front, vec![turned_on(-FRAC_PI_4)], -FRAC_PI_4, Solid::Slabs),
+            ];
+            for (name, first, others, turn, solid) in cases {
                 let name = format!("{name}, {below} m of wall");
                 let (_, rig) = real_stood();
                 let facing = grabbing(&first).expect("in reach").facing();
-                let (m, hanging) = shimmied(&first, &others, Shimmy::Right, 6.0, 4.0);
+                let (m, hanging) = shimmied_in(&first, &others, &solid, Shimmy::Right, 7.0, 4.0);
                 assert_eq!(m.none_held, 0, "{name}: {} frames with no hand on the lip", m.none_held);
                 assert!(m.held < 1.0e-3, "{name}: a held wrist {:.4} m off its hook ({:?})", m.held, m.worst_held);
                 assert!(m.moving_off < 1.0e-3, "{name}: a moving wrist {:.4} m off its way ({:?})", m.moving_off, m.worst_moving);
@@ -686,7 +805,7 @@ mod tests {
                 assert!(m.acceleration < 3.0, "{name}: the hips accelerated {:.2} m/s²", m.acceleration);
                 assert!(m.settled_speed < 0.01, "{name}: still moving at {:.3} m/s", m.settled_speed);
                 let now = hanging.ledge();
-                assert!(now.out.dot(first.out).abs() < 1.0e-3, "{name}: not round the corner, on a face out {:?}", now.out);
+                assert!((now.out - first.out).length() > 0.1, "{name}: not round the corner, on a face out {:?}", now.out);
                 let turned = (hanging.facing() - facing + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                 assert!((turned - turn).abs() < 1.0e-3, "{name}: turned {turned:.3} rad");
                 // Square to the new face: the rig's forward into it.

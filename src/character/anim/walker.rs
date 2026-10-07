@@ -705,7 +705,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let square = super::parkour::Hanging::square(&ledge, rig.forward());
                 if state.ledge_spot.is_none_or(|(was, _, _)| was != ledge) {
                     let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
-                    let spot = super::parkour::Hanging::spot(&ledge, state.locomotion.position, square, &stood, rig);
+                    let spot = super::parkour::Hanging::spot(&ledge, &walker.ledges, state.locomotion.position, square, &stood, rig);
                     state.ledge_spot = Some((ledge, spot, false));
                     state.approach = approach::Approach::Idle;
                 }

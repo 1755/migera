@@ -114,6 +114,13 @@ const SIDEWAYS: f32 = 6.0;
 /// wrist: about the knuckles.
 const GUESSED_KNUCKLES: f32 = 0.08;
 
+/// How far the grip's middle stays from each end of `ledge` (`a`, `b`),
+/// its hands `lane` either side of it: a hand's width from a bare end, and
+/// as far as a hand keeps from a corner it may turn (`shimmy`).
+fn grip_margins(ledge: &Ledge, others: &[Ledge], lane: f32) -> [f32; 2] {
+    [0, 1].map(|end| lane + shimmy::hand_room(ledge, end, others).max(0.05))
+}
+
 /// The body as the standing pose has it, measured once.
 #[derive(Debug, Clone)]
 struct Body {
@@ -241,9 +248,12 @@ impl Hanging {
     /// (radians about `+Y`), from near `near`: its hips [`SPOT_OUT`] out
     /// from the face, under the edge's nearest point, on the floor at
     /// `near`'s height.
-    pub fn spot(ledge: &Ledge, near: Vec3, square: f32, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
-        let hips = forward_kinematics_on(stood, rig)[Bone::Hips];
-        let edge = ledge.nearest(near, 0.3);
+    pub fn spot(ledge: &Ledge, others: &[Ledge], near: Vec3, square: f32, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
+        let at = forward_kinematics_on(stood, rig);
+        let hips = at[Bone::Hips];
+        let lane = ARMS.map(|arm| (at[arm.shoulder] - hips).dot(rig.left()).abs());
+        let margins = grip_margins(ledge, others, lane[0].max(lane[1])).map(|margin| margin.max(0.3));
+        let edge = ledge.nearest_within(near, margins);
         let at = edge + ledge.out * SPOT_OUT - Quat::from_rotation_y(square) * hips;
         Vec3::new(at.x, near.y, at.z)
     }
@@ -323,8 +333,8 @@ impl Hanging {
     fn place_hands(&mut self, rig: &RigGeometry) {
         let left = self.turn * rig.left();
         let lane = self.body.shoulders.map(|s| s.dot(rig.left()).abs());
-        let margin = lane[0].max(lane[1]) + 0.05;
-        self.grip = self.ledge.nearest(self.stood_at + self.turn * self.body.hips, margin);
+        let margins = grip_margins(&self.ledge, &self.others, lane[0].max(lane[1]));
+        self.grip = self.ledge.nearest_within(self.stood_at + self.turn * self.body.hips, margins);
         self.lips = [0, 1].map(|side| self.grip + left * SIGN[side] * lane[side]);
         self.spread = lane[0] + lane[1];
     }
@@ -829,11 +839,18 @@ mod tests {
 
     /// A walker on its spot under `ledge`, grabbing it.
     pub(super) fn grabbing(ledge: &Ledge) -> Option<Hanging> {
+        grabbing_among(ledge, &[], Vec3::new(0.2, 0.0, 1.0))
+    }
+
+    /// A walker on its spot under `ledge` from near `near`, among `others`
+    /// (as the walker grabs), grabbing it.
+    pub(super) fn grabbing_among(ledge: &Ledge, others: &[Ledge], near: Vec3) -> Option<Hanging> {
         let (stood, rig) = real_stood();
         let square = Hanging::square(ledge, rig.forward());
-        let root = Hanging::spot(ledge, Vec3::new(0.2, 0.0, 1.0), square, &stood, &rig);
+        let root = Hanging::spot(ledge, others, near, square, &stood, &rig);
         let mut hanging = Hanging::grab(ledge, root, square, 0.0, &stood, &rig)?;
         hanging.set_grips(crate::character::anim::hand::puppet_grips(), &stood, &rig);
+        hanging.set_others(others);
         Some(hanging)
     }
 
@@ -997,7 +1014,7 @@ mod tests {
         for out in [Vec3::Z, Vec3::X, Vec3::NEG_X, Vec3::new(1.0, 0.0, 1.0).normalize()] {
             let ledge = Ledge::wall(-out * 0.5, out, 4.0, 2.15, 1.0);
             let square = Hanging::square(&ledge, rig.forward());
-            let root = Hanging::spot(&ledge, out * 1.5, square, &real_stood().0, &rig);
+            let root = Hanging::spot(&ledge, &[], out * 1.5, square, &real_stood().0, &rig);
             let mut hanging = Hanging::grab(&ledge, root, square, 0.0, &real_stood().0, &rig).expect("in reach");
             hanging.advance(4.0);
             assert!(hanging.is_braced());

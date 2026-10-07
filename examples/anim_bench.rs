@@ -113,7 +113,8 @@ fn main() {
                 ledge.wall_below = 0.15;
             }
             let square = Hanging::square(&ledge, rig.forward());
-            let spot = Hanging::spot(&ledge, Vec3::ZERO, square, &stood, &rig);
+            let others: &[Ledge] = if let Gait::Shimmy(_) = gait { &block } else { &[] };
+            let spot = Hanging::spot(&ledge, others, Vec3::ZERO, square, &stood, &rig);
             let mut hanging = Hanging::grab(&ledge, spot, square, 0.0, &stood, &rig).expect("a 2.15 m ledge in a standing jump's reach");
             match gait {
                 Gait::HangUp => {
@@ -122,7 +123,7 @@ fn main() {
                     Some((hanging, 3.8))
                 }
                 Gait::Shimmy(corner) => {
-                    hanging.set_others(&block);
+                    hanging.set_others(others);
                     hanging.advance(3.0);
                     hanging.shimmy(Some(Shimmy::Right));
                     Some((hanging, if corner { 6.0 } else { 4.0 }))

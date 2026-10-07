@@ -52,6 +52,17 @@ impl Ledge {
         self.a + self.along() * s
     }
 
+    /// The point on the edge nearest `point`, seen from above, no nearer its
+    /// end `a` than `margins[0]` nor `b` than `margins[1]` (the middle if
+    /// they overlap).
+    pub fn nearest_within(&self, point: Vec3, margins: [f32; 2]) -> Vec3 {
+        let length = (self.b - self.a).length();
+        let (low, high) = (margins[0], length - margins[1]);
+        let s = (point - self.a).dot(self.along());
+        let s = if low <= high { s.clamp(low, high) } else { 0.5 * (low + high) };
+        self.a + self.along() * s
+    }
+
     /// How far `point` is out in front of the wall's face, metres (negative:
     /// inside the wall).
     pub fn out_of(&self, point: Vec3) -> f32 {
@@ -76,7 +87,9 @@ impl Ledge {
     pub fn joined(&self, end: usize, others: &[Ledge]) -> Option<(Ledge, f32)> {
         let corner = if end == 0 { self.a } else { self.b };
         others.iter().find_map(|other| {
-            if (other.height() - self.height()).abs() > CORNER_GAP || other.along().dot(self.along()).abs() > 0.5 {
+            // Not near parallel (within 20°): ruled out at 60°, a 45° or 135°
+            // corner was never found.
+            if (other.height() - self.height()).abs() > CORNER_GAP || other.along().dot(self.along()).abs() > PARALLEL {
                 return None;
             }
             let next = if (other.a - corner).length() < CORNER_GAP {
@@ -109,6 +122,9 @@ impl Ledge {
 
 /// How near two ledges' ends must be to meet at a corner, metres.
 const CORNER_GAP: f32 = 0.02;
+/// Two edges nearer parallel than this (the cosine between them, 20°) meet
+/// in a straight run, not a corner.
+const PARALLEL: f32 = 0.94;
 
 /// A ground with ledges' tops on it: each top where it is (from just below
 /// it up), else the ground `under` it. For a walker that climbs up onto a
