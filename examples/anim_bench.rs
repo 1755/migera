@@ -46,6 +46,8 @@ enum Gait {
     Run(f32),
     Jump(f32, f32),
     Crouch(f32, bool),
+    /// Up a standard ladder, or (`true`) sliding down it from the top.
+    Climb(bool),
 }
 
 fn main() {
@@ -83,7 +85,26 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) => None,
+    };
+    // A climb (`ladder`): the clock is how far through climbing a standard
+    // ladder (8 s of 10), or through sliding it (grip, slide, landing and
+    // stepping back off, 4.5 s). The walker advances its climb a frame and
+    // poses it led ahead of its springs each frame; here a copy is advanced
+    // to the clock from its start, a little more work.
+    let climbing = match gait {
+        Gait::Climb(slide) => {
+            use migera::character::anim::ladder::{Climb, Climbing, Ladder};
+            let ladder = Ladder::standard(Vec3::new(0.0, 0.0, -1.0), Vec3::Z);
+            let square = 0.0;
+            let spot = Climbing::spot(&ladder, square, &stood, &rig);
+            let mut climbing = Climbing::new(&ladder, spot, square, square, 0.0, &stood, &rig);
+            if slide {
+                climbing.advance(Some(Climb::Up), 12.0);
+            }
+            Some((climbing, if slide { (Climb::Slide, 4.5) } else { (Climb::Up, 8.0) }))
+        }
+        _ => None,
     };
     let jump = match gait {
         Gait::Jump(height, distance) => {
@@ -125,6 +146,11 @@ fn main() {
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
+        _ if let Some((climbing, (ask, seconds))) = &climbing => {
+            let mut now = climbing.clone();
+            now.advance(Some(*ask), cycle * seconds);
+            Some((now.pose_led(&rig, &springs), None))
+        }
         _ if let Some(sneak) = &sneaking => Some((sneak.pose(cycle, &rig), Some(sneak.target().1))),
         _ if let Gait::Crouch(depth, on_toes) = gait => {
             use migera::character::anim::sneak::{Footing, Sneak};
@@ -162,6 +188,7 @@ fn main() {
         Gait::Jump(height, distance) => format!("   jump {height} m up, {distance} m forward"),
         Gait::Crouch(depth, on_toes) => format!("   crouch {depth}{}", if on_toes { " on the toes" } else { "" }),
         Gait::Sneak(speed, crouch, on_toes) => format!("   sneak {speed} m/s, crouch {crouch}{}", if on_toes { " on the toes" } else { "" }),
+        Gait::Climb(slide) => format!("   {} a ladder", if slide { "sliding down" } else { "climbing" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -254,6 +281,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("jump") => Gait::Jump(speed, distance),
         Some("crouch") => Gait::Crouch(speed, std::env::args().any(|a| a == "--on-toes")),
         Some("sneak") => Gait::Sneak(speed, crouch, std::env::args().any(|a| a == "--on-toes")),
+        Some("climb") => Gait::Climb(false),
+        Some("slide") => Gait::Climb(true),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

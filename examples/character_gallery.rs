@@ -33,6 +33,7 @@ use migera::character::anim::poses as anim_poses;
 use migera::character::anim::ground::{FlatGround, SlopedGround};
 use migera::character::anim::plugin::{AnimFootIk, AnimGround};
 use migera::character::anim::jump::JumpAsk;
+use migera::character::anim::ladder::{Climb, Ladder, LadderGround};
 use migera::character::anim::sneak::Sneak;
 use migera::character::anim::walker;
 use migera::character::anim::obstacles::{AnimObstacles, Footprints};
@@ -363,7 +364,7 @@ fn camera_controller(
     time: Res<Time>,
     cfg: Res<CameraConfig>,
     mut cams: Query<&mut Transform, With<Camera3d>>,
-    skeletons: Query<&HumanoidSkeleton>,
+    skeletons: Query<(&HumanoidSkeleton, Option<&walker::WalkerState>)>,
     globals: Query<&GlobalTransform>,
     idle: Res<AnimIdleConfig>,
 ) {
@@ -372,12 +373,16 @@ fn camera_controller(
             let mut transform = cfg.preset_transform();
             // `--camera-follow`: the view moves with the character's hips
             // across the floor, and up or down `--anim-slope` with the
-            // ground under them, so a fall or a climb stays in frame.
+            // ground under them, so a fall or a climb stays in frame; and up
+            // a ladder with the root its climb carries.
             if cfg.follow
-                && let Some(hips) = skeletons.iter().next().and_then(|s| globals.get(s.entity(Bone::Hips)).ok())
+                && let Some((skeleton, state)) = skeletons.iter().next()
+                && let Ok(hips) = globals.get(skeleton.entity(Bone::Hips))
             {
                 let (x, z) = (hips.translation().x, hips.translation().z);
-                transform.translation += Vec3::new(x, idle.slope * -z, z);
+                // Above the floor: up a ladder, or on its landing.
+                let climbed = state.map_or(0.0, |state| (state.locomotion.position.y - idle.slope * -z).max(0.0));
+                transform.translation += Vec3::new(x, idle.slope * -z + climbed, z);
             }
             for mut cam_transform in &mut cams {
                 *cam_transform = transform;
@@ -621,6 +626,8 @@ fn controls_panel(
     mut sit: ResMut<SitConfig>,
     mut jumps: ResMut<JumpSchedule>,
     mut sneaks: ResMut<SneakSchedule>,
+    mut climbs: ResMut<ClimbSchedule>,
+    climbers: Query<&walker::WalkerState>,
     mut characters: Query<(&mut AnimTarget, &mut AnimSprings)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -719,6 +726,40 @@ fn controls_panel(
                     sneaks.touched = true;
                 }
             });
+
+            // Climbing a ladder (`character::anim::ladder`): up (walking to
+            // it first), down, or holding on; its shape, while off it.
+            ui.horizontal(|ui| {
+                ui.label("Ladder");
+                for (label, climb) in [("Up", Some(Climb::Up)), ("Down", Some(Climb::Down)), ("Slide", Some(Climb::Slide)), ("Hold", None)] {
+                    if ui.button(label).clicked() {
+                        climbs.panel = climb;
+                        climbs.touched = true;
+                    }
+                }
+            });
+            let off = climbers.iter().all(|state| state.climbing.is_none());
+            let mut ladder = climbs.ladder.unwrap_or_else(|| Ladder::standard(Vec3::new(0.0, 0.0, -1.5), Vec3::Z));
+            let was = ladder;
+            ui.add_enabled_ui(off, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut ladder.spacing, 0.2..=0.45).text("Rungs apart (m)"));
+                    ui.add(egui::Slider::new(&mut ladder.width, 0.3..=0.7).text("Width (m)"));
+                });
+                ui.horizontal(|ui| {
+                    let mut lean = ladder.lean.to_degrees();
+                    ui.add(egui::Slider::new(&mut lean, 0.0..=20.0).text("Lean (°)"));
+                    ladder.lean = lean.to_radians();
+                    ui.add(egui::Slider::new(&mut ladder.rungs, 4..=20).text("Rungs"));
+                    let mut landing = ladder.landing.is_some();
+                    ui.checkbox(&mut landing, "Landing");
+                    ladder.landing = landing.then_some(Vec2::splat(LANDING_SIZE));
+                });
+            });
+            if ladder != was {
+                ladder.first = ladder.spacing;
+                climbs.ladder = Some(ladder);
+            }
 
             ui.add(
                 // Up to a fast run (`character::anim::run`): egui clamps a
@@ -1122,6 +1163,7 @@ fn steer_the_walker(
     mut steps: ResMut<StepAsideSchedule>,
     mut jumps: ResMut<JumpSchedule>,
     sneaks: Res<SneakSchedule>,
+    climbs: Res<ClimbSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
     let due = pushes.due(time.elapsed_secs());
@@ -1138,6 +1180,8 @@ fn steer_the_walker(
             walker.jump = jump;
         }
         walker.sneak = sneaks.at(time.elapsed_secs());
+        walker.ladder = climbs.ladder;
+        walker.climb = climbs.at(time.elapsed_secs());
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
@@ -1230,6 +1274,152 @@ impl SneakSchedule {
         }
         self.due.iter().rev().find(|(at, _)| elapsed >= *at).map_or(self.panel, |&(_, sneak)| sneak)
     }
+}
+
+/// Climbing a ladder (`character::anim::ladder`). `--ladder
+/// X,Z,HEADING[,SPACING[,WIDTH[,LEAN[,RUNGS]]]]` stands one with its foot at
+/// (X, Z), climbed from the side HEADING degrees points to (the way a
+/// climber standing off it faces back; 0 is `-Z`), its rungs SPACING metres
+/// apart (default 0.3), WIDTH between the rails (0.42), its top LEAN
+/// degrees from vertical (0), RUNGS of them (12); `--landing` leads it onto
+/// a landing at its top, which it steps off onto and gets on from.
+/// `--climb-schedule T:up|down|slide|hold,...` asks from T seconds on, until
+/// the next entry (`walker::Walker::climb`), e.g. `1:up,14:down`. The panel's
+/// buttons and sliders take over once touched; a slider changes the ladder
+/// only while the character is off it.
+/// The gallery's landing's width and depth, metres.
+const LANDING_SIZE: f32 = 2.0;
+
+#[derive(Resource, Debug, Clone)]
+struct ClimbSchedule {
+    due: Vec<(f32, Option<Climb>)>,
+    ladder: Option<Ladder>,
+    panel: Option<Climb>,
+    touched: bool,
+}
+
+impl ClimbSchedule {
+    fn from_args() -> Self {
+        let (mut due, mut ladder, mut landing) = (Vec::new(), None, false);
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--ladder" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, ref rest @ ..] = numbers[..] {
+                        let mut found = Ladder::standard(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()));
+                        if let Some(&spacing) = rest.first() {
+                            (found.spacing, found.first) = (spacing, spacing);
+                        }
+                        if let Some(&width) = rest.get(1) {
+                            found.width = width;
+                        }
+                        if let Some(&lean) = rest.get(2) {
+                            found.lean = lean.to_radians();
+                        }
+                        if let Some(&rungs) = rest.get(3) {
+                            found.rungs = rungs as u32;
+                        }
+                        ladder = Some(found);
+                    }
+                }
+                "--landing" => landing = true,
+                "--climb-schedule" => {
+                    for entry in args.next().unwrap_or_default().split(',') {
+                        let mut parts = entry.split(':');
+                        let (Some(at), Some(how)) = (parts.next().and_then(|t| t.trim().parse::<f32>().ok()), parts.next()) else { continue };
+                        let climb = match how.trim() {
+                            "up" => Some(Climb::Up),
+                            "down" => Some(Climb::Down),
+                            "slide" => Some(Climb::Slide),
+                            _ => None,
+                        };
+                        due.push((at, climb));
+                    }
+                }
+                _ => {}
+            }
+        }
+        due.sort_by(|a: &(f32, Option<Climb>), b| a.0.total_cmp(&b.0));
+        // Asked to climb with no ladder given: one 1.5 m ahead of where the
+        // character stands.
+        if ladder.is_none() && (!due.is_empty() || landing) {
+            ladder = Some(Ladder::standard(Vec3::new(0.0, 0.0, -1.5), Vec3::Z));
+        }
+        // `--landing`: it leads onto a landing 2 m square.
+        if landing && let Some(ladder) = ladder.as_mut() {
+            ladder.landing = Some(Vec2::splat(LANDING_SIZE));
+        }
+        Self { due, ladder, panel: None, touched: false }
+    }
+
+    /// The climb asked at `elapsed` seconds.
+    fn at(&self, elapsed: f32) -> Option<Climb> {
+        if self.touched {
+            return self.panel;
+        }
+        self.due.iter().rev().find(|(at, _)| elapsed >= *at).and_then(|&(_, climb)| climb)
+    }
+}
+
+/// The gallery's ladder, as drawn: redrawn when the ladder changes.
+#[derive(Component)]
+struct GalleryLadder(Ladder);
+
+#[allow(clippy::too_many_arguments)]
+fn place_ladder(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    climbs: Res<ClimbSchedule>,
+    idle: Res<AnimIdleConfig>,
+    drawn: Query<(Entity, &GalleryLadder)>,
+    walkers: Query<Entity, With<Walker>>,
+) {
+    let Some(ladder) = climbs.ladder else { return };
+    if let Ok((_, GalleryLadder(was))) = drawn.single()
+        && *was == ladder
+    {
+        return;
+    }
+    for (entity, _) in &drawn {
+        commands.entity(entity).despawn();
+    }
+    // The walker stands on the landing once off the ladder onto it: its
+    // ground the gallery's floor with the landing on it.
+    for walker in &walkers {
+        let under: Box<dyn migera::character::anim::ground::GroundProbe> =
+            if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
+        commands.entity(walker).insert(AnimGround(Box::new(LadderGround { under, ladders: vec![ladder] })));
+    }
+    let metal = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    let (up, left) = (ladder.up(), ladder.left());
+    // The ladder's own frame: across it, up its rails, out of it.
+    let frame = Quat::from_mat3(&Mat3::from_cols(-left, up, ladder.normal()));
+    let mut parts = Vec::new();
+    // Each rail, outside the rungs, from the floor to a rung past the top.
+    for side in [-1.0f32, 1.0] {
+        let length = ladder.length();
+        let middle = ladder.base + left * side * (0.5 * ladder.width + 0.02) + up * (0.5 * length);
+        parts.push((meshes.add(Cuboid::new(0.04, length, 0.06)), Transform::from_translation(middle).with_rotation(frame)));
+    }
+    for i in 0..ladder.rungs as i32 {
+        let rung = meshes.add(Cylinder::new(Ladder::RUNG_RADIUS, ladder.width));
+        parts.push((rung, Transform::from_translation(ladder.rung(i)).with_rotation(frame * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))));
+    }
+    // Its landing: a slab 0.15 m thick, its top level with the top rung's,
+    // just clear of the rungs.
+    if let Some((middle, onto, size)) = ladder.landing_area() {
+        let (gap, thick) = (0.02, 0.15);
+        let slab = meshes.add(Cuboid::new(size.x, thick, size.y - gap));
+        let at = middle + onto * (0.5 * gap) - Vec3::Y * (0.5 * thick);
+        parts.push((slab, Transform::from_translation(at).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, onto))));
+    }
+    commands.spawn((GalleryLadder(ladder), Transform::default(), Visibility::default())).with_children(|parent| {
+        for (mesh, transform) in parts {
+            parent.spawn((Mesh3d(mesh), MeshMaterial3d(metal.clone()), transform));
+        }
+    });
 }
 
 impl JumpSchedule {
@@ -2084,9 +2274,10 @@ fn main() {
         .insert_resource(StepAsideSchedule::from_args())
         .insert_resource(JumpSchedule::from_args())
         .insert_resource(SneakSchedule::from_args())
+        .insert_resource(ClimbSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, place_chair.after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

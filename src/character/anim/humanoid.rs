@@ -24,6 +24,9 @@ impl Plugin for HumanoidPlugin {
     fn build(&self, app: &mut App) {
         // The fingers curl the moment a rig binds, before anything reads it.
         app.add_systems(Update, (bind_gltf_humanoids, super::hand::relax_hands).chain().in_set(HumanoidSet::Bind));
+        // Fingers closing round what a hand holds (`hand::RelaxedHands::grip`),
+        // once what holds it has asked.
+        app.add_systems(Update, super::hand::close_hands.after(super::plugin::AnimSet::Target));
     }
 }
 

@@ -153,4 +153,5 @@ swings mostly backward.
 
 - [A gait-timed motion cannot ride a weighty spring](./a-gait-timed-motion-cannot-ride-a-weighty-spring.md) — prerequisite: why the arms spring at 0.03 s, so the measured swing is the authored one.
 - [Getting up goes through key poses](../ragdoll-and-physics/getting-up-is-a-timed-blend-then-a-re-pin.md) — context: the flat palm the fingers straighten onto, and its virtual fingertip.
+- [A ladder is climbed limb by limb between holds](./a-ladder-is-climbed-limb-by-limb-between-holds.md) — contrast: where `RelaxedHands::grip` closes the fingers round a rung (`hand::gripped`) instead of this relaxed curl.
 - [A measurement of a broken system](../../engineering-practice/measurement/a-measurement-of-a-broken-system.md) — same-trap: the forward bias was tuned by eye after the swing was fixed to move the hands, and was never checked against a recording.

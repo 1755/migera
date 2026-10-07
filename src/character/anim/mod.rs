@@ -69,6 +69,7 @@ pub mod getup;
 pub mod gltf_rig;
 pub mod hand;
 pub mod jump;
+pub mod ladder;
 pub mod humanoid;
 pub mod joint_drive;
 pub mod legik;

@@ -1370,7 +1370,9 @@ fn tuck_foot(
 
 /// Draws `finger` at `bend` (0 flat, 1 relaxed, more curled further).
 fn set_finger(finger: &super::hand::FingerJoints, bend: f32, transforms: &mut ParamSet<(Query<&mut Transform>, TransformHelper)>) {
-    for ((entity, _, _), rotation) in finger.joints.iter().zip(super::hand::finger_bent(finger, bend)) {
+    // Closed round a bar as far as it grips (`hand::close_hands`).
+    let drawn = super::hand::finger_drawn(&super::hand::FingerJoints { bend, ..*finger });
+    for ((entity, _, _), rotation) in finger.joints.iter().zip(drawn) {
         if let Ok(mut transform) = transforms.p0().get_mut(*entity) {
             transform.rotation = rotation;
         }

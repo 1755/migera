@@ -210,6 +210,10 @@ pub struct AnimFootIk {
     /// keeps each knee in its leg's plane, so a cross-legged pose's knees,
     /// turned 55° out, came back pointing straight ahead.
     pub legs_free: bool,
+    /// Off the floor altogether (`ladder`), its root carried up with it:
+    /// with [`Self::legs_free`], the pose is not lifted clear of the floor
+    /// at the root's height, which on a ladder is in the air at the feet.
+    pub off_floor: bool,
 }
 
 /// Where a landing has each foot down this frame, in the pose's frame
@@ -808,7 +812,7 @@ fn solve_foot_ik(
             // (`sitting::clear_floor`), but a foot turning fast near the
             // floor trails it, and kneeling down a toe tip went 47 mm under.
             let under = -super::sitting::lowest_point(&solved, &rig);
-            if under > 0.0 {
+            if under > 0.0 && !foot_ik.off_floor {
                 solved.root_translation.y += under;
             }
             foot_ik.corrected = Some(solved);

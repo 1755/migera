@@ -148,6 +148,11 @@ pub fn solve_two_bone(
 /// `dot ≈ -0.99`. At exactly 180 degrees the axis is genuinely arbitrary —
 /// any perpendicular is correct — so rather than let the library pick
 /// unpredictably, a stable perpendicular is chosen here.
+///
+/// Near opposite, it half-turns about that perpendicular and then takes the
+/// short arc from `-from` onto `to`. The half-turn alone landed on `-from`,
+/// up to 1.8° off `to` inside the guard: an arm's elbow aimed past its
+/// hanging direction came out 7 mm wide.
 pub fn look_rotation(from: Vec3, to: Vec3) -> bevy::math::Quat {
     use bevy::math::Quat;
 
@@ -166,7 +171,8 @@ pub fn look_rotation(from: Vec3, to: Vec3) -> bevy::math::Quat {
         let fallback = if from.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
         let axis = from.cross(fallback).normalize_or_zero();
         let axis = if axis == Vec3::ZERO { Vec3::Y } else { axis };
-        return Quat::from_axis_angle(axis, std::f32::consts::PI);
+        let half_turn = Quat::from_axis_angle(axis, std::f32::consts::PI);
+        return (Quat::from_rotation_arc(-from, to) * half_turn).normalize();
     }
 
     Quat::from_rotation_arc(from, to)
@@ -596,6 +602,22 @@ mod tests {
                 "bend must be a non-negative angle from straight, got {bend} for target \
                  {target}",
             );
+        }
+    }
+
+    #[test]
+    fn look_rotation_lands_on_a_nearly_opposite_target() {
+        // Within the antipodal guard (1.8° of opposite) but not at it: a
+        // plain half-turn lands on `-from`, off `to` by up to 1.8°, which
+        // left a lifted arm's elbow 7 mm off (`ladder`).
+        for from in [Vec3::X, Vec3::NEG_Y, Vec3::new(1.0, -2.0, 3.0).normalize()] {
+            let side = from.any_orthonormal_vector();
+            for degrees in [179.0f32, 179.5, 179.9, 180.0] {
+                let to = Quat::from_axis_angle(side, degrees.to_radians()) * from;
+                let rotation = look_rotation(from, to);
+                assert!(rotation.is_normalized(), "must be a unit quaternion");
+                assert!((rotation * from - to).length() < 1.0e-4, "{from:?} {degrees}°: landed {:?}, wanted {to:?}", rotation * from);
+            }
         }
     }
 

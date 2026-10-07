@@ -41,6 +41,180 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Ladders: climbing upright, the hands high, the knees between the rungs
+
+The climb folded at the hips over hands held at the chest: the trunk leant
+in 0.16 rad, the hips 0.55 of the leg out, the standard ladder's hands
+0.1 of the arm below the shoulder. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md).
+
+- **Upright:** no lean in (`LEAN` 0); the trunk along the rails.
+- **The hips in for the hands** (`pattern_and_hips_for`): from 0.55 of the
+  leg in to 0.36, the distance holding the hands highest, among those whose
+  feet pass each other as the spacing has them. Standard ladder: 0.37.
+- **A far reach lifts its shoulder** (`shoulder_lift`): the clavicle turns
+  toward a wrist past 0.85 of the arm, up to 0.4 rad, in closed form; the
+  planning reaches with the same lifted shoulder.
+- **The hips bow out for the knees** (`bow_for`): each step's hips bow out
+  (`sin²`, still at both ends) by the least of 0-0.15 m keeping each knee
+  5.5 cm from every rung's axis and rail, judged on the legs at 31 moments,
+  cached per step. Up needs none, down about 12.5 cm. Replaces turning the
+  knees out, which with the hips in splayed them past or onto the rails.
+- **Elbows down and back:** the rung pole lost its sideways part (elbows
+  had been 10-19 cm out past the rails), and a pole turns from one hold's
+  to the next over the hand's move (switched at the step's start, a wrist
+  bent 76°).
+- **At the top** the hips ease back out over two rungs; **onto the rails**
+  (Grip) they go out to 0.55 first (a knee slid 0.9 cm from a rung).
+- **Fixed on the way:**
+  - `math::ik::look_rotation` returned a bare half-turn within 1.8° of
+    opposite, landing aims up to 8 mm off; it now adds the short arc onto
+    the target
+    ([the lesson](./docs/knowledge/character-animation/ik-and-locomotion/an-antipodal-guard-must-still-land-on-the-target.md));
+  - a reaching lean coming and going within a step, under `pose_led`'s
+    per-bone leads, put both fists 15-33 cm through the ladder; the hands'
+    rung is now chosen with margin (the lean at most 0.06 rad).
+- **Headless** (7 ladders): the trunk at most 0.06 rad in; the hands'
+  median rung +0.38 to +0.46 of the arm above the shoulder on rungs
+  0.22-0.3 m apart (+0.10 at 0.36 m, -0.17 at 0.45, -0.08 leaning); held
+  hands within 0.1 mm; knees at least 4.7 cm from a rung's axis, 6.6 cm from
+  a rail's; arms 9.7 cm from the rails; wrists at most 49°; the hips at most
+  8.5 m/s².
+- **Seen:** Left and Back, gizmos on and the bare mesh, up and down the
+  standard ladder and up the wide one.
+- **Tests:** `it_climbs_upright_its_hands_above_its_shoulders`,
+  `led_no_hand_passes_through_the_ladder`,
+  `a_far_reach_lifts_the_shoulder_and_the_arm_lands_on_it`,
+  `math::ik::tests::look_rotation_lands_on_a_nearly_opposite_target`; the
+  knee and arm clearances restated. With the bow disabled, three ladder
+  tests fail (a knee 1.7 cm from a rung).
+- **Cost:** 52 µs a character a frame climbing (p99 56), 45 sliding;
+  744 µs before the bows were cached.
+
+1215 library tests pass; clippy is clean.
+
+### Ladders: a landing at the top, hands that grip, knees out of the rungs
+
+The three open items from the ladder entry below, closed. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md).
+
+- **A landing** (`Ladder::landing`, `LadderGround`):
+  - the rails run on 1.07 m past the top rung, and rail grips count as
+    rungs at those heights (`highest_grip`);
+  - climbing up, the feet step past the top rung onto the landing
+    (`Hold::Top`), the hands moving to the rails and sliding with the body,
+    and let go standing on it;
+  - asked down from the landing it walks to the edge (or gets on in place
+    when within 0.6 m), shuffles to the rail tops, grips them and steps
+    back onto the rungs;
+  - a foot crossing the top goes out of the ladder, up, then across
+    (`over_top`), clear of the top rung.
+- **The fingers close** (`hand::gripped`, `HandGrip`, `close_hands`):
+  - each phalanx is laid as a chord round the rung (radius 16 mm plus the
+    finger's 9 mm half thickness) about one axis across the palm;
+  - the hand is placed with the fingers along the forearm, tipped 0.3 rad
+    over the bar; on the rails the grip slants and the elbow goes out; the
+    forearm takes the roll about its own line;
+  - the fingers close as a hand arrives and open as it leaves, in the
+    physics rig too (`finger_drawn`).
+- **The knees turn out** (`clear_knee`): each leg turns outward about its
+  hip-to-ankle line, analytically, until the knee is 0.1 m out of the
+  rungs' plane (at most 0.8 rad), fading out 0.2 m above the top rung.
+- **Fixed on the way:**
+  - a numeric search for the knee turn snapped to its range's end or to
+    the far side (1,400-2,900 m/s² at the knee); analytic, outward only, it
+    is back to 206;
+  - the knee's soft maximum overflowed `exp` to infinity standing on the
+    landing;
+  - a finger's bend axis taken from its own pose flipped past 90°, bending
+    the end joint backward (tip 49 mm off the bar);
+  - grips placed square to the rung bent the wrists 97-160°; now at most
+    62°;
+  - an unnormalized grip line put the palm 0.24 rad off on a leaning
+    ladder;
+  - the real hand grips made the standard ladder's hands look out of reach,
+    so the pattern is judged with the trunk's lean (`within_reach`).
+- **Headless** (7 ladders, 4 of them also with a landing): hands within 5 mm of their grips,
+  the bar under 0.1 mm from the finger chords, the wrist at most 62°;
+  knees at least 9.8 cm out of the rungs' plane (5 cm before); the hips at
+  most 7.6 m/s².
+- **Live** (standard ladder with a landing, up, off, back on, down): no
+  drop; the worst pelvis jolt 21.5 m/s², the walk's stop; the middle
+  finger's joints 20-30 mm from the rung's axis.
+- **Seen:** Left and Back, gizmos on: stepping off onto the landing,
+  standing between the rail tops, getting on from the top.
+- **Tests:** `a_hand_closes_round_its_rung_or_rail`,
+  `a_landing_is_stepped_off_at_the_top_and_got_on_from`,
+  `hand::tests::a_gripping_finger_wraps_a_rung_beside_the_palm`; the hold
+  test now asserts the knees' 9.5 cm clearance and their acceleration.
+- **Gallery:** `--landing`, and a Landing checkbox.
+- **Cost:** 50 µs a character a frame climbing, 43 sliding (32 and 31
+  before; a walk: 23).
+
+1211 library tests pass; clippy is clean.
+
+### Ladders: climbing up, down, and sliding down the rails
+
+A walker asked up a ladder (`Walker::ladder`, `Walker::climb`) walks to a
+spot square in front of it, gets on, climbs to the top and holds on. Asked
+down it climbs down and steps off; asked to slide it slides down the rails.
+New module `ladder`. See
+[the note](./docs/knowledge/character-animation/ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md).
+
+- **Planned limb by limb** (`ladder::Climbing`):
+  - each step moves limbs between holds (floor, rung, rail), four-beat
+    lateral (McIntyre 1983; Jensen and Holland 2020);
+  - the hips stand where the lowest foot just reaches, at its lift-off
+    going up and its landing coming down;
+  - legs solved to each ball on its rung, arms by the elbow-pole IK to each
+    grip, the hand tipped over the rung.
+- **Adapted to the ladder:**
+  - the rungs' spacing picks the pattern: each foot passing the other at
+    0.22-0.3 m, both feet to each rung at 0.36 m and wider;
+  - it also picks the hands' rung: 5 rungs above the foot at 0.22 m, 3 at
+    0.3 m;
+  - the width spaces the hands and feet, the lean tilts the body with the
+    rails;
+  - the hips rise at 0.41 m/s and come down at 0.38 (Simeonov et al.
+    2020).
+- **The slide:** hands round the rails, feet pressed to them; it speeds up
+  at 4 m/s² to at most 2 m/s, lands at 1 m/s beside the rails, and steps
+  back to where it got on.
+- **In the walker:**
+  - the root rides the hips, unground;
+  - the legs are left free and not lifted clear of a floor at the root
+    (`AnimFootIk::off_floor`);
+  - each bone is led ahead of its spring (`Climbing::pose_led`);
+  - the look turns only the neck and head, and the idle's arm and chest
+    sway fade as the hands hold.
+- **Fixed on the way:**
+  - a ladder normal pointing into the ladder mirrored every grip;
+  - down steps that ended with the hand landed the foot 2-9 cm short;
+  - at the top a hand went up for a step never taken;
+  - the look's spine share moved held hands 8-9 cm live;
+  - stepping off jumped the body 4 cm aside and 7.6 mm down in a frame
+    (145 m/s²), from the idle sway and the foot IK's pelvis drop coming
+    back at once.
+- **Live** (standard ladder, up, holding, down; up then slid):
+  - held hands median 3 mm from their grips, planted balls 0.23 mm a frame
+    (95th percentile);
+  - the pelvis at most 3.9 m/s² climbing, 6.4 taking a slide's landing.
+- **Seen:** Left and Back (the Front looks through the ladder), gizmos on
+  and the bare mesh, climbing up, holding at the top, climbing down,
+  gripping the rails and sliding.
+- **Tests (7 ladders):** every hold held, knees forward and clear of the
+  rungs, soles clear while moving, the pace, the pattern by spacing, holding
+  on mid-step, standing again where it got on, and the slide.
+- **Gallery:** `--ladder X,Z,HEADING[,SPACING,WIDTH,LEAN,RUNGS]`,
+  `--climb-schedule T:up|down|slide|hold`, panel buttons and ladder
+  sliders; `--camera-follow` rises with the climb.
+- **Cost** (`anim_bench --gait climb|slide`): 32 µs a character a frame
+  climbing, 31 sliding (a walk: 23).
+- **Open:** no getting off at the top onto a landing; the fingers keep
+  their relaxed curl, not closed round a rung.
+
+1208 library tests pass; clippy is clean.
+
 ### A sneak carries its hands
 
 The sneak's arms read as robotic: both upper arms swung forward and both

@@ -160,6 +160,69 @@ pub fn curled(bind: &FingerBind, palm: Vec3, degrees: [f32; 3]) -> [Quat; 3] {
     out
 }
 
+/// The radius of a bar a gripping hand closes round, metres: a ladder's rung
+/// or rail (`ladder::Ladder::RUNG_RADIUS`).
+pub const GRIP_RADIUS: f32 = 0.016;
+/// From a finger joint's centre to the finger's palm-side skin, metres.
+pub const FINGER_HALF_THICKNESS: f32 = 0.009;
+/// The most each finger joint bends, degrees: knuckle, middle and end
+/// (active flexion, about 90°, 110° and 80°).
+pub const MOST_FLEXION: [f32; 3] = [90.0, 110.0, 80.0];
+/// The thumb's gripping bend, degrees at its base, middle and end joints,
+/// across the palm: over the bar from the other side.
+pub const GRIP_THUMB: [f32; 3] = [15.0, 45.0, 40.0];
+
+/// Each joint's position down a finger, in the hand's frame, its joints'
+/// local rotations replaced by `rotations`: the knuckle, the two joints
+/// past it and the tip.
+pub fn finger_positions(bind: &FingerBind, rotations: [Quat; 3]) -> [Vec3; 4] {
+    let (mut frame, mut at) = bind.base;
+    let mut out = [Vec3::ZERO; 4];
+    for k in 0..3 {
+        at += frame * bind.joints[k].1;
+        out[k] = at;
+        frame *= rotations[k];
+    }
+    out[3] = at + frame * bind.tip;
+    out
+}
+
+/// A finger closed round a bar ([`GRIP_RADIUS`]) lying across the palm at
+/// its knuckle: its joints' local rotations, and the bar's centre, in the
+/// hand's frame. `palm` is the palm's normal.
+///
+/// Laid round the bar: its joints on a circle a finger's half thickness out
+/// from it, each bone a chord, so each joint turns by half its two bones'
+/// arcs (the knuckle by half its bone's, from the palm's tangent), no
+/// further than [`MOST_FLEXION`].
+///
+/// Built to the finger, not at fixed angles: `puppet_base`'s fingers are
+/// long, and at a measured power grip's angles their joints went round a bar
+/// 54-68 mm across, not touching a 32 mm rung.
+pub fn gripped(bind: &FingerBind, palm: Vec3) -> ([Quat; 3], Vec3) {
+    let x = bind.first_segment();
+    let y = (palm - x * palm.dot(x)).normalize_or_zero();
+    let radius = GRIP_RADIUS + FINGER_HALF_THICKNESS;
+    let at = finger_positions(bind, bind.joints.map(|(rotation, _)| rotation));
+    let arc = |k: usize| 2.0 * ((at[k + 1] - at[k]).length() / (2.0 * radius)).min(1.0).asin();
+    let turns = [0.5 * arc(0), 0.5 * (arc(0) + arc(1)), 0.5 * (arc(1) + arc(2))];
+    // About one axis across the palm for every joint: `curled`'s, each
+    // segment crossed with the palm's normal, flips once the finger has
+    // turned past 90°, and the end joint bent back out, its tip 49 mm off
+    // the bar.
+    let axis = x.cross(y).normalize_or_zero();
+    let mut above = bind.base.0;
+    let mut rotations = [Quat::IDENTITY; 3];
+    for k in 0..3 {
+        let (rotation, _) = bind.joints[k];
+        let frame = above * rotation;
+        let bend = Quat::from_axis_angle((frame.inverse() * axis).normalize_or(Vec3::X), turns[k].min(MOST_FLEXION[k].to_radians()));
+        rotations[k] = rotation * bend;
+        above = frame * bend;
+    }
+    (rotations, bind.knuckle() + y * radius)
+}
+
 /// The finger's three joints' local rotations for a hand laid flat on the
 /// floor: a finger straight (its bind), the thumb turned at its base into
 /// the palm's plane.
@@ -199,6 +262,10 @@ pub struct FingerJoints {
     pub joints: [(Entity, Quat, Quat); 3],
     pub tip: Entity,
     pub bend: f32,
+    /// Its joints closed round a bar ([`gripped`]), and how far toward them
+    /// it is drawn, 0-1 ([`finger_drawn`]).
+    pub gripped: [Quat; 3],
+    pub grip: f32,
 }
 
 /// A character's fingers, left hand then right.
@@ -210,6 +277,79 @@ pub struct RelaxedHands {
     /// Whether each hand's fingers give way straighter (its palm toward the
     /// ground) rather than curled further; see [`palm_faces_ground`].
     pub straighten: [bool; 2],
+    /// How closed round a bar each hand is asked to be, 0 (relaxed) to 1:
+    /// written by whatever holds one (a ladder's climb), eased to
+    /// ([`close_hands`]).
+    pub grip: [f32; 2],
+    /// Each hand's grip ([`HandGrip`]), in its own frame, if its fingers
+    /// were all found.
+    pub grips: [Option<HandGrip>; 2],
+}
+
+/// Where a hand holds a bar, in the hand's frame: the bar's axis passes
+/// through `bar`, the palm faces `palm`, the fingers run along `along` (laid
+/// flat).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HandGrip {
+    pub bar: Vec3,
+    pub palm: Vec3,
+    pub along: Vec3,
+}
+
+/// A hand's grip from its four fingers' binds (`palm` its normal): the bar
+/// they close round ([`gripped`]), at the middle of their four centres.
+/// `None` without all four.
+pub fn grip_of(fingers: &[(Finger, FingerBind)], palm: Vec3) -> Option<HandGrip> {
+    let closing: Vec<&FingerBind> = fingers.iter().filter(|(finger, _)| *finger != Finger::Thumb).map(|(_, bind)| bind).collect();
+    if closing.len() < 4 {
+        return None;
+    }
+    let bar = closing.iter().map(|bind| gripped(bind, palm).1).sum::<Vec3>() / closing.len() as f32;
+    let along = closing.iter().map(|bind| bind.first_segment()).sum::<Vec3>().normalize_or_zero();
+    Some(HandGrip { bar, palm, along: (along - palm * along.dot(palm)).normalize_or_zero() })
+}
+
+/// `finger`'s joints' local rotations as drawn: bent ([`finger_bent`]) and
+/// closed round a bar by its grip.
+pub fn finger_drawn(finger: &FingerJoints) -> [Quat; 3] {
+    let bent = finger_bent(finger, finger.bend);
+    [0, 1, 2].map(|k| {
+        let gripped = if bent[k].dot(finger.gripped[k]) < 0.0 { -finger.gripped[k] } else { finger.gripped[k] };
+        bent[k].slerp(gripped, finger.grip.clamp(0.0, 1.0)).normalize()
+    })
+}
+
+/// How fast a hand closes round a bar, in grips a second (shut in 0.12 s),
+/// and opens again (0.2 s).
+pub const CLOSE_RATE: f32 = 8.0;
+pub const OPEN_RATE: f32 = 5.0;
+
+/// Eases every hand's fingers toward the grip asked ([`RelaxedHands::grip`])
+/// and draws them, unless a ragdoll draws them (`ragdoll_plugin`, which
+/// draws them grip and all).
+pub fn close_hands(time: Res<Time>, mut hands: Query<(&mut RelaxedHands, Has<super::Ragdoll>)>, mut transforms: Query<&mut Transform>) {
+    let dt = time.delta_secs();
+    for (mut hands, ragdolled) in &mut hands {
+        let hands = &mut *hands;
+        for side in 0..2 {
+            let asked = hands.grip[side].clamp(0.0, 1.0);
+            for finger in &mut hands.fingers[side] {
+                if finger.grip == asked {
+                    continue;
+                }
+                let rate = if asked > finger.grip { CLOSE_RATE } else { OPEN_RATE } * dt;
+                finger.grip += (asked - finger.grip).clamp(-rate, rate);
+                if ragdolled {
+                    continue;
+                }
+                for ((entity, _, _), rotation) in finger.joints.iter().zip(finger_drawn(finger)) {
+                    if let Ok(mut transform) = transforms.get_mut(*entity) {
+                        transform.rotation = rotation;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// How far a palm must face the ground (cosine to straight down) before its
@@ -260,7 +400,7 @@ pub fn relax_hands(
     mut transforms: Query<&mut Transform>,
 ) {
     for (root, skeleton) in &bound {
-        let mut relaxed = RelaxedHands { fingers: [Vec::new(), Vec::new()], palms: [Vec3::ZERO; 2], straighten: [true; 2] };
+        let mut relaxed = RelaxedHands { fingers: [Vec::new(), Vec::new()], palms: [Vec3::ZERO; 2], straighten: [true; 2], grip: [0.0; 2], grips: [None; 2] };
         let mut by_name: HashMap<&str, Entity> = HashMap::new();
         let mut stack = vec![root];
         while let Some(entity) = stack.pop() {
@@ -316,11 +456,15 @@ pub fn relax_hands(
             };
             let palm = palm_normal(&index, &middle, &little, side);
             relaxed.palms[usize::from(side == Side::Right)] = palm;
+            relaxed.grips[usize::from(side == Side::Right)] = grip_of(&fingers.iter().map(|(finger, _, bind)| (*finger, *bind)).collect::<Vec<_>>(), palm);
             for (finger, joints, bind) in &fingers {
                 let Some(&(_, degrees)) = RELAXED_FLEXION_DEGREES.iter().find(|(f, _)| f == finger) else { continue };
                 let toward = bends_toward(*finger, &index, &little, palm);
                 let bent = curled(bind, toward, degrees);
                 let flattened = flat(*finger, bind, palm);
+                // Closed round a bar: a finger round it from its palm side,
+                // the thumb over it across the palm.
+                let closed = if *finger == Finger::Thumb { curled(bind, toward, GRIP_THUMB) } else { gripped(bind, palm).0 };
                 for k in 0..3 {
                     if let Ok(mut transform) = transforms.get_mut(joints[k]) {
                         transform.rotation = bent[k];
@@ -330,6 +474,8 @@ pub fn relax_hands(
                     joints: [0, 1, 2].map(|k| (joints[k], flattened[k], bent[k])),
                     tip: joints[3],
                     bend: 1.0,
+                    gripped: closed,
+                    grip: 0.0,
                 });
             }
         }
@@ -337,6 +483,26 @@ pub fn relax_hands(
             commands.entity(root).insert(relaxed);
         }
     }
+}
+
+/// `puppet_base`'s hands' grips ([`grip_of`]), from its glTF's finger
+/// binds: left, right.
+#[cfg(test)]
+pub(crate) fn puppet_grips() -> [Option<HandGrip>; 2] {
+    use crate::character::anim::gltf_rig::bind_node;
+    [Side::Left, Side::Right].map(|side| {
+        let fingers: Vec<(Finger, FingerBind)> = Finger::ALL
+            .iter()
+            .filter_map(|&finger| {
+                let names = &finger.joint_names(side)[0];
+                let joint = |k: usize| bind_node(&names[k]).map(|(rotation, translation, _)| (rotation, translation));
+                Some((finger, FingerBind { base: (Quat::IDENTITY, Vec3::ZERO), joints: [joint(0)?, joint(1)?, joint(2)?], tip: joint(3)?.1 }))
+            })
+            .collect();
+        let find = |wanted: Finger| fingers.iter().find(|(finger, _)| *finger == wanted).map(|(_, bind)| *bind);
+        let palm = palm_normal(&find(Finger::Index)?, &find(Finger::Middle)?, &find(Finger::Little)?, side);
+        grip_of(&fingers, palm)
+    })
 }
 
 #[cfg(test)]
@@ -384,6 +550,32 @@ mod tests {
         }
         out[3] = at + frame * bind.tip;
         out
+    }
+
+    /// A gripping finger closes round a rung: its joints on a circle a
+    /// rung's and a finger's half thickness about one axis, beside the palm.
+    /// And the grip's place in the hand's frame is where the rig's own bind
+    /// carries it: the glTF's hand frame is the rig's accumulated bind.
+    #[test]
+    fn a_gripping_finger_wraps_a_rung_beside_the_palm() {
+        for side in [Side::Left, Side::Right] {
+            let (normal, hand) = palm(side);
+            for which in [Finger::Index, Finger::Middle, Finger::Ring, Finger::Little] {
+                let (bind, _) = finger(which, side);
+                let (rotations, centre) = gripped(&bind, normal);
+                let at = positions(&bind, rotations);
+                let radius = GRIP_RADIUS + FINGER_HALF_THICKNESS;
+                for (k, point) in at.iter().enumerate().skip(1) {
+                    let off = (*point - centre) - bind.first_segment().cross(normal).normalize() * (*point - centre).dot(bind.first_segment().cross(normal).normalize());
+                    assert!((off.length() - radius).abs() < 0.002,"{side:?} {which:?} joint {k}: {:.4} m from the grip's axis, {radius:.4} wanted", off.length());
+                }
+                let out = (centre - bind.knuckle()).dot(normal);
+                assert!((out - radius).abs() < 0.01, "{side:?} {which:?}: the rung {out:.4} m out of the palm, {radius:.4} wanted");
+            }
+            let bone = if side == Side::Left { crate::character::Bone::LeftHand } else { crate::character::Bone::RightHand };
+            let bind = crate::character::anim::rig::accumulate_bind_rotations(&crate::character::anim::gltf_rig::puppet_base())[bone];
+            assert!(hand.dot(bind).abs() > 1.0 - 1.0e-6, "{side:?}: the glTF's hand frame {hand:?}, the rig's bind {bind:?}");
+        }
     }
 
     #[test]
@@ -486,6 +678,8 @@ mod tests {
             joints: [0, 1, 2].map(|k| (Entity::PLACEHOLDER, bind.joints[k].0, relaxed[k])),
             tip: Entity::PLACEHOLDER,
             bend: 1.0,
+            gripped: relaxed,
+            grip: 0.0,
         };
         let at = |bend| finger_bent(&joints, bend);
         for k in 0..3 {
