@@ -78,6 +78,7 @@ pub mod lookat;
 pub mod pelvis;
 pub mod slide;
 pub mod math;
+pub mod parkour;
 pub mod passive;
 pub mod phase;
 pub mod physics_ground;

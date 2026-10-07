@@ -48,6 +48,9 @@ enum Gait {
     Crouch(f32, bool),
     /// Up a standard ladder, or (`true`) sliding down it from the top.
     Climb(bool),
+    /// Grabbing a 2.15 m ledge from a standing jump and hanging: braced
+    /// against its wall, or (`false`) free from a slab.
+    Hang(bool),
 }
 
 fn main() {
@@ -85,7 +88,24 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) => None,
+    };
+    // A grab (`parkour::hang`): the clock is how far from the jump's start
+    // to two seconds hanging; posed led ahead of its springs, as the walker
+    // poses it.
+    let hanging = match gait {
+        Gait::Hang(braced) => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let mut ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0);
+            if !braced {
+                ledge.wall_below = 0.15;
+            }
+            let square = Hanging::square(&ledge, rig.forward());
+            let spot = Hanging::spot(&ledge, Vec3::ZERO, square, &stood, &rig);
+            let hanging = Hanging::grab(&ledge, spot, square, 0.0, &stood, &rig).expect("a 2.15 m ledge in a standing jump's reach");
+            Some(hanging)
+        }
+        _ => None,
     };
     // A climb (`ladder`): the clock is how far through climbing a standard
     // ladder (8 s of 10), or through sliding it (grip, slide, landing and
@@ -146,6 +166,11 @@ fn main() {
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
+        _ if let Some(hanging) = &hanging => {
+            let mut now = hanging.clone();
+            now.advance(cycle * 3.5);
+            Some((now.pose_led(&rig, &springs), None))
+        }
         _ if let Some((climbing, (ask, seconds))) = &climbing => {
             let mut now = climbing.clone();
             now.advance(Some(*ask), cycle * seconds);
@@ -189,6 +214,7 @@ fn main() {
         Gait::Crouch(depth, on_toes) => format!("   crouch {depth}{}", if on_toes { " on the toes" } else { "" }),
         Gait::Sneak(speed, crouch, on_toes) => format!("   sneak {speed} m/s, crouch {crouch}{}", if on_toes { " on the toes" } else { "" }),
         Gait::Climb(slide) => format!("   {} a ladder", if slide { "sliding down" } else { "climbing" }),
+        Gait::Hang(braced) => format!("   grabbing a ledge, hanging {}", if braced { "braced" } else { "free" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -283,6 +309,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("sneak") => Gait::Sneak(speed, crouch, std::env::args().any(|a| a == "--on-toes")),
         Some("climb") => Gait::Climb(false),
         Some("slide") => Gait::Climb(true),
+        Some("hang") => Gait::Hang(true),
+        Some("hang-free") => Gait::Hang(false),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

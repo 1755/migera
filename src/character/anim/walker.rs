@@ -139,6 +139,12 @@ pub struct Walker {
     /// walker's ground ([`super::ladder::LadderGround`]) for it to stand
     /// there.
     pub climb: Option<super::ladder::Climb>,
+    /// The ledge to act on (`parkour`).
+    pub ledge: Option<super::parkour::Ledge>,
+    /// Asked of [`Walker::ledge`]: `Grab` walks under it, jumps and hangs
+    /// from it (`parkour::hang`). Out of a standing jump's reach, the ask is
+    /// dropped. Hanging, nothing else asked of it is done.
+    pub hang: Option<super::parkour::hang::HangAsk>,
 }
 
 impl Default for Walker {
@@ -162,6 +168,8 @@ impl Default for Walker {
             sneak: super::sneak::Sneak::STANDING,
             ladder: None,
             climb: None,
+            ledge: None,
+            hang: None,
         }
     }
 }
@@ -298,6 +306,12 @@ impl Walker {
 const LANDING_NEAR: f32 = 0.6;
 const LANDING_NEAR_HEADING: f32 = 0.5;
 
+/// Going to grab a ledge, it walks first to a point this far out in front
+/// of its spot, metres (within [`LEDGE_AT_LEAD_IN`] of it counts), and
+/// from there straight in.
+const LEDGE_LEAD_IN: f32 = 1.2;
+const LEDGE_AT_LEAD_IN: f32 = 0.3;
+
 /// How long both feet stay planted after standing up, seconds: several
 /// times the legs' 0.015 s spring half-life, for the extension to settle.
 const STOOD_HOLD: f32 = 0.3;
@@ -367,6 +381,11 @@ pub struct WalkerState {
     /// The ladder it walks to, and the spot it gets on from.
     /// Whether that spot is on the ladder's landing, at its top.
     pub ladder_spot: Option<(super::ladder::Ladder, bool, Vec3)>,
+    /// Grabbing a ledge and hanging from it ([`Walker::hang`]).
+    pub hanging: Option<super::parkour::Hanging>,
+    /// The ledge it walks under, the spot it jumps from, and whether it has
+    /// come round in front of it to walk straight in (`LEDGE_LEAD_IN`).
+    pub ledge_spot: Option<(super::parkour::Ledge, Vec3, bool)>,
     /// The stride the current gait really takes, keyed by its speed,
     /// whether the real rig has bound, whether it shuffles and the crouch
     /// it sneaks in: measuring it costs a cycle of root-motion samples, so
@@ -406,8 +425,16 @@ impl WalkerState {
             crouching: Default::default(),
             climbing: None,
             ladder_spot: None,
+            hanging: None,
+            ledge_spot: None,
             measured: None,
         }
+    }
+
+    /// Whether its hands hold the body off the floor, a move posing it on
+    /// its holds: on a ladder, or grabbing or hanging from a ledge.
+    pub fn on_holds(&self) -> bool {
+        self.climbing.is_some() || self.hanging.is_some()
     }
 }
 
@@ -590,7 +617,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         let base = poses::by_name(&walker.pose).unwrap_or_else(poses::relaxed_stand);
         // On a ladder, held by its hands, a push is not caught by stepping.
         let mut due_pushes = std::mem::take(&mut walker.pushes);
-        if state.climbing.is_some() {
+        if state.on_holds() {
             due_pushes.clear();
         }
         // The rig the gait is posed on: the real one once bound, the
@@ -649,10 +676,65 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             && state.posture.is_standing()
             && !fallen;
         let mut at_ladder = false;
+        // Asked to grab a ledge (`parkour::hang`): it walks to the spot under
+        // it, facing the wall, and jumps from there once stopped.
+        let hang_asked = !state.on_holds()
+            && walker.hang.is_some()
+            && walker.ledge.is_some()
+            && walker.sit.is_none()
+            && !ladder_asked
+            && state.posture.is_standing()
+            && !fallen;
+        let mut at_ledge = false;
         match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
-            _ if state.climbing.is_some() => {
+            _ if state.on_holds() => {
                 state.approach = approach::Approach::Idle;
                 (wanted_speed, steer) = (0.0, Steer::Straight);
+            }
+            (_, _, Some(rig)) if hang_asked => {
+                let ledge = walker.ledge.expect("asked to grab a ledge");
+                let ahead = approach::heading_of(rig.forward());
+                let square = super::parkour::Hanging::square(&ledge, rig.forward());
+                if state.ledge_spot.is_none_or(|(was, _, _)| was != ledge) {
+                    let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
+                    let spot = super::parkour::Hanging::spot(&ledge, state.locomotion.position, square, &stood, rig);
+                    state.ledge_spot = Some((ledge, spot, false));
+                    state.approach = approach::Approach::Idle;
+                }
+                let (_, spot, led_in) = state.ledge_spot.expect("a spot");
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                placing = true;
+                let gait = approach_gait(state, cycle_of(&phase), &gait_rig);
+                let obstacles: Vec<_> = route_obstacles.map(|route| route.0.clone()).unwrap_or_default();
+                // First out in front of the spot, then straight in to it: the
+                // approach (made to end with a chair behind it) came at a spot
+                // faced at a wall from beside it, turned in along the wall and
+                // put a fingertip 18 cm into it.
+                let lead_in = spot + ledge.out * LEDGE_LEAD_IN;
+                let to_lead_in = Vec2::new(lead_in.x - state.locomotion.position.x, lead_in.z - state.locomotion.position.z);
+                let order = if !led_in && to_lead_in.length() > LEDGE_AT_LEAD_IN {
+                    let toward = approach::heading_of(Vec3::new(to_lead_in.x, 0.0, to_lead_in.y));
+                    approach::Order::Walk { speed, heading: toward, rate: 2.0 }
+                } else {
+                    if let Some(found) = state.ledge_spot.as_mut() {
+                        found.2 = true;
+                    }
+                    state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, square + ahead, speed, &obstacles)
+                };
+                match order {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        (wanted_speed, steer, at_ledge) = (0.0, Steer::Straight, true);
+                    }
+                }
+                if look_at.is_none() {
+                    look_at = Some(ledge.nearest(state.locomotion.position, 0.0));
+                }
             }
             (_, _, Some(rig)) if ladder_asked => {
                 let ladder = walker.ladder.expect("asked up a ladder");
@@ -849,7 +931,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             || state.jump.is_some()
             || state.gaits.running > 0.0
             || ladder_asked
-            || state.climbing.is_some();
+            || hang_asked
+            || state.on_holds();
         let sneak = if busy { super::sneak::Sneak::STANDING } else { walker.sneak };
         let mut footing = None;
         if sneak.is_sneaking() || !state.crouching.is_standing() {
@@ -864,7 +947,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             || !state.posture.is_standing()
             || (walker.sit.is_some() && arrived)
             || at_ladder
-            || state.climbing.is_some()
+            || at_ledge
+            || state.on_holds()
             || jumping
             || (!state.crouching.is_still() && state.transition.is_at_rest());
         // Asked to go aside (`Walker::aside`), with or without forward, and
@@ -1067,7 +1151,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // once, standing a while on a landing first, the hips stepped 4.4 mm
         // aside in a frame.
         let getting_on = state.climbing.as_ref().filter(|climbing| climbing.is_getting_on()).map(|climbing| 1.0 - climbing.holding());
-        if !state.transition.is_at_rest() || !state.posture.is_standing() || state.jump.is_some() || (state.climbing.is_some() && getting_on.is_none()) {
+        if !state.transition.is_at_rest() || !state.posture.is_standing() || state.jump.is_some() || (state.on_holds() && getting_on.is_none()) {
             wanted.sway = None;
         } else if let Some(sway) = wanted.sway.as_mut() {
             const SETTLE_SECONDS: f32 = 1.5;
@@ -1084,8 +1168,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Holding a ladder, nothing sways the arms or the chest: laid over
         // the hands posed on their rungs, the idle's arm swing and breath
         // moved them off.
-        if let Some(climbing) = &state.climbing {
-            let free = 1.0 - climbing.holding();
+        // Grabbing a ledge, from the start: the arms reach for it.
+        let holding = state.climbing.as_ref().map(|climbing| climbing.holding()).or(state.hanging.as_ref().map(|_| 1.0));
+        if let Some(holding) = holding {
+            let free = 1.0 - holding;
             for (bone, oscillator) in &mut wanted.oscillators {
                 if matches!(bone, Bone::Spine | Bone::Spine1 | Bone::Spine2 | Bone::LeftShoulder | Bone::RightShoulder | Bone::LeftArm | Bone::RightArm | Bone::LeftForeArm | Bone::RightForeArm | Bone::LeftHand | Bone::RightHand) {
                     oscillator.amplitude *= free;
@@ -1239,7 +1325,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // the leg IK. It starts only once stopped.
         let mut legs_free = false;
         if let Some(rig) = foot_ik.rig.clone() {
-            let ready = weight <= 0.0 && state.transition.is_at_rest() && arrived && state.crouching.is_standing() && state.climbing.is_none();
+            let ready = weight <= 0.0 && state.transition.is_at_rest() && arrived && state.crouching.is_standing() && !state.on_holds();
             // The seat as the walk to it left it (`sit_seat`), else one
             // where it stands.
             let seat = match walker.chair {
@@ -1287,8 +1373,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             let standing = weight <= 0.0
                 && state.transition.is_at_rest()
                 && state.posture.is_standing()
-                && state.climbing.is_none()
+                && !state.on_holds()
                 && !at_ladder
+                && !at_ledge
                 && !state.stepping_aside
                 && state.shuffle.is_none()
                 && !fallen
@@ -1426,8 +1513,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
                 if let Some(hands) = hands.as_mut() {
                     let grips = if climbing.is_done() { [0.0; 2] } else { climbing.grips() };
-                    if hands.grip != grips {
+                    if hands.grip != grips || hands.hook != [false; 2] {
                         hands.grip = grips;
+                        hands.hook = [false; 2];
                     }
                 }
                 // Off again, the idle's weight shifts start over, standing
@@ -1441,11 +1529,65 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
         }
+        // Grabbing a ledge (`parkour::hang`): once stopped on the spot under
+        // it, it jumps for the lip and hangs from it, posed on its holds,
+        // the root riding its hips, the legs as posed. Out of a standing
+        // jump's reach, the ask is dropped.
+        if let Some(rig) = foot_ik.rig.clone() {
+            let ready = at_ledge && weight <= 0.0 && state.transition.is_at_rest() && state.crouching.is_standing() && state.jump.is_none();
+            if ready
+                && state.hanging.is_none()
+                && let Some((ledge, _, _)) = state.ledge_spot
+            {
+                let square = super::parkour::Hanging::square(&ledge, rig.forward());
+                match super::parkour::Hanging::grab(&ledge, state.locomotion.position, square, foot_ik.pelvis_drop, &stood, &rig) {
+                    Some(mut hanging) => {
+                        // Each hand placed so its own fingers hook over the lip.
+                        if let Some(hands) = hands.as_ref() {
+                            hanging.set_grips(hands.grips, &stood, &rig);
+                        }
+                        state.hanging = Some(hanging);
+                    }
+                    None => walker.hang = None,
+                }
+                state.approach = approach::Approach::Idle;
+                state.ledge_spot = None;
+            }
+            if let Some(hanging) = state.hanging.as_mut() {
+                hanging.advance(dt);
+                // Each bone led ahead of its spring, so the body rendered is
+                // the grab's.
+                target.pose = match springs {
+                    Some(springs) => hanging.pose_led(&rig, &springs.0),
+                    None => hanging.pose(&rig),
+                };
+                state.locomotion.position = hanging.root();
+                state.facing.yaw = hanging.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if look_at.is_none() {
+                    look_at = Some(hanging.look());
+                }
+                if let Some(hands) = hands.as_mut() {
+                    let grips = hanging.grips();
+                    if hands.grip != grips || hands.hook != [true; 2] {
+                        hands.grip = grips;
+                        hands.hook = [true; 2];
+                    }
+                }
+            }
+        }
         if foot_ik.legs_free != legs_free {
             foot_ik.legs_free = legs_free;
         }
-        if foot_ik.off_floor != state.climbing.is_some() {
-            foot_ik.off_floor = state.climbing.is_some();
+        if foot_ik.off_floor != state.on_holds() {
+            foot_ik.off_floor = state.on_holds();
         }
 
 
@@ -1461,7 +1603,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // chest, and the hands posed on their rungs went 8-9 cm off them.
         state.look.target = look_at;
         let mut look_config = lookat::LookAtConfig::default();
-        if state.climbing.is_some() {
+        if state.on_holds() {
             for (bone, share) in &mut look_config.chain.iter_mut().map(|b| (b.bone, &mut b.share)) {
                 *share = match bone {
                     Bone::Neck => 0.4,
@@ -1483,7 +1625,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // live rig: solved here against the synthetic proxy (mirrored from
         // the real rig) it sent the hand to the wrong side of the body.
         // On a ladder, its hands are on the rungs.
-        arm_ik.left = walker.reach.filter(|_| state.climbing.is_none());
+        arm_ik.left = walker.reach.filter(|_| !state.on_holds());
 
         match steer {
             Steer::Straight => {}
@@ -1620,7 +1762,7 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
         // Height from the ground: horizontal travel alone left a character
         // 7.7 m under a hillside after 26 m of a 0.3 grade. Not on a ladder,
         // whose climb carries the root up and down.
-        if state.climbing.is_none()
+        if !state.on_holds()
             && let Some(height) = locomotion::ground_following_height(root.translation, 0.0, ground.0.as_ref())
         {
             root.translation.y = height;

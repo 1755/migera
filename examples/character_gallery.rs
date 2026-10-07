@@ -1164,8 +1164,10 @@ fn steer_the_walker(
     mut jumps: ResMut<JumpSchedule>,
     sneaks: Res<SneakSchedule>,
     climbs: Res<ClimbSchedule>,
+    mut hangs: ResMut<HangSchedule>,
     mut walkers: Query<&mut Walker>,
 ) {
+    let grab = hangs.due(time.elapsed_secs());
     let due = pushes.due(time.elapsed_secs());
     let sitting = sit.wanted(time.elapsed_secs());
     let step = steps.due(time.elapsed_secs());
@@ -1182,6 +1184,10 @@ fn steer_the_walker(
         walker.sneak = sneaks.at(time.elapsed_secs());
         walker.ladder = climbs.ladder;
         walker.climb = climbs.at(time.elapsed_secs());
+        walker.ledge = hangs.ledge;
+        if grab.is_some() {
+            walker.hang = grab;
+        }
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
@@ -1360,6 +1366,91 @@ impl ClimbSchedule {
         }
         self.due.iter().rev().find(|(at, _)| elapsed >= *at).and_then(|&(_, climb)| climb)
     }
+}
+
+/// A ledge to grab (`--ledge X,Z,HEADING,HEIGHT[,WIDTH,BELOW]`: its face's
+/// foot at X,Z facing HEADING degrees, HEIGHT high, WIDTH wide, its wall
+/// reaching BELOW down from the edge; less than HEIGHT, a slab with nothing
+/// under it), and when to grab it (`--hang-at T`).
+#[derive(Resource, Debug, Clone, Default)]
+struct HangSchedule {
+    ledge: Option<migera::character::anim::parkour::Ledge>,
+    at: Option<f32>,
+    fired: bool,
+}
+
+impl HangSchedule {
+    fn from_args() -> Self {
+        use migera::character::anim::parkour::Ledge;
+        let mut schedule = Self::default();
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--ledge" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, height, ref rest @ ..] = numbers[..] {
+                        let width = rest.first().copied().unwrap_or(3.0);
+                        let mut ledge = Ledge::wall(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()), width, height, 1.0);
+                        if let Some(&below) = rest.get(1) {
+                            ledge.wall_below = below.clamp(0.0, height);
+                        }
+                        schedule.ledge = Some(ledge);
+                    }
+                }
+                "--hang-at" => schedule.at = args.next().and_then(|t| t.trim().parse().ok()),
+                _ => {}
+            }
+        }
+        // Asked to grab with no ledge given: a wall 1 m ahead, 2.25 m high.
+        if schedule.ledge.is_none() && schedule.at.is_some() {
+            schedule.ledge = Some(Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.25, 1.0));
+        }
+        schedule
+    }
+
+    /// The grab asked at `elapsed` seconds, once.
+    fn due(&mut self, elapsed: f32) -> Option<migera::character::anim::parkour::hang::HangAsk> {
+        if self.fired || self.at.is_none_or(|at| elapsed < at) {
+            return None;
+        }
+        self.fired = true;
+        Some(migera::character::anim::parkour::hang::HangAsk::Grab)
+    }
+}
+
+/// The gallery's ledge, as drawn.
+#[derive(Component)]
+struct GalleryLedge(migera::character::anim::parkour::Ledge);
+
+fn place_ledge(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    hangs: Res<HangSchedule>,
+    drawn: Query<(Entity, &GalleryLedge)>,
+) {
+    let Some(ledge) = hangs.ledge else { return };
+    if let Ok((_, GalleryLedge(was))) = drawn.single()
+        && *was == ledge
+    {
+        return;
+    }
+    for (entity, _) in &drawn {
+        commands.entity(entity).despawn();
+    }
+    let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
+    // A block behind the face, from the edge down as far as the wall goes
+    // (a slab at least 0.1 m thick), as deep as the top.
+    let width = (ledge.b - ledge.a).length();
+    let thick = ledge.wall_below.max(0.1);
+    let middle = 0.5 * (ledge.a + ledge.b) - ledge.out * (0.5 * ledge.depth) - Vec3::Y * (0.5 * thick);
+    let mesh = meshes.add(Cuboid::new(width, thick, ledge.depth));
+    commands.spawn((
+        GalleryLedge(ledge),
+        Mesh3d(mesh),
+        MeshMaterial3d(stone),
+        Transform::from_translation(middle).with_rotation(Quat::from_rotation_arc(Vec3::Z, ledge.out)),
+    ));
 }
 
 /// The gallery's ladder, as drawn: redrawn when the ladder changes.
@@ -2275,9 +2366,10 @@ fn main() {
         .insert_resource(JumpSchedule::from_args())
         .insert_resource(SneakSchedule::from_args())
         .insert_resource(ClimbSchedule::from_args())
+        .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

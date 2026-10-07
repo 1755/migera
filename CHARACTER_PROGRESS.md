@@ -41,6 +41,55 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 1: grabbing a ledge and hanging from it
+
+The first step of the parkour design
+([the design](./docs/knowledge/character-animation/parkour/parkour-moves-implementation-design.md),
+[movement data](./docs/knowledge/character-animation/parkour/parkour-movement-data.md)).
+A walker asked to grab a ledge walks under it, jumps up and in, catches the
+lip and hangs, braced with its feet on the wall or free from a slab. New
+module `parkour` (`Ledge`, `Hanging`). See
+[the note](./docs/knowledge/character-animation/parkour/a-ledge-is-caught-near-the-top-of-a-jump-and-hung-from.md).
+
+- **The jump** is the standing jump, up and in (from 0.55 m out, 0.2 m in),
+  the lowest whose hands reach the lip within 0.9 of the arm at its top,
+  4 cm higher; caught on the way up. On `puppet_base`: ledges 1.9-2.35 m.
+- **The catch**: the hips keep their velocity; the arms give (a damped
+  spring to the hang's length); braced, the body settles out from the wall
+  and the feet swing onto it; free, a compound pendulum about the grip
+  (about 2.4 s), damped by the hanger.
+- **The hands hook over the lip** (`hand::hooked`): palm on the face, fingers
+  90° over the lip and flat on the top, the thumb in the palm's plane.
+- **Shared with the ladder**, moved to `armik`: the shoulder lift, the hand
+  turn, the frame turn. `WalkerState::on_holds` covers a climb and a hang.
+- **Fixed on the way:**
+  - the grips taken in each hand's own frame as if in its rest frame: the
+    hands pointed out from the wall, knuckles 13 cm off the lip, while the
+    test comparing the hand to its own target passed (the test now hooks the
+    rig's real middle finger on the posed hand);
+  - the lip at the knuckle's height laid the fingers through the top; the
+    relaxed thumb went 5 cm into the face;
+  - the jump's own arm swing put the hands 16 cm into the wall: the arms now
+    reach for the lip along straight lines from the push;
+  - the approach (made to end with a chair behind it) came at the spot from
+    beside the wall and turned in along it, a fingertip 18-21 cm in: it now
+    walks out in front first, then straight in.
+- **Headless** (1.95, 2.15, 2.35 m; braced and free): wrists on their hooks
+  and lips on the lip within 1 mm; the real middle knuckle within 2.5 cm of
+  the lip, its tip on the top; nothing in the wall; the catch under 3 body
+  weights at the hips; a free hang's period 2.0-2.8 s; both come to rest.
+- **Live** (2.25 m wall, BRP): middle knuckles 1.3 cm above the top, 1.4 cm
+  out from the face; fingertips on the top 8.4 cm back; balls of the feet
+  1.1 cm from the face. The walk's stop still lands about 11 cm past its
+  spot and a fingertip brushes the face (up to 5 cm) on the way in.
+- **Seen:** braced and free, Left and Back, gizmos on and the bare mesh.
+- **Gallery:** `--ledge X,Z,HEADING,HEIGHT[,WIDTH,BELOW]`, `--hang-at T`.
+- **Cost** (`anim_bench --gait hang|hang-free --characters 20`, each frame
+  posed from the grab's start): 47 µs a character a frame braced, 58 free
+  (climbing a ladder 53, a walk 23).
+
+1220 library tests pass; clippy is clean.
+
 ### Ladders: climbing upright, the hands high, the knees between the rungs
 
 The climb folded at the hips over hands held at the chest: the trunk leant

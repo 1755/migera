@@ -467,6 +467,86 @@ pub fn wrist_position(pose: &LocalPose, chain: ArmChain, rig: &RigGeometry) -> V
     forward_kinematics_on(pose, rig)[chain.wrist]
 }
 
+/// The most a clavicle turns lifting its shoulder straight up, radians, in
+/// [`shoulder_lift`]; a reach forward lifts it half as far, one down a
+/// quarter.
+pub(super) const MOST_SHOULDER_LIFT: f32 = 0.4;
+
+/// The most a forearm rolls about its own line turning a hand onto what it
+/// holds ([`turn_hand`]), radians.
+pub(super) const MOST_FOREARM_TWIST: f32 = 1.4;
+
+/// The turn of a clavicle rooted at `root` that swings its shoulder joint
+/// (at `shoulder`) toward `grip`, just far enough to bring it within `within`
+/// of it: none when it already is. At most [`MOST_SHOULDER_LIFT`] lifting
+/// straight up, half that reaching forward, a quarter down; never past
+/// pointing at the grip. Turn `Bone::LeftShoulder` (or the right) by it: its
+/// rotation swings the shoulder joint about the clavicle's root.
+///
+/// The shoulder joint's distance from the grip as the clavicle turns by `θ`
+/// toward it is `|d|² + |v|² - 2|d||v|cos(φ - θ)`, `v` the clavicle, `d` the
+/// root to the grip, `φ` between them: solved for `within`.
+pub(super) fn shoulder_lift(root: Vec3, shoulder: Vec3, grip: Vec3, within: f32) -> Quat {
+    let (v, d) = (shoulder - root, grip - root);
+    let (lv, ld) = (v.length(), d.length());
+    let axis = v.cross(d);
+    if lv < 1.0e-6 || ld < 1.0e-6 || axis.length_squared() < 1.0e-12 {
+        return Quat::IDENTITY;
+    }
+    let axis = axis.normalize();
+    let phi = (v.dot(d) / (lv * ld)).clamp(-1.0, 1.0).acos();
+    let k = (ld * ld + lv * lv - within * within) / (2.0 * ld * lv);
+    let theta = if k <= phi.cos() {
+        0.0
+    } else if k >= 1.0 {
+        phi
+    } else {
+        phi - k.acos()
+    };
+    // Which way the shoulder sets off: up, forward, down.
+    let rise = axis.cross(v).normalize_or_zero().y;
+    let most = MOST_SHOULDER_LIFT * (0.5 + 0.5 * rise).clamp(0.25, 1.0);
+    Quat::from_axis_angle(axis, theta.clamp(0.0, most.min(phi)))
+}
+
+/// The world turn that carries a hand from its rest, its fingers along
+/// `rest_along` and its palm facing `rest_palm`, to point its fingers along
+/// `along`, its palm facing `palm`.
+pub(super) fn frame_turn(rest_along: Vec3, rest_palm: Vec3, along: Vec3, palm: Vec3) -> Quat {
+    let basis = |along: Vec3, palm: Vec3| {
+        let along = along.normalize_or_zero();
+        let palm = (palm - along * palm.dot(along)).normalize_or_zero();
+        bevy::math::Mat3::from_cols(along, palm, along.cross(palm))
+    };
+    Quat::from_mat3(&(basis(along, palm) * basis(rest_along, rest_palm).transpose())).normalize()
+}
+
+/// Turns `chain`'s hand toward the world turn `wanted` from its rest (the
+/// pose's frame; `bind` the hand's bind rotation), by `weight` (0 not at
+/// all): its roll about the forearm's line (`forearm`) by the forearm, up to
+/// [`MOST_FOREARM_TWIST`], the rest at the wrist. The wrist does not move.
+///
+/// A hand turned at the wrist alone to face its palm onto a rung twisted it
+/// by the forearm's whole roll.
+pub(super) fn turn_hand(pose: &mut LocalPose, rig: &RigGeometry, chain: ArmChain, bind: Quat, wanted: Quat, weight: f32, forearm: Vec3) {
+    use super::rig::{accumulate_world_rotations, delta_after_world_turn};
+    let carried = |pose: &LocalPose| (accumulate_world_rotations(pose, rig)[chain.wrist] * bind.inverse()).normalize();
+    let now = carried(pose);
+    let wanted = if now.dot(wanted) < 0.0 { -wanted } else { wanted };
+    let target = now.slerp(wanted, weight.clamp(0.0, 1.0)).normalize();
+    // The roll about the forearm's line, given to the forearm.
+    let turn = (target * now.inverse()).normalize();
+    let along = Vec3::new(turn.x, turn.y, turn.z).dot(forearm);
+    let twist = Quat::from_xyzw(forearm.x * along, forearm.y * along, forearm.z * along, turn.w).normalize();
+    let (axis, angle) = twist.to_axis_angle();
+    let angle = if angle > std::f32::consts::PI { angle - std::f32::consts::TAU } else { angle };
+    let twist = Quat::from_axis_angle(axis, angle.clamp(-MOST_FOREARM_TWIST, MOST_FOREARM_TWIST));
+    pose.rotations[chain.elbow] = delta_after_world_turn(pose, rig, chain.elbow, twist);
+    // The rest at the wrist.
+    let rest = (target * carried(pose).inverse()).normalize();
+    pose.rotations[chain.wrist] = delta_after_world_turn(pose, rig, chain.wrist, rest);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

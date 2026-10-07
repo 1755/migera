@@ -70,6 +70,7 @@ Current open work is tracked in `CHARACTER_PROGRESS.md`, not here.
 | [Animation core](./animation-core/INDEX.md) | Stack status, studio, spring numerics, the verification view | before measuring cost, touching springs/studio, or taking a screenshot |
 | [Rig and retargeting](./rig-and-retargeting/INDEX.md) | Bind-frame conjugation, world-axis deltas, synthetic-vs-real rig traps, facing | before touching `rig.rs`/`retarget.rs`/`stance.rs` or composing rotations |
 | [IK and locomotion](./ik-and-locomotion/INDEX.md) | Reach budgets, IK pivots, foot-IK feedback loops, stance | before changing `legik`/`armik`/`pelvis`/foot IK/gait |
+| [Parkour](./parkour/INDEX.md) | Ledges, mantles, landings from height, walls, bars, poles, ropes, beams: the step-by-step design and each move as built | before starting or changing a parkour move |
 | [Ragdoll and physics](./ragdoll-and-physics/INDEX.md) | avian PD units and stability, body/anchor frames, joint limits, verifying physics | before changing ragdoll code or tuning gains/limits |
 | [Lugaru's joint/muscle animation system](./lugaru-joint-muscle-system.md) | Source-verified Lugaru design (particles, muscles, strength dial) plus the history of migera's deleted port | before designing ragdoll blending or physics-driven animation |
 | [botica's character animation system](./botica-character-animation-system.md) | botica's Overgrowth-style stack and the Mixamo skeleton standard migera follows | before changing bone names, axes or rest rotations, or looking for prior art |
