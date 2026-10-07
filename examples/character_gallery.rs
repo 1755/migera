@@ -1371,12 +1371,15 @@ impl ClimbSchedule {
 /// A ledge to grab (`--ledge X,Z,HEADING,HEIGHT[,WIDTH,BELOW]`: its face's
 /// foot at X,Z facing HEADING degrees, HEIGHT high, WIDTH wide, its wall
 /// reaching BELOW down from the edge; less than HEIGHT, a slab with nothing
-/// under it), and when to grab it (`--hang-at T`).
+/// under it), when to grab it (`--hang-at T`), and when to climb up onto
+/// it once hanging (`--climb-up-at T`).
 #[derive(Resource, Debug, Clone, Default)]
 struct HangSchedule {
     ledge: Option<migera::character::anim::parkour::Ledge>,
     at: Option<f32>,
     fired: bool,
+    up_at: Option<f32>,
+    up_fired: bool,
 }
 
 impl HangSchedule {
@@ -1398,6 +1401,7 @@ impl HangSchedule {
                     }
                 }
                 "--hang-at" => schedule.at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--climb-up-at" => schedule.up_at = args.next().and_then(|t| t.trim().parse().ok()),
                 _ => {}
             }
         }
@@ -1408,13 +1412,18 @@ impl HangSchedule {
         schedule
     }
 
-    /// The grab asked at `elapsed` seconds, once.
+    /// The grab, or the climb up, asked at `elapsed` seconds, each once.
     fn due(&mut self, elapsed: f32) -> Option<migera::character::anim::parkour::hang::HangAsk> {
+        use migera::character::anim::parkour::hang::HangAsk;
+        if !self.up_fired && self.up_at.is_some_and(|at| elapsed >= at) {
+            self.up_fired = true;
+            return Some(HangAsk::ClimbUp);
+        }
         if self.fired || self.at.is_none_or(|at| elapsed < at) {
             return None;
         }
         self.fired = true;
-        Some(migera::character::anim::parkour::hang::HangAsk::Grab)
+        Some(HangAsk::Grab)
     }
 }
 
@@ -1422,12 +1431,15 @@ impl HangSchedule {
 #[derive(Component)]
 struct GalleryLedge(migera::character::anim::parkour::Ledge);
 
+#[allow(clippy::too_many_arguments)]
 fn place_ledge(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     hangs: Res<HangSchedule>,
+    idle: Res<AnimIdleConfig>,
     drawn: Query<(Entity, &GalleryLedge)>,
+    walkers: Query<Entity, With<Walker>>,
 ) {
     let Some(ledge) = hangs.ledge else { return };
     if let Ok((_, GalleryLedge(was))) = drawn.single()
@@ -1437,6 +1449,13 @@ fn place_ledge(
     }
     for (entity, _) in &drawn {
         commands.entity(entity).despawn();
+    }
+    // The walker stands on the top once climbed up onto it: its ground the
+    // gallery's floor with the top on it.
+    for walker in &walkers {
+        let under: Box<dyn migera::character::anim::ground::GroundProbe> =
+            if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
+        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround { under, ledges: vec![ledge] })));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
     // A block behind the face, from the edge down as far as the wall goes

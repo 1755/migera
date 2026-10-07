@@ -41,6 +41,64 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 2: climbing up onto the ledge
+
+From a braced or free hang, asked `HangAsk::ClimbUp`, the walker climbs onto
+the top and stands there, 0.3 m back from the edge, on its ground
+(`parkour::LedgeGround`). See
+[the note](./docs/knowledge/character-animation/parkour/a-hang-is-climbed-up-from-by-pull-press-and-step-on.md).
+
+- **The hips follow one planned path**, a clamped cubic spline (C²) from the
+  hang's own velocity to rest, through five shapes measured from the hands
+  on the leant trunk's own shoulders:
+  - pull (0.9 s): the chest to the lip, hands hooked;
+  - turn over (0.4 s): one hand, then the other, up over the lip and flat
+    on the top;
+  - press (0.6 s): arms near straight, the trunk folded 1.4 rad over the top,
+    the hips high;
+  - step on (0.5 s): the lead foot onto the top;
+  - stand up (1.4 s): the other foot on, the hands let go, standing at the
+    foot IK's drop.
+- **A foot comes up the face, then over**: to its shin hanging down the face
+  with the knee over the lip, straight up clear of the face, then onto its
+  spot (the standing pose's ankle).
+- **Braced**, each foot steps up the wall through the pull, smearing up the
+  face when out of reach, its knee turned out about 55°; the feet leave the
+  wall through the press.
+- **Asked mid-swing**, it waits for the hips to slow below 0.25 m/s; a top
+  under 0.55 m deep is refused.
+- **Fixed on the way:**
+  - the feet 0.95 m above their marks: the hips joint taken as the root
+    translation;
+  - the hands pulled off the top: the shoulders estimated by turning the
+    whole trunk about the hips (6 cm high), and the hips rising before the
+    hands let go;
+  - a knee into the corner (3-5 cm): a knee swings round its socket on the
+    thigh, and clears the corner only with the sockets high enough
+    (`socket_up ≥ √(thigh² − socket_out²)`), hence the deep fold; and the
+    hips are held out until the trailing foot is up;
+  - knees turned round at the hip (116° aimed out-and-back, 90° straight
+    aside) while a fold check in the thigh's frame read 0: the check is now
+    the knee's hinge in the pelvis's frame, shown to fail on that pose
+    ([the lesson](./docs/knowledge/engineering-practice/testing/unsigned-measurements-cannot-see-direction.md));
+  - chord velocities at the knots: the acceleration jumped to 0.74 g.
+- **Headless** (1.95 and 2.35 m; braced, and free from mid-swing): the hands
+  on their hooks and presses within 0.1 mm; no joint inside the block; every
+  bent knee's hinge within 0.94 rad of standing's; braced feet on the wall
+  and feet on their spots within 1 mm; the hips at most 4.3 m/s²; it ends on
+  its spot in the standing pose.
+- **Live** (2.25 m wall, BRP): standing on the top 3.8 s after the ask, the
+  pelvis 3.19 m up, 0.3 m back from the face.
+- **Seen:** Left at the pull, press, step on, trailing foot and stand; Back
+  at the press and trailing foot; gizmos on, mesh off. The elbows go wide
+  pressing (the hang's sideways elbow pole).
+- **Gallery:** `--climb-up-at T`, after the hang (a new ask replaces a grab
+  still under way).
+- **Cost** (`anim_bench --gait hang-up --characters 20`): 41 µs a character
+  a frame (hanging 46, a ladder 52, a walk 24).
+
+1224 library tests pass; clippy is clean.
+
 ### Parkour, step 1: grabbing a ledge and hanging from it
 
 The first step of the parkour design

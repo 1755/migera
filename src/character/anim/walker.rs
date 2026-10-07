@@ -143,7 +143,9 @@ pub struct Walker {
     pub ledge: Option<super::parkour::Ledge>,
     /// Asked of [`Walker::ledge`]: `Grab` walks under it, jumps and hangs
     /// from it (`parkour::hang`). Out of a standing jump's reach, the ask is
-    /// dropped. Hanging, nothing else asked of it is done.
+    /// dropped. Hanging, `ClimbUp` climbs onto its top and stands there (on
+    /// the walker's ground, [`super::parkour::LedgeGround`]); the ask is
+    /// dropped once taken. Hanging, nothing else asked of it is done.
     pub hang: Option<super::parkour::hang::HangAsk>,
 }
 
@@ -679,7 +681,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Asked to grab a ledge (`parkour::hang`): it walks to the spot under
         // it, facing the wall, and jumps from there once stopped.
         let hang_asked = !state.on_holds()
-            && walker.hang.is_some()
+            && walker.hang == Some(super::parkour::hang::HangAsk::Grab)
             && walker.ledge.is_some()
             && walker.sit.is_none()
             && !ladder_asked
@@ -1554,6 +1556,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.ledge_spot = None;
             }
             if let Some(hanging) = state.hanging.as_mut() {
+                if walker.hang == Some(super::parkour::hang::HangAsk::ClimbUp) && hanging.climb_up() {
+                    walker.hang = None;
+                }
                 hanging.advance(dt);
                 // Each bone led ahead of its spring, so the body rendered is
                 // the grab's.
@@ -1580,6 +1585,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         hands.grip = grips;
                         hands.hook = [true; 2];
                     }
+                }
+                // Climbed up, it stands on the top, as off a ladder.
+                if hanging.is_done() {
+                    state.hanging = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
                 }
             }
         }

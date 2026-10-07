@@ -159,6 +159,7 @@ its API, its tests, and when it is done.
 - **Tests.** Hands held through pull and press; the knee and foot clear
   the edge; standing still on the top at the end, at the pelvis drop.
 - **Done when** it climbs from either hang onto the top and stands.
+- **Built** 2026-10-07: [a hang is climbed up from by a pull, a press and a step on](./a-hang-is-climbed-up-from-by-pull-press-and-step-on.md).
 
 ### Step 3: shimmy and turn corners
 
@@ -300,7 +301,9 @@ its API, its tests, and when it is done.
   (`hand::hooked`, `RelaxedHands::hook`) (0b); `WalkerState::on_holds` and
   the hang's slot (0d).
 - **Step 1**, grab and hang: built 2026-10-07.
-- Steps 2-10: not started.
+- **Step 2**, climb up: built 2026-10-07; the ledge's top is the walker's
+  ground (`parkour::LedgeGround`, 0a).
+- Steps 3-10: not started.
 
 ## Related
 

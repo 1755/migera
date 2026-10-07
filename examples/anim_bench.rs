@@ -51,6 +51,8 @@ enum Gait {
     /// Grabbing a 2.15 m ledge from a standing jump and hanging: braced
     /// against its wall, or (`false`) free from a slab.
     Hang(bool),
+    /// Climbing up onto a 2.15 m wall from a braced hang.
+    HangUp,
 }
 
 fn main() {
@@ -88,22 +90,29 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
-    // to two seconds hanging; posed led ahead of its springs, as the walker
-    // poses it.
+    // to two seconds hanging; or, climbing up, from the climb's start to
+    // standing on the top (3.8 s). Posed led ahead of its springs, as the
+    // walker poses it.
     let hanging = match gait {
-        Gait::Hang(braced) => {
+        Gait::Hang(..) | Gait::HangUp => {
             use migera::character::anim::parkour::{Hanging, Ledge};
             let mut ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0);
-            if !braced {
+            if let Gait::Hang(false) = gait {
                 ledge.wall_below = 0.15;
             }
             let square = Hanging::square(&ledge, rig.forward());
             let spot = Hanging::spot(&ledge, Vec3::ZERO, square, &stood, &rig);
-            let hanging = Hanging::grab(&ledge, spot, square, 0.0, &stood, &rig).expect("a 2.15 m ledge in a standing jump's reach");
-            Some(hanging)
+            let mut hanging = Hanging::grab(&ledge, spot, square, 0.0, &stood, &rig).expect("a 2.15 m ledge in a standing jump's reach");
+            if let Gait::HangUp = gait {
+                hanging.advance(3.0);
+                assert!(hanging.climb_up() && hanging.is_climbing_up(), "a braced hang climbs up at once");
+                Some((hanging, 3.8))
+            } else {
+                Some((hanging, 3.5))
+            }
         }
         _ => None,
     };
@@ -166,9 +175,9 @@ fn main() {
         _ => None,
     };
     let posed = |cycle: f32| match (&jump, params) {
-        _ if let Some(hanging) = &hanging => {
+        _ if let Some((hanging, seconds)) = &hanging => {
             let mut now = hanging.clone();
-            now.advance(cycle * 3.5);
+            now.advance(cycle * seconds);
             Some((now.pose_led(&rig, &springs), None))
         }
         _ if let Some((climbing, (ask, seconds))) = &climbing => {
@@ -215,6 +224,7 @@ fn main() {
         Gait::Sneak(speed, crouch, on_toes) => format!("   sneak {speed} m/s, crouch {crouch}{}", if on_toes { " on the toes" } else { "" }),
         Gait::Climb(slide) => format!("   {} a ladder", if slide { "sliding down" } else { "climbing" }),
         Gait::Hang(braced) => format!("   grabbing a ledge, hanging {}", if braced { "braced" } else { "free" }),
+        Gait::HangUp => "   climbing up onto a ledge from a braced hang".to_string(),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -311,6 +321,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("slide") => Gait::Climb(true),
         Some("hang") => Gait::Hang(true),
         Some("hang-free") => Gait::Hang(false),
+        Some("hang-up") => Gait::HangUp,
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

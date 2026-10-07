@@ -74,9 +74,49 @@ impl Ledge {
     }
 }
 
+/// A ground with ledges' tops on it: each top where it is (from just below
+/// it up), else the ground `under` it. For a walker that climbs up onto a
+/// ledge to stand there (`hang::HangAsk::ClimbUp`).
+pub struct LedgeGround {
+    pub under: Box<dyn crate::character::anim::ground::GroundProbe>,
+    pub ledges: Vec<Ledge>,
+}
+
+/// How far below a ledge's top a point still stands on it, metres: a foot
+/// reaching for it.
+const TOP_BELOW: f32 = 0.3;
+
+impl crate::character::anim::ground::GroundProbe for LedgeGround {
+    fn sample(&self, at: Vec3) -> Option<crate::character::anim::ground::GroundHit> {
+        for ledge in &self.ledges {
+            let along = (at - ledge.a).dot(ledge.along());
+            let back = -ledge.out_of(at);
+            if (0.0..=(ledge.b - ledge.a).length()).contains(&along) && (0.0..=ledge.depth).contains(&back) && at.y > ledge.height() - TOP_BELOW {
+                return Some(crate::character::anim::ground::GroundHit { height: ledge.height(), normal: Vec3::Y });
+            }
+        }
+        self.under.sample(at)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a ledge's top it stands at its height; in front of it, or below
+    /// it, on the ground under it.
+    #[test]
+    fn a_ledges_top_is_stood_on_from_just_below_it_up() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 1.0);
+        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![ledge] };
+        let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
+        assert_eq!(height(Vec3::new(0.2, 2.1, -1.4)), Some(2.0), "on the top");
+        assert_eq!(height(Vec3::new(0.2, 1.8, -1.4)), Some(2.0), "a foot reaching for the top");
+        assert_eq!(height(Vec3::new(0.2, 2.1, -0.6)), Some(0.0), "in front of the face");
+        assert_eq!(height(Vec3::new(0.2, 0.5, -1.4)), Some(0.0), "well below the top");
+        assert_eq!(height(Vec3::new(1.5, 2.1, -1.4)), Some(0.0), "past its end");
+    }
 
     #[test]
     fn a_walls_edge_runs_along_its_top_square_to_its_face() {

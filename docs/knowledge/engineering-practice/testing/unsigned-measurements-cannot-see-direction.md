@@ -8,11 +8,12 @@ tags:
   - ik
   - rig
   - math
-updated: 2026-09-28
-verified: 2026-09-28
+updated: 2026-10-07
+verified: 2026-10-07
 code:
   - src/character/anim/rig.rs
   - src/character/anim/humanoid.rs
+  - src/character/anim/parkour/hang/up.rs
 sources:
   - Claude memory unsigned_measurements_cannot_see_direction (2026-09-28)
   - commit 4c7fbc9
@@ -66,6 +67,15 @@ measurement can also lose its meaning while still printing a confident sign.
     is dominated by the hip's lateral placement.
 - Near a singularity, ask which measurement still has meaning before you
   believe its sign.
+- **Measure in the frame of what the joint must not turn against**, which
+  is not always the bone's own. Both measures above use the rig's forward,
+  which fails once the leg is folded or the body pitched, as on a ledge. A
+  fold measured in the thigh's own frame is blind to the thigh itself being
+  turned round at the hip. The climb-up turned a thigh 116° about its own
+  line, the knee 0.48 m behind the leg, and that measure read 0. Measure the
+  knee's hinge (thigh × shin) in the **pelvis's** frame against standing's,
+  on bent legs only. It caught the same pose at 2.03 rad. Prove such a
+  measure non-vacuous by putting back the pose it should catch.
 - Test the rig **as the game assembles it**, including root corrections such
   as the yaw in `hips_root_rotation`, not only the parsed asset.
 
@@ -83,3 +93,4 @@ measurement can also lose its meaning while still printing a confident sign.
 - [Measuring curve continuity at a seam](../measurement/measuring-curve-continuity-at-a-seam.md) — same-trap: unsigned `angle_between` cannot tell slowing down from reversing.
 - [A measurement of a broken system](../measurement/a-measurement-of-a-broken-system.md) — same-trap: a careful measurement that still answers the wrong question.
 - [Same function on both sides is a vacuous test](./same-function-both-sides-is-a-vacuous-test.md) — same-trap: another way a whole suite can pass without testing its subject.
+- [A hang is climbed up from by a pull, a press and a step on](../../character-animation/parkour/a-hang-is-climbed-up-from-by-pull-press-and-step-on.md) — example: the thigh turned round at the hip that only the pelvis-frame hinge measure caught.
