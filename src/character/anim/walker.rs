@@ -141,12 +141,16 @@ pub struct Walker {
     pub climb: Option<super::ladder::Climb>,
     /// The ledge to act on (`parkour`).
     pub ledge: Option<super::parkour::Ledge>,
+    /// Other ledges about it, which a hang shimmies onto round a corner
+    /// where one meets its ledge's end.
+    pub ledges: Vec<super::parkour::Ledge>,
     /// Asked of [`Walker::ledge`]: `Grab` walks under it, jumps and hangs
     /// from it (`parkour::hang`). Out of a standing jump's reach, the ask is
     /// dropped. `ClimbUp` climbs onto its top and stands there (on the
     /// walker's ground, [`super::parkour::LedgeGround`]), grabbing it first
-    /// if not hanging yet; the ask is dropped once taken. Hanging, nothing
-    /// else asked of it is done.
+    /// if not hanging yet; the ask is dropped once taken. `Shimmy` goes
+    /// along it hand over hand while asked (grabbing it first). Hanging,
+    /// nothing else asked of it is done.
     pub hang: Option<super::parkour::hang::HangAsk>,
 }
 
@@ -172,6 +176,7 @@ impl Default for Walker {
             ladder: None,
             climb: None,
             ledge: None,
+            ledges: Vec::new(),
             hang: None,
         }
     }
@@ -1549,6 +1554,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         if let Some(hands) = hands.as_ref() {
                             hanging.set_grips(hands.grips, &stood, &rig);
                         }
+                        hanging.set_others(&walker.ledges);
                         state.hanging = Some(hanging);
                     }
                     None => walker.hang = None,
@@ -1564,6 +1570,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     hanging.climb_up();
                     walker.hang = None;
                 }
+                // Shimmying while asked; the step under way finishes.
+                hanging.shimmy(match walker.hang {
+                    Some(super::parkour::hang::HangAsk::Shimmy(way)) => Some(way),
+                    _ => None,
+                });
                 hanging.advance(dt);
                 // Each bone led ahead of its spring, so the body rendered is
                 // the grab's.

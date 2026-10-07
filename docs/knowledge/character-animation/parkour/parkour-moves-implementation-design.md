@@ -173,6 +173,7 @@ its API, its tests, and when it is done.
 - **Tests.** Never fewer than one hand held, both while the body moves;
   the hips' acceleration bounded; turning a corner, nothing through the
   corner's walls.
+- **Built** 2026-10-07: [a ledge is shimmied hand over hand, and round corners](./a-ledge-is-shimmied-hand-over-hand-and-round-corners.md).
 
 ### Step 4: landing from height, and falling off an edge
 
@@ -303,7 +304,10 @@ its API, its tests, and when it is done.
 - **Step 1**, grab and hang: built 2026-10-07.
 - **Step 2**, climb up: built 2026-10-07; the ledge's top is the walker's
   ground (`parkour::LedgeGround`, 0a).
-- Steps 3-10: not started.
+- **Step 3**, shimmy and corners: built 2026-10-07. A ledge stays one
+  straight segment; corners are other ledges meeting its end
+  (`Ledge::joined`, `Ledge::block`, `Walker::ledges`), not a polyline.
+- Steps 4-10: not started.
 
 ## Related
 

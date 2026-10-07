@@ -58,6 +58,39 @@ impl Ledge {
         (point - self.a).dot(self.out)
     }
 
+    /// The four ledges round the top of a block standing on the floor, its
+    /// front face's foot at `foot` facing `out`, `width` wide (along the
+    /// front), `depth` deep, `height` high: front, then round its corners.
+    pub fn block(foot: Vec3, out: Vec3, width: f32, depth: f32, height: f32) -> [Self; 4] {
+        let out = Vec3::new(out.x, 0.0, out.z).normalize_or(Vec3::Z);
+        let across = Vec3::Y.cross(out);
+        let middle = foot - out * (0.5 * depth);
+        [(out, width, depth), (across, depth, width), (-out, width, depth), (-across, depth, width)]
+            .map(|(face, long, deep)| Self::wall(middle + face * (0.5 * deep), face, long, height, deep))
+    }
+
+    /// The ledge among `others` that carries this one's edge on round a
+    /// corner at its end `end` (0: `a`, 1: `b`), turned to start there (its
+    /// `a` the corner); and how far the face turns about `+Y` going onto
+    /// it, radians. `None` if no other ledge meets it there at its height.
+    pub fn joined(&self, end: usize, others: &[Ledge]) -> Option<(Ledge, f32)> {
+        let corner = if end == 0 { self.a } else { self.b };
+        others.iter().find_map(|other| {
+            if (other.height() - self.height()).abs() > CORNER_GAP || other.along().dot(self.along()).abs() > 0.5 {
+                return None;
+            }
+            let next = if (other.a - corner).length() < CORNER_GAP {
+                *other
+            } else if (other.b - corner).length() < CORNER_GAP {
+                Ledge { a: other.b, b: other.a, ..*other }
+            } else {
+                return None;
+            };
+            let turn = self.out.cross(next.out).y.atan2(self.out.dot(next.out));
+            Some((next, turn))
+        })
+    }
+
     /// The wall's footprint on the floor below, for a walk to go round:
     /// `None` if it is a slab overhead, reaching less than a walker's
     /// height down (whose way under it is clear).
@@ -73,6 +106,9 @@ impl Ledge {
         })
     }
 }
+
+/// How near two ledges' ends must be to meet at a corner, metres.
+const CORNER_GAP: f32 = 0.02;
 
 /// A ground with ledges' tops on it: each top where it is (from just below
 /// it up), else the ground `under` it. For a walker that climbs up onto a
@@ -102,6 +138,28 @@ impl crate::character::anim::ground::GroundProbe for LedgeGround {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block's four ledges meet end to end, each turning a right angle
+    /// outward (left about `+Y`, going round anticlockwise seen from above)
+    /// onto the next; an inside corner turns the other way.
+    #[test]
+    fn a_blocks_ledges_meet_at_its_corners() {
+        let ledges = Ledge::block(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 1.6, 1.0, 2.0);
+        assert!((ledges[0].out - Vec3::Z).length() < 1.0e-6 && (ledges[0].a.z + 0.5).abs() < 1.0e-6);
+        for k in 0..4 {
+            let (next, turn) = ledges[k].joined(1, &ledges).unwrap_or_else(|| panic!("ledge {k}: no corner at its end"));
+            assert!((next.a - ledges[k].b).length() < 1.0e-5, "ledge {k}: the next starts {:?} from its end", next.a - ledges[k].b);
+            assert!((next.out - ledges[(k + 1) % 4].out).length() < 1.0e-5, "ledge {k}: carried onto the wrong face");
+            assert!((turn - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5, "ledge {k}: turns {turn} round an outside corner");
+            let (back, turn) = ledges[k].joined(0, &ledges).expect("a corner at its start");
+            assert!((back.out - ledges[(k + 3) % 4].out).length() < 1.0e-5 && (turn + std::f32::consts::FRAC_PI_2).abs() < 1.0e-5);
+        }
+        // An inside corner: a wall at the front's end facing back along it.
+        let side = Ledge::wall(Vec3::new(0.8, 0.0, 0.0), Vec3::NEG_X, 1.0, 2.0, 0.5);
+        let (next, turn) = ledges[0].joined(1, &[side]).expect("an inside corner");
+        assert!((next.a - ledges[0].b).length() < 1.0e-5 && (turn + std::f32::consts::FRAC_PI_2).abs() < 1.0e-5, "turns {turn}");
+        assert!(ledges[0].joined(1, &[Ledge { a: side.a + Vec3::Y, b: side.b + Vec3::Y, ..side }]).is_none(), "a ledge a metre higher is no corner");
+    }
 
     /// On a ledge's top it stands at its height; in front of it, or below
     /// it, on the ground under it.

@@ -36,7 +36,10 @@ use crate::character::anim::rig::{accumulate_bind_rotations, accumulate_world_ro
 use crate::character::anim::stance::place_ankle;
 use crate::character::skeleton::Bone;
 
+mod shimmy;
 mod up;
+
+pub use shimmy::Shimmy;
 
 /// What a walker is asked to do with its ledge ([`Walker::hang`](crate::character::anim::Walker::hang)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,8 @@ pub enum HangAsk {
     Grab,
     /// Hanging from it, climb up onto its top and stand there.
     ClimbUp,
+    /// Hanging from it, shimmy along it while asked.
+    Shimmy(Shimmy),
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -219,6 +224,16 @@ pub struct Hanging {
     /// Asked to climb up onto the top ([`Self::climb_up`]), and climbing.
     up_asked: bool,
     up: Option<up::ClimbUp>,
+    /// Shimmying along the lip: the way asked this frame, and the step
+    /// under way ([`Self::shimmy`]).
+    shimmy_ask: Option<Shimmy>,
+    step: Option<shimmy::Step>,
+    /// How far it is pulled up from the hang's length, shimmying, metres.
+    pulled: f32,
+    /// The other ledges it may shimmy onto round a corner.
+    others: Vec<Ledge>,
+    /// How far apart the hands hold, a shoulder's width, metres.
+    spread: f32,
 }
 
 impl Hanging {
@@ -268,6 +283,11 @@ impl Hanging {
             reach_from: [Vec3::ZERO; 2],
             up_asked: false,
             up: None,
+            shimmy_ask: None,
+            step: None,
+            pulled: 0.0,
+            others: Vec::new(),
+            spread: 0.0,
         };
         hanging.place_hands(rig);
         hanging.plan_jump(stood, rig)?;
@@ -306,6 +326,7 @@ impl Hanging {
         let margin = lane[0].max(lane[1]) + 0.05;
         self.grip = self.ledge.nearest(self.stood_at + self.turn * self.body.hips, margin);
         self.lips = [0, 1].map(|side| self.grip + left * SIGN[side] * lane[side]);
+        self.spread = lane[0] + lane[1];
     }
 
     /// The hand's world turn hooked over the lip: the palm against the face,
@@ -313,12 +334,13 @@ impl Hanging {
     fn hook_turn(&self, side: usize) -> Quat {
         let grip = &self.body.grips[side];
         let back = self.turn.inverse();
-        self.turn * frame_turn(grip.along, grip.palm, back * Vec3::Y, back * -self.ledge.out)
+        self.turn * frame_turn(grip.along, grip.palm, back * Vec3::Y, back * -self.hand_out(side))
     }
 
-    /// Each wrist hooked over its lip point.
+    /// Each wrist hooked over its lip point (shimmying, a moving hand's off
+    /// the lip on its way to the next).
     fn wrists(&self) -> [Vec3; 2] {
-        [0, 1].map(|side| self.lips[side] - self.hook_turn(side) * hook_lip(&self.body.grips[side]))
+        [0, 1].map(|side| self.lip_now(side) - self.hook_turn(side) * hook_lip(&self.body.grips[side]))
     }
 
     /// The shoulder joint of arm `side`, the hips at `hips` and the trunk
@@ -453,7 +475,7 @@ impl Hanging {
     /// socket at `socket`, for the leg to reach it at `reach` of its length.
     fn wall_ball(&self, side: usize, socket: Vec3, reach: f32) -> Vec3 {
         let out = self.ledge.out;
-        let ankle_from_ball = self.toes_up(side) * self.body.attitudes[side].inverse() * (self.turn * self.body.ankles[side]);
+        let ankle_from_ball = self.ankle_from_ball(side, self.toes_up(side));
         let on_face = |height: f32| Vec3::new(socket.x, height, socket.z) - out * self.ledge.out_of(Vec3::new(socket.x, height, socket.z));
         let (mut low, mut high) = (socket.y - 2.0 * self.body.legs[side], socket.y);
         for _ in 0..40 {
@@ -474,7 +496,20 @@ impl Hanging {
     /// `hips`: toward the grip.
     fn lean_at(&self, hips: Vec3) -> f32 {
         let to = self.grip - hips;
-        to.dot(-self.ledge.out).atan2(to.y)
+        to.dot(-self.face().0).atan2(to.y)
+    }
+
+    /// Foot `side`'s ankle from its ball (the world), the foot turned to
+    /// world rotation `attitude`: the standing pose's offset, turned by how
+    /// far `attitude` is from the standing foot's world rotation.
+    ///
+    /// The standing foot's world rotation is `turn · attitudes`: taken as
+    /// `attitudes` alone, the facing turn went in twice, which a half turn
+    /// (squaring to none) hid on every wall faced so far; a quarter turn
+    /// round a corner put the ankle 14 cm along the face and the toes 6.5 cm
+    /// into the block.
+    fn ankle_from_ball(&self, side: usize, attitude: Quat) -> Vec3 {
+        attitude * (self.turn * self.body.attitudes[side]).inverse() * (self.turn * self.body.ankles[side])
     }
 
     /// Foot `side`'s standing world rotation pitched toes-up by
@@ -482,7 +517,8 @@ impl Hanging {
     fn toes_up(&self, side: usize) -> Quat {
         // Toes up: the toes, pointing at the wall, turn up about the axis
         // along the edge that carries `-out` toward `+Y`.
-        let axis = (-self.ledge.out).cross(Vec3::Y).normalize_or(self.ledge.along());
+        let (out, along) = self.face();
+        let axis = (-out).cross(Vec3::Y).normalize_or(along);
         Quat::from_axis_angle(axis, FOOT_ON_WALL) * self.turn * self.body.attitudes[side]
     }
 
@@ -503,6 +539,7 @@ impl Hanging {
             Phase::Hanging => match self.up.as_mut() {
                 Some(up) => up.t += dt,
                 None => {
+                    self.advance_shimmy(dt);
                     self.step_swing(dt);
                     self.start_up();
                 }
@@ -518,6 +555,8 @@ impl Hanging {
         let h = dt / steps as f32;
         let (give, ratio) = GIVE;
         let (rest_r, rest_theta) = self.rest;
+        // Shimmying, pulled up a little.
+        let rest_r = rest_r - self.pulled;
         for _ in 0..steps {
             let s = &mut self.swing;
             let radial = -give * give * (s.r - rest_r) - 2.0 * ratio * give * s.dr;
@@ -542,9 +581,8 @@ impl Hanging {
     /// The hips in the world now, hanging.
     fn hang_hips(&self) -> Vec3 {
         let s = &self.swing;
-        let along = self.ledge.along();
-        let base = self.ledge.nearest(self.grip, 0.0);
-        base + along * s.along + self.ledge.out * (s.r * s.theta.sin()) - Vec3::Y * (s.r * s.theta.cos())
+        let (out, along) = self.face();
+        self.grip + along * s.along + out * (s.r * s.theta.sin()) - Vec3::Y * (s.r * s.theta.cos())
     }
 
     /// How far the hips are below standing as it jumps: the foot IK's drop,
@@ -596,14 +634,16 @@ impl Hanging {
             Phase::Jumping => self.catch_at - self.jump.elapsed(),
             Phase::Hanging => 0.0,
         };
-        [smoothstep((1.0 - to_catch / CLOSING).clamp(0.0, 1.0)); 2]
+        let closed = smoothstep((1.0 - to_catch / CLOSING).clamp(0.0, 1.0));
+        [0, 1].map(|side| self.shimmy_grip(side).unwrap_or(closed))
     }
 
-    /// Where it looks: at the lip, and climbing up, ahead over the top.
+    /// Where it looks: at the lip, shimmying along it, and climbing up,
+    /// ahead over the top.
     pub fn look(&self) -> Vec3 {
         match self.up.as_ref() {
             Some(up) => self.up_look(up),
-            None => self.grip,
+            None => self.shimmy_look().unwrap_or(self.grip),
         }
     }
 
@@ -673,16 +713,27 @@ impl Hanging {
         let trunk = self.lean_turn(hips, rig);
         // The legs: from where they were caught to the wall, or hanging.
         let moved = smoothstep((self.since / if self.braced { FEET_TO_WALL } else { LEGS_HANG }).clamp(0.0, 1.0));
+        // Braced, off the wall going round a corner.
+        let off_wall = self.feet_off_wall();
         for (side, &(_, _, ankle_bone, _)) in LEGS.iter().enumerate() {
-            let (target, attitude) = if self.braced {
-                let attitude = self.toes_up(side);
-                (self.wall_balls[side] + attitude * self.body.attitudes[side].inverse() * (self.turn * self.body.ankles[side]), attitude)
-            } else {
-                // Under the hips along the body, a little bent, the feet
-                // leant with it.
+            // Free: under the hips along the body, a little bent, the feet
+            // leant with it.
+            let hanging = || {
                 let socket = hips + trunk * self.body.sockets[side];
                 let down = (hips - self.grip).normalize_or(Vec3::NEG_Y);
                 (socket + down * (FREE_LEG * self.body.legs[side]), trunk * self.body.attitudes[side])
+            };
+            let (target, attitude) = if self.braced {
+                let attitude = self.toes_up(side);
+                let on_wall = self.ball_now(side) + self.ankle_from_ball(side, attitude);
+                if off_wall > 0.0 {
+                    let (free, free_attitude) = hanging();
+                    (on_wall.lerp(free, off_wall), attitude.slerp(free_attitude, off_wall))
+                } else {
+                    (on_wall, attitude)
+                }
+            } else {
+                hanging()
             };
             let ankle = self.caught_ankles[side].lerp(target, moved);
             place_ankle(&mut pose, rig, ankle_bone, back * (ankle - root) - self.body.hips);
@@ -690,21 +741,21 @@ impl Hanging {
             let now = accumulate_world_rotations(&pose, rig)[ankle_bone];
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
-        self.arms_to(&mut pose, rig, root, self.wrists(), [self.hook_turn(0), self.hook_turn(1)], [0.0; 2], 1.0);
+        self.arms_to(&mut pose, rig, root, self.wrists(), [self.hook_turn(0), self.hook_turn(1)], self.elbows_tucked(), 1.0);
         pose
     }
 
     /// Where elbow `side` points hanging (the pose's frame): out to the side
     /// and back from the wall.
     fn hang_pole(&self, side: usize, rig: &RigGeometry) -> Vec3 {
-        rig.left() * SIGN[side] * 0.7 + self.turn.inverse() * self.ledge.out * 0.5 - Vec3::Y * 0.2
+        rig.left() * SIGN[side] * 0.7 + self.turn.inverse() * self.face().0 * 0.5 - Vec3::Y * 0.2
     }
 
     /// Where elbow `side` points pressing on the top (the pose's frame):
     /// back toward the hips, a little out. Pointing out as hanging, the
     /// elbows went 18.5 cm out past the shoulder-to-wrist line.
     fn press_pole(&self, side: usize, rig: &RigGeometry) -> Vec3 {
-        rig.left() * SIGN[side] * PRESS_ELBOW_OUT + self.turn.inverse() * self.ledge.out
+        rig.left() * SIGN[side] * PRESS_ELBOW_OUT + self.turn.inverse() * self.face().0
     }
 
     /// Each arm to its wrist at `wrists` (the world), turning its hand
@@ -935,6 +986,29 @@ mod tests {
         }
         let period = crossings[2] - crossings[1];
         assert!((2.0..2.8).contains(&period), "a free hang swings in {period:.2} s");
+    }
+
+    /// Braced on a wall facing any way, each foot's ball is on its hold. The
+    /// facing turn once went into the foot's offset twice, which a wall
+    /// faced with a half turn (squaring to none) hid.
+    #[test]
+    fn braced_feet_are_on_their_holds_on_a_wall_facing_any_way() {
+        let (_, rig) = real_stood();
+        for out in [Vec3::Z, Vec3::X, Vec3::NEG_X, Vec3::new(1.0, 0.0, 1.0).normalize()] {
+            let ledge = Ledge::wall(-out * 0.5, out, 4.0, 2.15, 1.0);
+            let square = Hanging::square(&ledge, rig.forward());
+            let root = Hanging::spot(&ledge, out * 1.5, square, &real_stood().0, &rig);
+            let mut hanging = Hanging::grab(&ledge, root, square, 0.0, &real_stood().0, &rig).expect("in reach");
+            hanging.advance(4.0);
+            assert!(hanging.is_braced());
+            let pose = hanging.pose(&rig);
+            let at = forward_kinematics_on(&pose, &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            for (side, &(_, _, _, toe)) in LEGS.iter().enumerate() {
+                let off = (hanging.root() + turn * at[toe] - hanging.wall_balls[side]).length();
+                assert!(off < 0.01, "a wall facing {out:?}: foot {side}'s ball {off:.4} m off its hold");
+            }
+        }
     }
 
     /// Too high for a standing jump, or low enough to reach standing, it is

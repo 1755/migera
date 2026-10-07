@@ -41,6 +41,54 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 3: shimmying along a ledge and round its corners
+
+Hanging, asked `HangAsk::Shimmy(Left|Right)`, the walker goes along the lip
+hand over hand while asked, and round a corner onto another ledge meeting
+its end (`Walker::ledges`, `Ledge::joined`; `Ledge::block` makes a block's
+four). See
+[the note](./docs/knowledge/character-animation/parkour/a-ledge-is-shimmied-hand-over-hand-and-round-corners.md).
+
+- **A step** (1 s, 0.25 m): the lead hand lifts 5 cm and hooks on a stride
+  along; the grip's middle moves from the start of the step, the hips
+  following on the hang's sideways spring; the trail hand follows to a
+  shoulder's width behind. Braced feet step along in turn. It pulls up 6 cm
+  first, the feet rising with it. At an edge's end it stops 8 cm short.
+- **A corner**: it stops 0.12 m short (outside) or 0.3 m (inside); the trail
+  hand comes up to the lead (0.12 m apart); then one 2.4 s step carries the
+  body by the rigid motion from the hang on the first face to the hang on
+  the next (a rotation about its fixed point), the hands going round in
+  turn, the palms turning to the new face; braced feet come off the wall and
+  plant again; at an inside corner the elbows tuck back.
+- **Fixed on the way:**
+  - braced feet: the facing turn went into a foot's ankle offset twice,
+    hidden by the half turn every wall had been faced with; a quarter turn
+    put a foot 20 cm off its hold. From step 1; now
+    `braced_feet_are_on_their_holds_on_a_wall_facing_any_way` (shown to fail
+    on the old composition facing +X);
+  - a foot measured off the face only passed 20 cm from its hold; a block
+    measure without its far side read a toe on its front a block deep;
+  - round a corner with the hands a shoulder's width apart, the trail hand
+    was 17 cm out of reach; the lead hand put nearest the corner on the next
+    ledge crossed the hands;
+  - outside and inside corners need opposite hand timing; each has its own.
+- **Headless** (2.15 m; braced and free; both ways; a block's corner and an
+  inside corner): a hand always on the lip; wrists within 0.1 mm held and
+  moving; nothing in any block; braced feet on their holds; the hips at
+  most 0.94 m/s² along, 1.8 round a corner; three steps go 0.75 m; round a
+  corner it ends square to the new face.
+- **Live** (BRP): along a wall the hands step 0.25 m at a time; round a
+  block's corner, on the side face the wrists 1 cm out, the pelvis 0.40 m,
+  a braced ball on the face.
+- **Seen:** Back mid-step along a wall; from above coming to, round and past
+  a block's corner; gizmos on, mesh off.
+- **Gallery:** `--shimmy-at T,left|right,SECONDS`, `--block
+  X,Z,HEADING,HEIGHT,WIDTH,DEPTH[,BELOW]`, `--side-ledge` (as `--ledge`).
+- **Cost** (`anim_bench --gait shimmy|shimmy-corner --characters 20`): 48 µs
+  a character a frame, 51 round a corner.
+
+1229 library tests pass; clippy is clean.
+
 ### Parkour, step 2: climbing up onto the ledge
 
 From a braced or free hang, asked `HangAsk::ClimbUp`, the walker climbs onto

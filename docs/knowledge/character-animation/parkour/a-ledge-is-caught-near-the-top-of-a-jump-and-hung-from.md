@@ -104,6 +104,11 @@ oscillators faded.
   out from the wall, the middle knuckles 13 cm off the lip, while the test
   comparing the hand to its own target passed. The test now hooks the rig's
   real middle finger on the posed hand and measures its knuckle and tip.
+- **The facing turn composed twice** in a braced foot's ankle-from-ball
+  offset (`attitude · attitudes⁻¹ · (turn · ankles)`, `attitude` already
+  turned): every wall tested faced with a half turn, which squares to none.
+  Found going round a corner (step 3): facing +X, a foot was 20 cm off its
+  hold. Fixed in `ankle_from_ball`; tested on four facings.
 - **The lip at the knuckle's height** lays the bent fingers through the top;
   curled 15° and 10° past the knuckle, the tips went 16 mm into it.
 - **The relaxed thumb** sticks out in front of the palm, 5 cm into the face.

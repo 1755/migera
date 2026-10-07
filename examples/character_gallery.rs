@@ -1185,9 +1185,20 @@ fn steer_the_walker(
         walker.ladder = climbs.ladder;
         walker.climb = climbs.at(time.elapsed_secs());
         walker.ledge = hangs.ledge;
+        if walker.ledges != hangs.others {
+            walker.ledges = hangs.others.clone();
+        }
         // A climb up already asked grabs first: a later grab keeps it.
         if grab.is_some() && walker.hang != Some(migera::character::anim::parkour::hang::HangAsk::ClimbUp) {
             walker.hang = grab;
+        }
+        {
+            use migera::character::anim::parkour::hang::HangAsk;
+            match hangs.shimmying(time.elapsed_secs()) {
+                Some(way) => walker.hang = Some(HangAsk::Shimmy(way)),
+                None if matches!(walker.hang, Some(HangAsk::Shimmy(_))) => walker.hang = None,
+                None => {}
+            }
         }
         walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
         walker.look_at = idle.look_at;
@@ -1377,10 +1388,17 @@ impl ClimbSchedule {
 #[derive(Resource, Debug, Clone, Default)]
 struct HangSchedule {
     ledge: Option<migera::character::anim::parkour::Ledge>,
+    /// The ledges about it, for corners: a block's (`--block
+    /// X,Z,HEADING,HEIGHT,WIDTH,DEPTH[,BELOW]`, grabbed by its front) and
+    /// walls beside it (`--side-ledge`, as `--ledge`).
+    others: Vec<migera::character::anim::parkour::Ledge>,
     at: Option<f32>,
     fired: bool,
     up_at: Option<f32>,
     up_fired: bool,
+    /// Shimmying: from when, which way, for how long (`--shimmy-at
+    /// T,left|right,SECONDS`).
+    shimmy: Option<(f32, migera::character::anim::parkour::hang::Shimmy, f32)>,
 }
 
 impl HangSchedule {
@@ -1390,7 +1408,7 @@ impl HangSchedule {
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--ledge" => {
+                "--ledge" | "--side-ledge" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x, z, heading, height, ref rest @ ..] = numbers[..] {
                         let width = rest.first().copied().unwrap_or(3.0);
@@ -1398,19 +1416,52 @@ impl HangSchedule {
                         if let Some(&below) = rest.get(1) {
                             ledge.wall_below = below.clamp(0.0, height);
                         }
-                        schedule.ledge = Some(ledge);
+                        if arg == "--ledge" {
+                            schedule.ledge = Some(ledge);
+                        } else {
+                            schedule.others.push(ledge);
+                        }
+                    }
+                }
+                "--block" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, height, width, depth, ref rest @ ..] = numbers[..] {
+                        let mut block = Ledge::block(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()), width, depth, height);
+                        if let Some(&below) = rest.first() {
+                            for ledge in &mut block {
+                                ledge.wall_below = below.clamp(0.0, height);
+                            }
+                        }
+                        schedule.ledge = Some(block[0]);
+                        schedule.others.extend(block);
                     }
                 }
                 "--hang-at" => schedule.at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--climb-up-at" => schedule.up_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--shimmy-at" => {
+                    use migera::character::anim::parkour::hang::Shimmy;
+                    let given = args.next().unwrap_or_default();
+                    let parts: Vec<&str> = given.split(',').map(str::trim).collect();
+                    if let [at, way, seconds] = parts[..]
+                        && let (Ok(at), Ok(seconds)) = (at.parse(), seconds.parse())
+                    {
+                        let way = if way.eq_ignore_ascii_case("left") { Shimmy::Left } else { Shimmy::Right };
+                        schedule.shimmy = Some((at, way, seconds));
+                    }
+                }
                 _ => {}
             }
         }
         // Asked to grab with no ledge given: a wall 1 m ahead, 2.25 m high.
-        if schedule.ledge.is_none() && (schedule.at.is_some() || schedule.up_at.is_some()) {
+        if schedule.ledge.is_none() && (schedule.at.is_some() || schedule.up_at.is_some() || schedule.shimmy.is_some()) {
             schedule.ledge = Some(Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.25, 1.0));
         }
         schedule
+    }
+
+    /// The way to shimmy at `elapsed` seconds, if it is.
+    fn shimmying(&self, elapsed: f32) -> Option<migera::character::anim::parkour::hang::Shimmy> {
+        self.shimmy.filter(|&(at, _, seconds)| (at..at + seconds).contains(&elapsed)).map(|(_, way, _)| way)
     }
 
     /// The grab, or the climb up, asked at `elapsed` seconds, each once.
@@ -1428,9 +1479,9 @@ impl HangSchedule {
     }
 }
 
-/// The gallery's ledge, as drawn.
+/// The gallery's ledges, as drawn: the one grabbed, then the others.
 #[derive(Component)]
-struct GalleryLedge(migera::character::anim::parkour::Ledge);
+struct GalleryLedge(Vec<migera::character::anim::parkour::Ledge>);
 
 #[allow(clippy::too_many_arguments)]
 fn place_ledge(
@@ -1443,34 +1494,35 @@ fn place_ledge(
     walkers: Query<Entity, With<Walker>>,
 ) {
     let Some(ledge) = hangs.ledge else { return };
-    if let Ok((_, GalleryLedge(was))) = drawn.single()
-        && *was == ledge
-    {
+    let ledges: Vec<_> = std::iter::once(ledge).chain(hangs.others.iter().copied()).collect();
+    if drawn.iter().next().is_some_and(|(_, GalleryLedge(was))| *was == ledges) {
         return;
     }
     for (entity, _) in &drawn {
         commands.entity(entity).despawn();
     }
-    // The walker stands on the top once climbed up onto it: its ground the
-    // gallery's floor with the top on it.
+    // The walker stands on a top once climbed up onto it: its ground the
+    // gallery's floor with the tops on it.
     for walker in &walkers {
         let under: Box<dyn migera::character::anim::ground::GroundProbe> =
             if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
-        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround { under, ledges: vec![ledge] })));
+        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround { under, ledges: ledges.clone() })));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
-    // A block behind the face, from the edge down as far as the wall goes
-    // (a slab at least 0.1 m thick), as deep as the top.
-    let width = (ledge.b - ledge.a).length();
-    let thick = ledge.wall_below.max(0.1);
-    let middle = 0.5 * (ledge.a + ledge.b) - ledge.out * (0.5 * ledge.depth) - Vec3::Y * (0.5 * thick);
-    let mesh = meshes.add(Cuboid::new(width, thick, ledge.depth));
-    commands.spawn((
-        GalleryLedge(ledge),
-        Mesh3d(mesh),
-        MeshMaterial3d(stone),
-        Transform::from_translation(middle).with_rotation(Quat::from_rotation_arc(Vec3::Z, ledge.out)),
-    ));
+    for ledge in &ledges {
+        // A block behind each face, from the edge down as far as the wall
+        // goes (a slab at least 0.1 m thick), as deep as the top.
+        let width = (ledge.b - ledge.a).length();
+        let thick = ledge.wall_below.max(0.1);
+        let middle = 0.5 * (ledge.a + ledge.b) - ledge.out * (0.5 * ledge.depth) - Vec3::Y * (0.5 * thick);
+        let mesh = meshes.add(Cuboid::new(width, thick, ledge.depth));
+        commands.spawn((
+            GalleryLedge(ledges.clone()),
+            Mesh3d(mesh),
+            MeshMaterial3d(stone.clone()),
+            Transform::from_translation(middle).with_rotation(Quat::from_rotation_arc(Vec3::Z, ledge.out)),
+        ));
+    }
 }
 
 /// The gallery's ladder, as drawn: redrawn when the ladder changes.

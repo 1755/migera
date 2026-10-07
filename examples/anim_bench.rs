@@ -53,6 +53,9 @@ enum Gait {
     Hang(bool),
     /// Climbing up onto a 2.15 m wall from a braced hang.
     HangUp,
+    /// Shimmying from a braced hang along a wall, or (`true`) on round a
+    /// block's corner.
+    Shimmy(bool),
 }
 
 fn main() {
@@ -90,28 +93,41 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
     // standing on the top (3.8 s). Posed led ahead of its springs, as the
     // walker poses it.
+    // Shimmying, from hanging braced: along a wall (4 s), or on round a
+    // block's corner (6 s).
     let hanging = match gait {
-        Gait::Hang(..) | Gait::HangUp => {
-            use migera::character::anim::parkour::{Hanging, Ledge};
-            let mut ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0);
+        Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) => {
+            use migera::character::anim::parkour::{hang::Shimmy, Hanging, Ledge};
+            let block = Ledge::block(Vec3::new(-0.6, 0.0, -1.0), Vec3::Z, 1.6, 1.0, 2.15);
+            let mut ledge = match gait {
+                Gait::Shimmy(true) => block[0],
+                _ => Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0),
+            };
             if let Gait::Hang(false) = gait {
                 ledge.wall_below = 0.15;
             }
             let square = Hanging::square(&ledge, rig.forward());
             let spot = Hanging::spot(&ledge, Vec3::ZERO, square, &stood, &rig);
             let mut hanging = Hanging::grab(&ledge, spot, square, 0.0, &stood, &rig).expect("a 2.15 m ledge in a standing jump's reach");
-            if let Gait::HangUp = gait {
-                hanging.advance(3.0);
-                assert!(hanging.climb_up() && hanging.is_climbing_up(), "a braced hang climbs up at once");
-                Some((hanging, 3.8))
-            } else {
-                Some((hanging, 3.5))
+            match gait {
+                Gait::HangUp => {
+                    hanging.advance(3.0);
+                    assert!(hanging.climb_up() && hanging.is_climbing_up(), "a braced hang climbs up at once");
+                    Some((hanging, 3.8))
+                }
+                Gait::Shimmy(corner) => {
+                    hanging.set_others(&block);
+                    hanging.advance(3.0);
+                    hanging.shimmy(Some(Shimmy::Right));
+                    Some((hanging, if corner { 6.0 } else { 4.0 }))
+                }
+                _ => Some((hanging, 3.5)),
             }
         }
         _ => None,
@@ -225,6 +241,7 @@ fn main() {
         Gait::Climb(slide) => format!("   {} a ladder", if slide { "sliding down" } else { "climbing" }),
         Gait::Hang(braced) => format!("   grabbing a ledge, hanging {}", if braced { "braced" } else { "free" }),
         Gait::HangUp => "   climbing up onto a ledge from a braced hang".to_string(),
+        Gait::Shimmy(corner) => format!("   shimmying {}", if corner { "round a corner" } else { "along a ledge" }),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -322,6 +339,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("hang") => Gait::Hang(true),
         Some("hang-free") => Gait::Hang(false),
         Some("hang-up") => Gait::HangUp,
+        Some("shimmy") => Gait::Shimmy(false),
+        Some("shimmy-corner") => Gait::Shimmy(true),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

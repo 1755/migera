@@ -219,7 +219,7 @@ impl Hanging {
 
     /// Starts the climb up, if asked and the swing is slow enough.
     pub(super) fn start_up(&mut self) {
-        if self.up_asked && self.up.is_none() && self.hang_velocity().length() < START_SPEED {
+        if self.up_asked && self.up.is_none() && self.step.is_none() && self.hang_velocity().length() < START_SPEED {
             let rig = self.rig.clone();
             self.up = Some(self.plan_up(&rig));
         }
@@ -244,7 +244,8 @@ impl Hanging {
     fn hang_velocity(&self) -> Vec3 {
         let s = &self.swing;
         let (sin, cos) = s.theta.sin_cos();
-        self.ledge.along() * s.dalong + self.ledge.out * (s.dr * sin + s.r * cos * s.dtheta) - Vec3::Y * (s.dr * cos - s.r * sin * s.dtheta)
+        let (out, along) = self.face();
+        along * s.dalong + out * (s.dr * sin + s.r * cos * s.dtheta) - Vec3::Y * (s.dr * cos - s.r * sin * s.dtheta)
     }
 
     fn plan_up(&self, rig: &RigGeometry) -> ClimbUp {
@@ -504,7 +505,7 @@ impl Hanging {
 
     /// The ankle of foot `side` with its ball at `ball`, toes up on the wall.
     fn wall_ankle(&self, side: usize, ball: Vec3) -> Vec3 {
-        ball + self.toes_up(side) * self.body.attitudes[side].inverse() * (self.turn * self.body.ankles[side])
+        ball + self.ankle_from_ball(side, self.toes_up(side))
     }
 }
 
