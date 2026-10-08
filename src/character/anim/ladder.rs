@@ -343,6 +343,14 @@ const HAND_STRETCH: f32 = 0.85;
 /// the shoulder toward it ([`shoulder_lift`]), as a reach overhead raises
 /// the shoulder girdle.
 const LIFT_FROM: f32 = 0.85;
+/// A hand rung whose wrist is within this of [`HAND_STRETCH`], metres, is
+/// within it (`Climbing::stretched`): one the lift brings there is exactly
+/// at it, give or take float noise.
+const STRETCH_SLACK: f32 = 1.0e-4;
+/// Feet passing each other are taken only if their best hips hold the hands
+/// no more than this lower than the best of all, metres
+/// (`Climbing::pattern_and_hips_for`).
+const PASSING_LOWER: f32 = 0.02;
 /// Each side's clavicle: turning it swings the shoulder joint about its root.
 const CLAVICLES: [Bone; 2] = [Bone::LeftShoulder, Bone::RightShoulder];
 /// How far through its move a hand starts closing on what it reaches for,
@@ -782,17 +790,22 @@ impl Climbing {
     }
 
     /// The pattern for this ladder's spacing on a leg `leg` long, and how far
-    /// out the hips go, from [`HIPS_OUT`] in to [`HIPS_IN_MOST`]: of those
-    /// whose feet pass each other as the spacing has them ([`Self::gap_for`])
-    /// if any reach their hands' rungs so, else of all, the one that holds
-    /// the hands highest, the farthest out of equals. The knees keep clear
-    /// however near the hips come (`bow_for`).
+    /// out the hips go, from [`HIPS_OUT`] in to [`HIPS_IN_MOST`]: the one
+    /// that holds the hands highest, the farthest out of equals; of those
+    /// whose feet pass each other as the spacing has them
+    /// ([`Self::gap_for`]) if the best of them holds the hands within
+    /// [`PASSING_LOWER`] of that. The knees keep clear however near the hips
+    /// come (`bow_for`).
     ///
     /// Chosen by the hands alone, the feet's way flipped with the hips' (the
     /// rungs reach in steps): a ladder whose feet pass climbed both feet to
     /// each rung. Chosen as the farthest out keeping the hands within a share
     /// of the arm below the shoulders, rungs 0.45 m apart were held at the
-    /// chest.
+    /// chest. Passing whenever any distance let it, rungs 0.36 m apart were
+    /// climbed so with the hips at their nearest, the hands 4.9 cm lower, the
+    /// trunk leant 0.49 rad in and a knee 2 cm from a rung; where the feet
+    /// pass on the other ladders, they hold the hands highest at every
+    /// distance.
     fn pattern_and_hips_for(&self, leg: f32) -> (Pattern, f32) {
         const TRIED: usize = 20;
         let tried: Vec<(Pattern, f32, f32)> = (0..TRIED)
@@ -803,16 +816,18 @@ impl Climbing {
                 (pattern, trial.hips_out, trial.hand_height(&pattern))
             })
             .collect();
-        let gap = self.gap_for(leg);
-        let keeping: Vec<_> = tried.iter().filter(|(pattern, _, _)| pattern.gap == gap).copied().collect();
-        let from = if keeping.is_empty() { tried } else { keeping };
         // Ties to the farthest out: the first of equals, tried from out in.
-        from.iter()
-            .fold(None::<&(Pattern, f32, f32)>, |best, candidate| match best {
+        let best = |from: &[(Pattern, f32, f32)]| {
+            from.iter().copied().fold(None::<(Pattern, f32, f32)>, |best, candidate| match best {
                 Some(best) if best.2 >= candidate.2 - 1.0e-4 => Some(best),
                 _ => Some(candidate),
             })
-            .map_or((self.pattern, self.hips_out), |&(pattern, out, _)| (pattern, out))
+        };
+        let gap = self.gap_for(leg);
+        let keeping: Vec<_> = tried.iter().filter(|(pattern, _, _)| pattern.gap == gap).copied().collect();
+        let overall = best(&tried);
+        let passing = best(&keeping).filter(|passing| overall.is_none_or(|overall| passing.2 >= overall.2 - PASSING_LOWER));
+        passing.or(overall).map_or((self.pattern, self.hips_out), |(pattern, out, _)| (pattern, out))
     }
 
     /// How many rungs apart the feet go on this ladder's spacing, a leg `leg`
@@ -877,10 +892,16 @@ impl Climbing {
     }
 
     /// The highest hand rung (above its foot's) whose wrist, `reach(hand)`
-    /// from the shoulder, is within [`HAND_STRETCH`] of the arm; the nearest
-    /// if none is.
+    /// from the (lifted) shoulder, is within [`HAND_STRETCH`] of the arm; the
+    /// nearest if none is.
+    ///
+    /// A rung the shoulder's lift brings within it is lifted to exactly
+    /// `LIFT_FROM` of the arm, the same share: compared bare, which side of
+    /// it such a rung fell was float noise (±1e-7 m), and a change of 1e-6 to
+    /// a turn in the standing pose flipped a ladder's whole pattern. Within
+    /// [`STRETCH_SLACK`] counts.
     fn stretched(&self, reach: impl Fn(i32) -> f32) -> i32 {
-        let most = HAND_STRETCH * self.body.arms[0];
+        let most = HAND_STRETCH * self.body.arms[0] + STRETCH_SLACK;
         (0..24)
             .rev()
             .find(|&hand| reach(hand) <= most)
@@ -2423,6 +2444,29 @@ mod tests {
         let m = climbed(&ladders()[0].1);
         assert!((m.speeds[0] - SPEED_UP).abs() < 0.03, "up at {:.3} m/s", m.speeds[0]);
         assert!((m.speeds[1] - SPEED_DOWN).abs() < 0.03, "down at {:.3} m/s", m.speeds[1]);
+    }
+
+    /// The way a ladder is climbed does not hang on float noise: the standing
+    /// pose's turns nudged by a few 1e-6 rad (as normalizing a turn helper's
+    /// output did), every ladder keeps its pattern and its hips' distance.
+    /// Compared bare against `HAND_STRETCH`, a hand rung the shoulder's lift
+    /// brings to exactly that flipped the 0.36 m ladder to passing feet.
+    #[test]
+    fn a_ladders_pattern_does_not_hang_on_float_noise() {
+        let (stood, rig) = real_stood();
+        for nudge in [1.0e-6f32, -1.0e-6, 3.0e-6] {
+            let mut nudged = stood;
+            for (i, bone) in [Bone::Spine, Bone::Spine1, Bone::LeftUpLeg, Bone::RightUpLeg, Bone::LeftArm, Bone::RightArm].into_iter().enumerate() {
+                let axis = [Vec3::X, Vec3::Y, Vec3::Z][i % 3];
+                nudged.rotations[bone] = Quat::from_axis_angle(axis, nudge) * nudged.rotations[bone];
+            }
+            for (name, ladder) in ladders() {
+                let (was, now) = (on_spot(&ladder, &stood, &rig), on_spot(&ladder, &nudged, &rig));
+                eprintln!("{name}: {:?}, hips {:.4} m out", was.pattern, was.hips_out);
+                assert_eq!(was.pattern, now.pattern, "{name}, nudged {nudge}: the pattern changed");
+                assert!((was.hips_out - now.hips_out).abs() < 1.0e-3, "{name}, nudged {nudge}: the hips {} m out, were {}", now.hips_out, was.hips_out);
+            }
+        }
     }
 
     /// Each foot passes the other where a foot and a hand reach two rungs;

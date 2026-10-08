@@ -678,7 +678,10 @@ pub fn delta_after_world_turn(pose: &LocalPose, rig: &RigGeometry, bone: Bone, t
     bind *= rig.bind_rotations[bone];
 
     let frame = parent_world * rig.bind_rotations[bone] * bind.inverse();
-    (frame.inverse() * turn * frame) * pose.rotations[bone]
+    // Normalized: turned over and over in one frame (a foot held on a wall
+    // through a reshape's passes), its rotation's norm compounded (glam's
+    // inverse is the conjugate) and FK grew the foot 0.7 % in a frame.
+    ((frame.inverse() * turn * frame) * pose.rotations[bone]).normalize()
 }
 
 /// Where `bone`'s joint sits relative to `ancestor`'s under `pose`: the

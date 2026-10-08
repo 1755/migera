@@ -233,8 +233,8 @@ impl AlongWall {
             // A turn carrying `+Y` out from the wall: the head away, the
             // feet toward it.
             let axis = Vec3::Y.cross(self.out).normalize_or(forward);
-            pose.rotations[Bone::Hips] = delta_after_world_turn(&pose, rig, Bone::Hips, Quat::from_axis_angle(axis, LEAN * lean)).normalize();
-            pose.rotations[Bone::Spine] = delta_after_world_turn(&pose, rig, Bone::Spine, Quat::from_axis_angle(axis, -TRUNK_BACK * LEAN * lean)).normalize();
+            pose.rotations[Bone::Hips] = delta_after_world_turn(&pose, rig, Bone::Hips, Quat::from_axis_angle(axis, LEAN * lean));
+            pose.rotations[Bone::Spine] = delta_after_world_turn(&pose, rig, Bone::Spine, Quat::from_axis_angle(axis, -TRUNK_BACK * LEAN * lean));
         }
         let wanted = com(leap, rig);
         for _ in 0..PASSES {
@@ -269,13 +269,6 @@ impl AlongWall {
             let now = accumulate_world_rotations(pose, rig)[ankle];
             let turn = Quat::IDENTITY.slerp(step.attitude * now.inverse(), w);
             pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, turn);
-            // Kept unit: turned over and over in one frame through the
-            // passes, the rotations' norms compounded (glam's inverse is the
-            // conjugate) and FK grew the foot 0.7 % in a frame, its ball
-            // 1.7 mm into the face.
-            for bone in [socket, knee, ankle] {
-                pose.rotations[bone] = pose.rotations[bone].normalize();
-            }
             // The ball's way into the face, and the knee's within `KNEE_OFF`
             // of it (leaving its hold at 0.45 m off, the near knee went 4 mm
             // in; turned out from the face instead, the knee swung round at

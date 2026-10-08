@@ -41,6 +41,33 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### The ladder's pattern no longer hangs on float noise
+
+Normalizing `rig::delta_after_world_turn` (a change under 1e-6) had failed
+five ladder tests on 0.36 m rungs. The cause was in the ladder:
+`Climbing::stretched` chose a hand's rung by `reach <= HAND_STRETCH·arm` from
+the lifted shoulder, and `armik::shoulder_lift` brings any liftable reach to
+exactly `LIFT_FROM·arm`, the same share. Hundreds of choices across the seven
+test ladders sat within 1e-7 m of the threshold, falling either way. Note: [a
+reach compared against what its own lift clamps it to is
+noise](docs/knowledge/character-animation/ik-and-locomotion/a-reach-compared-against-what-its-lift-clamps-it-to-is-noise.md).
+
+- A lifted rung now counts within `STRETCH_SLACK` (0.1 mm).
+- Passing feet are taken only if they hold the hands within `PASSING_LOWER`
+  (2 cm) of the best overall. On 0.36 m rungs they reached only at the four
+  nearest hips distances, the hands 4.9 cm lower, the trunk leant 0.49 rad.
+- `delta_after_world_turn` now normalizes its result for every caller;
+  `parkour::along`'s own normalizing came out.
+- Against the last commit: every ladder keeps its pattern; the standard
+  ladder's hips stand 1.8 cm farther out, the close and leaning ones 0.9 cm.
+- New test `a_ladders_pattern_does_not_hang_on_float_noise` (the standing
+  pose nudged by ±1e-6 rad): with the fix removed, the standard ladder's hips
+  moved 1.8 cm under a 1e-6 nudge.
+- **Live** (Xvfb, gizmos on, mesh off; side and back): the standard ladder
+  climbed with passing feet, hands at head height, knees forward.
+
+1266 library tests pass; clippy is clean with and without `real_rig`.
+
 ### Parkour, step 8 (fourth part): sliding down a wall
 
 Asked `HangAsk::SlideDown` hanging braced from a wall that reaches the
