@@ -129,9 +129,50 @@ const PARALLEL: f32 = 0.94;
 /// A ground with ledges' tops on it: each top where it is (from just below
 /// it up), else the ground `under` it. For a walker that climbs up onto a
 /// ledge to stand there (`hang::HangAsk::ClimbUp`).
+///
+/// The tops are found through a grid of [`CELL`] squares across the floor,
+/// each listing the ledges whose top's bounds reach into it: a sample looks
+/// only at its own square's. Every ledge looked at, a walker's wall checks
+/// cost 161 µs a frame among 50 blocks.
 pub struct LedgeGround {
-    pub under: Box<dyn crate::character::anim::ground::GroundProbe>,
-    pub ledges: Vec<Ledge>,
+    under: Box<dyn crate::character::anim::ground::GroundProbe>,
+    ledges: Vec<Ledge>,
+    cells: bevy::platform::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+/// The grid's squares, metres.
+const CELL: f32 = 1.0;
+
+impl LedgeGround {
+    /// The ground `under` with `ledges`' tops on it.
+    pub fn new(under: Box<dyn crate::character::anim::ground::GroundProbe>, ledges: Vec<Ledge>) -> Self {
+        // Bevy's map (a fast hash): the standard one's took 10 µs a frame
+        // held at a wall, against 5 looking at every ledge of one block.
+        let mut cells: bevy::platform::collections::HashMap<(i32, i32), Vec<u32>> = Default::default();
+        for (index, ledge) in ledges.iter().enumerate() {
+            // The top's corners: the edge, and as deep in behind it.
+            let back = -ledge.out * ledge.depth;
+            let corners = [ledge.a, ledge.b, ledge.a + back, ledge.b + back];
+            let (low, high) = corners.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(low, high), &corner| (low.min(corner), high.max(corner)));
+            let (x0, z0) = Self::cell_of(low);
+            let (x1, z1) = Self::cell_of(high);
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    cells.entry((x, z)).or_default().push(index as u32);
+                }
+            }
+        }
+        Self { under, ledges, cells }
+    }
+
+    /// The ledges on it.
+    pub fn ledges(&self) -> &[Ledge] {
+        &self.ledges
+    }
+
+    fn cell_of(at: Vec3) -> (i32, i32) {
+        ((at.x / CELL).floor() as i32, (at.z / CELL).floor() as i32)
+    }
 }
 
 /// How far below a ledge's top a point still stands on it, metres: a foot
@@ -143,8 +184,11 @@ impl crate::character::anim::ground::GroundProbe for LedgeGround {
         // The highest top under it: overlapping blocks (a step built into a
         // wall), the first listed read a top 2.2 m under the one stood on.
         let top = self
-            .ledges
-            .iter()
+            .cells
+            .get(&Self::cell_of(at))
+            .into_iter()
+            .flatten()
+            .map(|&index| &self.ledges[index as usize])
             .filter(|ledge| {
                 let along = (at - ledge.a).dot(ledge.along());
                 let back = -ledge.out_of(at);
@@ -191,7 +235,7 @@ mod tests {
     fn a_ledges_top_is_stood_on_from_just_below_it_up() {
         use crate::character::anim::ground::{FlatGround, GroundProbe};
         let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 1.0);
-        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![ledge] };
+        let ground = LedgeGround::new(Box::new(FlatGround::default()), vec![ledge]);
         let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
         assert_eq!(height(Vec3::new(0.2, 2.1, -1.4)), Some(2.0), "on the top");
         assert_eq!(height(Vec3::new(0.2, 1.8, -1.4)), Some(2.0), "a foot reaching for the top");
@@ -201,10 +245,48 @@ mod tests {
         // A lower block built into it, listed first: the higher top where
         // they overlap.
         let step = Ledge::wall(Vec3::new(0.0, 0.0, -0.7), Vec3::Z, 2.0, 0.8, 1.0);
-        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![step, ledge] };
+        let ground = LedgeGround::new(Box::new(FlatGround::default()), vec![step, ledge]);
         let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
         assert_eq!(height(Vec3::new(0.2, 2.1, -1.4)), Some(2.0), "on the top over the step");
         assert_eq!(height(Vec3::new(0.2, 2.1, -0.85)), Some(0.8), "past the top, over the step");
+    }
+
+    /// Through its grid it finds what looking at every ledge finds: 40
+    /// blocks of assorted sizes, headings and heights, 20 000 points across
+    /// and over them, from below their tops to above.
+    #[test]
+    fn the_grid_finds_what_every_ledge_finds() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let ledges: Vec<Ledge> = (0..40)
+            .flat_map(|_| {
+                let foot = Vec3::new(next() * 30.0 - 15.0, 0.0, next() * 30.0 - 15.0);
+                let heading = next() * std::f32::consts::TAU;
+                Ledge::block(foot, Vec3::new(heading.sin(), 0.0, heading.cos()), 0.3 + next() * 4.0, 0.3 + next() * 4.0, 0.5 + next() * 3.0)
+            })
+            .collect();
+        let ground = LedgeGround::new(Box::new(FlatGround::default()), ledges.clone());
+        let every = |at: Vec3| {
+            ledges
+                .iter()
+                .filter(|ledge| {
+                    let along = (at - ledge.a).dot(ledge.along());
+                    (0.0..=(ledge.b - ledge.a).length()).contains(&along) && (0.0..=ledge.depth).contains(&-ledge.out_of(at)) && at.y > ledge.height() - TOP_BELOW
+                })
+                .map(|ledge| ledge.height())
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..20_000 {
+            let at = Vec3::new(next() * 36.0 - 18.0, next() * 4.0, next() * 36.0 - 18.0);
+            let found = ground.sample(at).map_or(0.0, |hit| hit.height);
+            assert_eq!(found, every(at), "at {at:?}");
+        }
     }
 
     #[test]

@@ -329,7 +329,7 @@ fn main() {
     let blocks: Vec<migera::character::anim::parkour::Ledge> = (0..walls)
         .flat_map(|i| migera::character::anim::parkour::Ledge::block(Vec3::new(3.0 * i as f32, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 3.0))
         .collect();
-    let ground = migera::character::anim::parkour::geometry::LedgeGround { under: Box::new(migera::character::anim::ground::FlatGround::default()), ledges: blocks };
+    let ground = migera::character::anim::parkour::geometry::LedgeGround::new(Box::new(migera::character::anim::ground::FlatGround::default()), blocks);
     // With `--walls-away`, walking away from them instead: the open floor,
     // nothing in reach (the common case).
     let away = std::env::args().any(|a| a == "--walls-away");

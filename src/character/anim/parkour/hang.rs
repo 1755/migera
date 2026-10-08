@@ -1372,7 +1372,7 @@ mod tests {
         ];
         for (name, x, width, out, on) in steps {
             let step = Ledge::wall(Vec3::new(x, 0.0, -0.5 + out), Vec3::Z, width, 1.4, 1.0);
-            let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![upper, step] };
+            let ground = super::super::geometry::LedgeGround::new(Box::new(FlatGround::default()), vec![upper, step]);
             let mut hanging = hung_from(&upper, &[]);
             hanging.advance(1.0);
             assert!(hanging.is_braced(), "{name}: hanging free");
@@ -1542,7 +1542,7 @@ mod tests {
             for past in [-0.2, 0.0, 0.3, 0.6, 1.0] {
                 let name = format!("{speed} m/s, the wall {past:+} m past its landing");
                 let far = Ledge::wall(start.with_y(0.0) + forward * (lands + past), -forward, 4.0, 3.0, 2.0);
-                let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![far] };
+                let ground = super::super::geometry::LedgeGround::new(Box::new(FlatGround::default()), vec![far]);
                 let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
                 let mut jump = plan.clone();
                 while !jump.airborne() {
@@ -1653,7 +1653,7 @@ mod tests {
             ("0.15 m wide under one foot", Ledge::wall(forward * (ahead - 1.0) + side * a, -forward, 0.15, 1.5, 3.0), false),
         ];
         for (name, top, lands_on) in tops {
-            let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![top] };
+            let ground = super::super::geometry::LedgeGround::new(Box::new(FlatGround::default()), vec![top]);
             let mut falling = off(0.0);
             falling.land_on(&|at| ground.sample(at).map(|hit| hit.height));
             assert_eq!(falling.ground() > 1.0, lands_on, "{name}: landing on {} m", falling.ground());
@@ -1697,7 +1697,7 @@ mod tests {
         for (name, long, rolls) in [("6 m long", 6.0, true), ("ending 1 m past the feet", 1.0, false)] {
             // Its near face 1 m before the feet, out to `long` past them.
             let top = Ledge::wall(forward * (ahead - 1.0), -forward, 4.0, 2.5, 1.0 + long);
-            let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![top] };
+            let ground = super::super::geometry::LedgeGround::new(Box::new(FlatGround::default()), vec![top]);
             let mut falling = off(0.0);
             falling.land_on(&|at| ground.sample(at).map(|hit| hit.height));
             assert!((falling.ground() - 2.5).abs() < 1.0e-6, "{name}: landing on {} m", falling.ground());

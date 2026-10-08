@@ -1535,7 +1535,7 @@ fn place_ledge(
     for walker in &walkers {
         let under: Box<dyn migera::character::anim::ground::GroundProbe> =
             if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
-        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround { under, ledges: ledges.clone() })));
+        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround::new(under, ledges.clone()))));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
     for ledge in &ledges {

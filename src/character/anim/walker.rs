@@ -342,6 +342,15 @@ pub const DETOUR_STEP: f32 = 0.2618;
 const DETOUR_RATE: f32 = 3.0;
 /// A turn off the way is a way round only if clear this far, metres.
 const DETOUR_CLEAR: f32 = 1.5;
+/// Back to its line, it heads for the point on it this far ahead, metres,
+/// turned at most this far off its way, radians; on it within this,
+/// metres, the detour is over.
+const LINE_LOOKAHEAD: f32 = 1.5;
+const LINE_MOST_TURN: f32 = std::f32::consts::FRAC_PI_4;
+const LINE_ON: f32 = 0.05;
+/// ... and facing its way within this, radians: over within half a turn
+/// step (7.5°), it walked on straight off its line, 0.38 m in 12 m.
+const LINE_FACING: f32 = 0.01;
 
 /// How far through its stance a gait's foot bears weight for the foot IK's
 /// hips (`AnimFootIk::gait_bearing`): past it, the foot is rolling off its
@@ -414,9 +423,8 @@ pub struct WalkerState {
     /// ground found below as the root went over the edge, the fall to start.
     pub falling: Option<super::parkour::Falling>,
     pub fall_to: Option<f32>,
-    /// Going round a wall ([`way_round`]): the facing it wants, and the side
-    /// it turned off it.
-    pub detour: Option<(f32, f32)>,
+    /// Going round a wall ([`way_round`]).
+    pub detour: Option<Detour>,
     /// The ledge it walks under, the spot it jumps from, and whether it has
     /// come round in front of it to walk straight in (`LEDGE_LEAD_IN`).
     pub ledge_spot: Option<(super::parkour::Ledge, Vec3, bool)>,
@@ -1006,24 +1014,37 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             let reach = BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed;
             // Steered toward a facing, that is the way wanted, now; else the
             // facing it had when it turned off.
-            let side = state.detour.map_or(0.0, |(_, side)| side);
+            let at = state.locomotion.position;
+            let side = state.detour.map_or(0.0, |detour| detour.side);
             let wanted = match steer {
                 Steer::Toward { yaw, .. } => yaw,
-                _ => state.detour.map_or(state.facing.yaw, |(wanted, _)| wanted),
+                _ => state.detour.map_or(state.facing.yaw, |detour| detour.wanted),
             };
-            match way_round(state.locomotion.position, wanted, side, reach, gait_rig.forward(), ground.0.as_ref()) {
-                // Clear: back onto its way, the detour over once facing it.
+            match way_round(at, wanted, side, reach, gait_rig.forward(), ground.0.as_ref()) {
+                // Clear: back to its line (heading for it, if that way is
+                // clear too, else along its way), the detour over once on
+                // it and facing its way.
                 WayRound::Clear => {
-                    if state.detour.is_some() {
-                        steer = Steer::Toward { yaw: wanted, rate: DETOUR_RATE };
-                        if super::facing::shortest_angle(state.facing.yaw - wanted).abs() < 0.5 * DETOUR_STEP {
+                    if let Some(detour) = state.detour {
+                        let (back, off) = back_to_line(at, detour.from, wanted, gait_rig.forward());
+                        let toward = match way_round(at, back, side, reach, gait_rig.forward(), ground.0.as_ref()) {
+                            WayRound::Clear => back,
+                            _ => wanted,
+                        };
+                        steer = Steer::Toward { yaw: toward, rate: DETOUR_RATE };
+                        // Over: its way set as its facing to hold (left at
+                        // the last heading for its line, a little off its
+                        // way, it walked on off its line, 0.13 m in 13 m).
+                        if off < LINE_ON && super::facing::shortest_angle(state.facing.yaw - wanted).abs() < LINE_FACING {
+                            steer = Steer::Toward { yaw: wanted, rate: DETOUR_RATE };
                             state.detour = None;
                         }
                     }
                 }
                 WayRound::Turn { yaw, side } => {
                     steer = Steer::Toward { yaw, rate: DETOUR_RATE };
-                    state.detour = Some((wanted, side));
+                    let from = state.detour.map_or(at, |detour| detour.from);
+                    state.detour = Some(Detour { wanted, side, from });
                 }
                 WayRound::Blocked => wanted_speed = 0.0,
             }
@@ -1906,6 +1927,15 @@ pub fn fade_walk_sway(layer: &mut PhaseLayer, running: f32) {
     }
 }
 
+/// Going round a wall: the facing it wants, the side it turned off it (+1 or
+/// -1), and where it turned off, on the line it goes back to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Detour {
+    pub wanted: f32,
+    pub side: f32,
+    pub from: Vec3,
+}
+
 /// Which way to walk with a wall ahead ([`way_round`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WayRound {
@@ -1950,6 +1980,19 @@ pub fn way_round(at: Vec3, wanted: f32, side: f32, reach: f32, forward: Vec3, gr
         }
     }
     WayRound::Blocked
+}
+
+/// Back to its line after going round a wall: the facing that heads for the
+/// point on the line through `from` along the facing `wanted` (the rig
+/// facing `forward` at none) [`LINE_LOOKAHEAD`] ahead of the body at `at`,
+/// turned at most [`LINE_MOST_TURN`] off `wanted`; and how far off the line
+/// the body is, metres. Gone round a block, it walked on along a parallel
+/// line 1.2 m out.
+pub fn back_to_line(at: Vec3, from: Vec3, wanted: f32, forward: Vec3) -> (f32, f32) {
+    let way = Quat::from_rotation_y(wanted) * forward;
+    let left = Vec3::Y.cross(way);
+    let off = (at - from).dot(left);
+    (wanted - (off / LINE_LOOKAHEAD).atan().clamp(-LINE_MOST_TURN, LINE_MOST_TURN), off.abs())
 }
 
 /// The body standing at `at` (the root, on the ground) moved `moved`, kept
@@ -2235,22 +2278,28 @@ mod tests {
         // A point walker: turned toward its steer at the detour's rate,
         // moved through `keep_off_walls`, wanting to face 0 (-Z).
         let walk = |ledges: Vec<Ledge>, seconds: f32| {
-            let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges };
+            let ground = LedgeGround::new(Box::new(FlatGround::default()), ledges);
             let (dt, speed) = (1.0 / 60.0, 1.4);
-            let (mut at, mut yaw, mut detour, mut deepest, mut stopped) = (Vec3::ZERO, 0.0f32, None::<(f32, f32)>, 0.0f32, false);
+            let (mut at, mut yaw, mut detour, mut deepest, mut stopped) = (Vec3::ZERO, 0.0f32, None::<Detour>, 0.0f32, false);
             for _ in 0..(seconds / dt) as usize {
                 let reach = BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed;
-                let (wanted, side) = detour.unwrap_or((0.0, 0.0));
+                let (wanted, side) = (0.0, detour.map_or(0.0, |detour| detour.side));
                 let (mut toward, mut go) = (wanted, true);
                 match way_round(at, wanted, side, reach, forward, &ground) {
                     WayRound::Clear => {
-                        if detour.is_some() && crate::character::anim::facing::shortest_angle(yaw - wanted).abs() < 0.5 * DETOUR_STEP {
-                            detour = None;
+                        if let Some(line) = detour {
+                            let (back, off) = back_to_line(at, line.from, wanted, forward);
+                            if way_round(at, back, side, reach, forward, &ground) == WayRound::Clear {
+                                toward = back;
+                            }
+                            if off < LINE_ON && crate::character::anim::facing::shortest_angle(yaw - wanted).abs() < LINE_FACING {
+                                detour = None;
+                            }
                         }
                     }
                     WayRound::Turn { yaw, side } => {
                         toward = yaw;
-                        detour = Some((wanted, side));
+                        detour = Some(Detour { wanted, side, from: detour.map_or(at, |detour| detour.from) });
                     }
                     WayRound::Blocked => go = false,
                 }
@@ -2274,7 +2323,8 @@ mod tests {
         let (at, yaw, stopped, into) = walk(block.to_vec(), 8.0);
         assert!(into == 0.0, "round the block, the body went into it");
         assert!(at.z < -5.0 && !stopped, "round the block, ended at {at:?}, stopped {stopped}");
-        assert!(crate::character::anim::facing::shortest_angle(yaw).abs() < 0.2, "past the block, facing {yaw:.2} off its way");
+        assert!(crate::character::anim::facing::shortest_angle(yaw).abs() < 0.05, "past the block, facing {yaw:.2} off its way");
+        assert!(at.x.abs() < LINE_ON, "past the block, {:.3} m off its line (on a parallel line, 1.2 m)", at.x);
         // A wall 40 m wide straight ahead: along it.
         let wall = Ledge::block(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 40.0, 1.0, 3.0);
         let (at, _, stopped, into) = walk(wall.to_vec(), 6.0);
@@ -2298,7 +2348,7 @@ mod tests {
         use crate::character::anim::ground::FlatGround;
         use crate::character::anim::parkour::{geometry::LedgeGround, Ledge};
         let block = Ledge::block(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 3.0);
-        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: block.to_vec() };
+        let ground = LedgeGround::new(Box::new(FlatGround::default()), block.to_vec());
         // The face at z = -1, facing +z.
         // The body nearer the block (x -1..1, z -3..-1) than its radius,
         // less 2 cm.

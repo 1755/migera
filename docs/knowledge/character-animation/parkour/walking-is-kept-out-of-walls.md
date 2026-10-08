@@ -1,6 +1,6 @@
 ---
 title: Walking is kept out of walls
-description: "The walker had no collision. Ground read from above higher than a step pushes the body (0.2 m circle) back out, sliding along (keep_off_walls); a wall ahead is gone round by the least clear turn, or stopped at in a dead end (way_round). Costs linear in ledges. Read before changing how the walker moves its root."
+description: "The walker had no collision. Ground higher than a step pushes the body (0.2 m circle) back out, sliding (keep_off_walls); a wall ahead is gone round by the least clear turn and back to its line, or stopped at in a dead end (way_round); tops found through a 1 m grid. Read before changing how the walker moves its root."
 type: decision
 status: current
 tags:
@@ -10,13 +10,16 @@ updated: 2026-10-08
 verified: 2026-10-08
 code:
   - src/character/anim/walker.rs
+  - src/character/anim/parkour/geometry.rs
 sources:
-  - "tests walker::tests::{walking_is_kept_out_of_walls, walking_goes_round_a_wall}"
+  - "tests walker::tests::{walking_is_kept_out_of_walls, walking_goes_round_a_wall}, parkour::geometry::tests::the_grid_finds_what_every_ledge_finds"
   - "anim_bench --gait walk --characters 100 --walls N [--walls-away]"
   - "live: character_gallery --block 0,-8,0,3.0,2.0,12 --side-ledge 0,-10.5,180,3.0,2.0 --start-height 3.0 --anim-speed-schedule 1:3.0; --block 0,-1,180,2.25,2.0,1.0 --hang-at 1 --climb-up-at 18"
 aliases:
   - keep_off_walls
   - way_round
+  - back_to_line
+  - LedgeGround grid
   - BODY_RADIUS
   - walking round a wall
   - wall collision
@@ -53,9 +56,12 @@ walls and round corners, and stops only square on.
 that is clear, in 15° steps up to a quarter turn, and keeps to the side it
 chose. A turn counts only if clear for 1.5 m (`DETOUR_CLEAR`) with the
 body's width swept along it. It walks along the wall, and past its end its
-way is clear again, so it turns back onto it, on a parallel line. Steered
-toward a facing, that is its way; else, the facing it had when it turned
-off. With no clear way within a quarter turn (a dead end), it stops.
+way is clear again. Then it goes back to its line, the line through where
+it turned off (`Detour::from`, `back_to_line`): it heads for the point on
+it 1.5 m ahead, at most 45° off its way, if that heading is clear too. It
+is done within 5 cm of the line and 0.01 rad of its way, with its way set
+as the facing to hold. Steered toward a facing, that is its way; else, the
+facing it had when it turned off. With no clear way within a quarter turn (a dead end), it stops.
 Walking to a spot by a wall (a ledge's, a ladder's, a chair's) is exempt,
 because that approach ends nearer; so is walking a circle.
 
@@ -75,10 +81,23 @@ because that approach ends nearer; so is walking a circle.
   sent it back and forth.
 - **Checking 8 probes first**: a corner came 2.7 cm in between them.
 
+**The ground finds tops through a grid** (`LedgeGround::new`): 1 m squares
+across the floor, each listing the ledges whose top's bounds reach into
+it, in Bevy's map (a fast hash). A sample looks only at its own square's
+ledges. Looking at every ledge, the wall checks cost grew with the level:
+161 µs a character a frame among 50 blocks.
+
 ## Traps
 
 - **A box grown by the body is not the body's reach** at a corner: a test
   using one reported a penetration where the round body was clear.
+- **Ending the way back at the last heading for the line**: that heading
+  is a little off the way (about 2° at 5 cm off), and walking straight
+  held it, 0.13 m off the line in 13 m. On ending, its way is set as the
+  facing.
+- **The standard library's map** made the grid slower than looking at
+  every ledge of one block (10 µs held at a wall against 5); Bevy's map
+  took it to 7.
 
 ## Consequences
 
@@ -86,31 +105,32 @@ because that approach ends nearer; so is walking a circle.
   held; diagonally it slides along the face; away it goes free; on the
   block's top, walking to its edge, nothing holds it.
 - **Headless, going round** (a point walker turning at 3 rad/s): straight
-  at a 2 m block at 1.4 m/s it goes round it, past it, facing its way
-  again; along a 40 m wall it follows it; in a dead end it stops; never into
-  a wall (1 cm).
+  at a 2 m block at 1.4 m/s it goes round it, back onto its line within
+  5 cm, facing its way within 0.05 rad; along a 40 m wall it follows it; in
+  a dead end it stops; never into a wall (1 cm).
+- **Headless, the grid**: among 40 blocks of assorted sizes, headings and
+  heights, it finds what looking at every ledge finds, at 20 000 points.
 - **Live**: run off a 3 m top, landed at a far wall's foot, it stands
   there, the pelvis 0.29 m off the wall, after one small step. Walking
-  straight at a 2 m block, it turns off, passes along its side 1.23 m out
-  (its edge at 1.0) and walks on along its way. A ledge grab, the climb up,
-  and standing on the top all still work.
+  straight at a 2 m block, it turns off, passes along its side 1.2 m out
+  (its edge at 1.0), is back on its line 5 m past it, and stays on it
+  (1-2 cm over the next 16 m). A ledge grab, the climb up, and standing on
+  the top all still work.
 - A step up of 0.3 m or less is walked onto as before.
 - **Cost** (`anim_bench --gait walk --characters 100 --walls N`, on top of
-  the walk's 24 µs a character a frame): linear in the ledges, because
-  `LedgeGround` samples every ledge.
+  the walk's 24 µs a character a frame): flat in the level's size through
+  the grid.
 
-| Blocks (ledges) | Open floor (`--walls-away`) | Held at a wall |
-|---|---|---|
-| 1 (4) | 1.0 µs | 5.3 µs |
-| 10 (40) | 6.6 µs | 34 µs |
-| 50 (200) | 31 µs | 161 µs |
+| Blocks (ledges) | Open floor (`--walls-away`) | Held at a wall | Without the grid, held |
+|---|---|---|---|
+| 1 (4) | 0.7 µs | 7.3 µs | 5.3 µs |
+| 10 (40) | 0.7 µs | 8.4 µs | 34 µs |
+| 200 (800) | 0.6 µs | 8.5 µs | (161 µs at 50) |
 
 ## Revisit when
 
-- **A level with many blocks**: `LedgeGround` needs a spatial index; the
-  cost grows with every ledge in the level, not the ones nearby.
-- **Steering back onto its line**: it goes on along a parallel line past
-  a block, not back to the line it was on.
+- **Ledges far longer than a cell**: one 40 m ledge is listed in 40+
+  cells; a sample is still one cell, but building the grid is per cell.
 - **A wall at a run**: the stop is as quick as the gait's own stopping.
 
 ## Related

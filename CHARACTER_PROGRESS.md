@@ -176,8 +176,21 @@ fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-o
     open-floor cost.
   - not covered: a spatial index for `LedgeGround`; going back to the line
     it was on past a block.
+- **Follow-up, the ledge grid and back to its line:**
+  - `LedgeGround::new` puts the ledges in a 1 m grid across the floor (in
+    Bevy's map; the standard one's hash was slower than looking at every
+    ledge of one block). Among 40 random blocks it finds what looking at
+    every ledge finds at 20 000 points. Wall checks over the walk's 24 µs:
+    0.7 µs on open floor and 7-8.5 µs held at a wall, with 1 to 200 blocks
+    (161 µs with 50 before).
+  - past a block, it goes back to the line through where it turned off,
+    heading for the point on it 1.5 m ahead (45° at most), and ends with
+    its way set as the facing to hold. Ending at the last heading for the
+    line, a little off its way, it drifted 0.13 m in 13 m. Headless: back
+    within 5 cm. Live: back on its line 5 m past the block, then 1-2 cm
+    off over 16 m.
 
-1248 library tests pass; clippy is clean.
+1249 library tests pass; clippy is clean.
 
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 
