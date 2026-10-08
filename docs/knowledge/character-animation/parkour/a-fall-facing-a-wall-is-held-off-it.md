@@ -118,3 +118,4 @@ It does not roll either.
 
 - [A hang is dropped into, let go of, and caught from a fall](./a-hang-is-dropped-into-let-go-of-and-caught-from-a-fall.md) — prerequisite: the falls (a missed jump, a let-go) that need the wall.
 - [A drop is fallen ballistically and landed to the measured time and depth](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md) — contrast: the landing and the roll's planned resting height, smoothed the same way.
+- [Walking is kept out of walls](./walking-is-kept-out-of-walls.md) — contrast: the walker's own keep-off, once a fall has landed and it walks on.

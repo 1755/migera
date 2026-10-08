@@ -139,8 +139,26 @@ fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-o
   - not covered: the walker's run goes on through a wall it landed at the
     foot of (no collision with ledges); only letting go checks the feet
     against a step.
+- **Follow-up, both feet on a top and walking kept out of walls:**
+  - a fall (walking off or a jump) lands both feet on a top, each from heel
+    to ball. With an edge across or along its way, between or under the
+    feet, it moves the landing as little as puts both on (up to 0.3 m),
+    eased in over the flight, so a jump's hand-off stays continuous. A top
+    too narrow is fallen past, moved up to 0.6 m as little as keeps every
+    joint clear of it. A top was searched for under the hips, but the feet
+    plant ahead.
+  - walking is kept out of walls
+    ([note](docs/knowledge/character-animation/parkour/walking-is-kept-out-of-walls.md)):
+    ground read from above higher than a step holds the body 0.2 m off,
+    sliding along, and a wall ahead within the stopping distance stops the
+    walk. Stopping only once held, it shuffled.
+  - live: run off a 3 m top, landed at a far wall's foot, it stands there
+    0.29 m off it (it ran through). A ledge grab and the climb up still
+    work.
+  - not covered: steering round a wall; a roll onto a top may roll off its
+    far edge.
 
-1244 library tests pass; clippy is clean.
+1246 library tests pass; clippy is clean.
 
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 

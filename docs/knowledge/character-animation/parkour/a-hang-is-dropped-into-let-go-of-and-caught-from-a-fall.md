@@ -16,7 +16,7 @@ code:
   - src/character/anim/walker.rs
   - src/character/anim/parkour/geometry.rs
 sources:
-  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate, a_running_jump_lands_on_the_far_top_or_catches_its_lip}"
+  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate, a_running_jump_lands_on_the_far_top_or_catches_its_lip, a_fall_lands_both_feet_on_a_top_or_falls_past_it}"
   - "live: --block 0,1,180,3.6,1.2,3.0 --side-ledge 0,1.35,180,1.4,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 25; --block 0,-0.3,0,3.0,1.2,3.0 --side-ledge 0,-1.7,180,3.0,1.2 --start-height 3.0 --jump-at 6:0.3:1.2 [--catch]"
   - "live: character_gallery --block 0,1,180,2.0,1.2,3.0 --start-height 2.0 --drop-down-at 2 --let-go-at 25; and --block 0,1,180,3.6,1.2,3.0,0.15 --side-ledge 0,0.65,180,1.9,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 30 --catch, Xvfb, BRP"
 aliases:
@@ -97,7 +97,18 @@ landing is on ground as high (a gap cleared) is held up over the gap and
 lands and runs on as it would.
 
 **A fall lands on the first top its feet come down onto** along its flight
-(`Falling::land_on`), coming from above it, not into its side.
+(`Falling::land_on`), coming from above it, not into its side. Under any
+part of either foot counts: each foot's ball is tracked, planted ahead of
+the hips.
+
+**Both feet must land on it**, each from heel to ball, a foot's width
+either side. If one would land over its edge, the landing moves as little
+as puts both on, up to 0.3 m along or across the way it falls. The move is
+a displacement eased in over the flight from nothing: changing the
+velocity instead kinked a running jump's hand-off by 1.3 cm. With no such
+move, it is not landed on: the fall goes on past it to the ground below,
+moved up to 0.6 m as little as keeps every joint clear of it all the way
+down and up again.
 
 A fall then catches as any other: with `Walker::catch`, a standing jump of
 1.2 m off a 3 m top catches a wall as high 1.7 m off; a running jump
@@ -180,6 +191,15 @@ variable frame time.
   fine. Headless tests check the target, so only live BRP showed it.
 - **A step under one foot, measured from between the feet**, read as no
   step. The other foot was left landing in the air over the floor.
+- **A top was searched for under the hips**, but the feet plant ahead of
+  them. A top whose edge was under the feet was never found, and one
+  between the feet neither.
+- **Clear of a top by the feet alone is not clear.** Moved to straddle a
+  narrow top, the body came down onto it, 1.4 m in. The arms out landing
+  reach past the feet too, so moving aside takes up to 0.6 m.
+- **The ground probe reads a top only within 0.3 m under it**
+  (`LedgeGround`). A joint entering a top's block from the side lower down
+  went unseen until the ground was read from far above the joint.
 
 ## Consequences
 
@@ -222,6 +242,10 @@ variable frame time.
 - **A step under one foot**: ending between the feet, it lands along the
   wall with both ankles on it, a foot's width in from its end; 0.15 m wide,
   it lands beside it, 10 cm past its end.
+- **Walking off a 3 m top onto a 1.5 m one**: with its front edge under the
+  feet, or its side edge between them, both feet land on it, every ankle
+  and ball 3 cm or more in from its edges; a top 0.15 m wide under one foot
+  is fallen past to the floor, nothing into it.
 
 **Live** (Xvfb, BRP, gizmos on, mesh off; back and side views):
 - **Dropping down** off a 2.0 m top: the wrists end 10 cm under the lip, the
@@ -254,10 +278,8 @@ variable frame time.
 
 ## Revisit when
 
-- **The walker's run** goes on through a wall it lands at the foot of: it
-  has no collision with ledges.
-- **A step under one foot from a walk-off or a jump**: only letting go
-  checks the feet; a fall onto a top lands both feet on it.
+- **A roll onto a top**: the feet are checked where the squat would land;
+  a roll goes on from there and may roll off its far edge.
 
 ## Related
 

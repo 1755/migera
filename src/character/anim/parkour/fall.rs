@@ -55,6 +55,11 @@ const LEGS_REACH: f32 = 0.25;
 const LEGS_COAST: f32 = 0.15;
 /// The flight is searched for a top to land on this finely, seconds.
 const LAND_STEP: f32 = 0.01;
+/// A foot on a top: from this far behind its ankle to this far ahead (the
+/// ball), and this far either side, metres.
+const FOOT_HEEL: f32 = 0.05;
+const FOOT_BALL: f32 = 0.12;
+const FOOT_SIDE: f32 = 0.05;
 const AHEAD: f32 = 0.01;
 /// The trunk leans forward this much a metre of the landing's depth,
 /// radians; flying, this much.
@@ -312,6 +317,9 @@ pub struct Falling {
     /// Leaving a jump, the hips' own velocity less the centre of mass's,
     /// horizontal ([`Self::drift`]).
     hips_drift: Vec3,
+    /// How far the landing is moved to put both feet on a top, horizontal
+    /// ([`Self::shifted`]).
+    land_shift: Vec3,
     /// Rolling, not squatting; landing hurt; the rig it was measured on.
     roll: Option<Roll>,
     hurt: bool,
@@ -364,6 +372,7 @@ impl Falling {
             ankle_velocities: [Vec3::ZERO; 2],
             from_ahead: None,
             hips_drift: Vec3::ZERO,
+            land_shift: Vec3::ZERO,
             roll: None,
             hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
@@ -421,18 +430,109 @@ impl Falling {
         // into its side (reaching its footprint already under its top, a
         // jump falling short landed on it through the wall, 16 cm in).
         let mut over = None;
+        // The feet are planted ahead of the hips touching down (under the
+        // hips, a top whose edge was under the feet was not found).
+        // Each foot's ball: a top under any part of either foot is landed on
+        // (both feet then put on it, `land_both_feet_on`).
+        let touch = self.from_hips + flat_of(self.velocity) * flight + self.drift(flight);
+        let ahead = self.feet.map(|foot| flat_of(foot - touch) + self.turn * rig.forward() * FOOT_BALL);
         for i in 1..=(flight / LAND_STEP).ceil() as usize {
             let t = (LAND_STEP * i as f32).min(flight);
             let hips = self.from_hips + self.velocity * t - Vec3::Y * (0.5 * GRAVITY * t * t) + self.drift(t);
             let feet = hips - Vec3::Y * self.touch_height;
-            let top = ground(feet).filter(|&top| top > self.ground + STEP_DOWN);
+            let top = ahead.iter().filter_map(|&ahead| ground(feet + ahead)).filter(|&top| top > self.ground + STEP_DOWN).reduce(f32::max);
             if let Some(top) = top.filter(|&top| feet.y <= top && over == Some(top)) {
-                self.ground = top;
-                self.replan(&rig);
+                self.land_both_feet_on(top, ground, &rig);
                 return;
             }
             over = top.filter(|&top| feet.y > top);
         }
+    }
+
+    /// Landing on the top `top` high, with both feet on it: as it falls, or
+    /// moved as little as puts both on it (its edge across or along the
+    /// way it falls, between or under the feet); else not on it at all,
+    /// falling on to the ground below. Landed as it fell, a foot was left
+    /// over the edge, in the air.
+    fn land_both_feet_on(&mut self, top: f32, ground: &dyn Fn(Vec3) -> Option<f32>, rig: &RigGeometry) {
+        let below = self.ground;
+        self.ground = top;
+        self.replan(rig);
+        let forward = flat_of(self.velocity).try_normalize().unwrap_or(self.turn * rig.forward());
+        let across = Vec3::Y.cross(forward);
+        let toward = self.turn * rig.forward();
+        let on = |point: Vec3| ground(Vec3::new(point.x, top + 0.1, point.z)).is_some_and(|height| (height - top).abs() < 0.05);
+        // Each foot from heel to ball, a foot's width either side.
+        let both_on = |falling: &Self| {
+            falling.feet.iter().all(|&ankle| {
+                [-FOOT_HEEL, FOOT_BALL].iter().all(|&along| [-FOOT_SIDE, FOOT_SIDE].iter().all(|&side| on(ankle + toward * along + Vec3::Y.cross(toward) * side)))
+            })
+        };
+        if both_on(self) {
+            return;
+        }
+        // Moved by a displacement eased in over the flight, not a change of
+        // velocity: re-aimed, a running jump's hand-off kinked 1.3 cm.
+        let shifts = (1..=15).flat_map(|k| {
+            let s = 0.02 * k as f32;
+            [forward * s, -forward * s, across * s, -across * s]
+        });
+        for shift in shifts {
+            let mut moved = self.clone();
+            moved.land_shift = shift;
+            moved.replan(rig);
+            if both_on(&moved) {
+                *self = moved;
+                return;
+            }
+        }
+        // Not on it: falling on past it, moved as little as keeps the feet
+        // clear of it all the way down (falling straight on, a foot over a
+        // narrow top went down through it).
+        self.ground = below;
+        self.replan(rig);
+        if self.feet_clear(ground, rig) {
+            return;
+        }
+        // Further than onto it: the arms out landing reach past the feet.
+        let wider = (1..=30).flat_map(|k| {
+            let s = 0.02 * k as f32;
+            [forward * s, -forward * s, across * s, -across * s]
+        });
+        for shift in wider {
+            let mut moved = self.clone();
+            moved.land_shift = shift;
+            moved.replan(rig);
+            if moved.feet_clear(ground, rig) {
+                *self = moved;
+                return;
+            }
+        }
+    }
+
+    /// Whether every joint stays clear of every top (1 cm over it) all the
+    /// way down and up again, sampled every 5 ms (the feet alone: moved to
+    /// straddle a narrow top, the body came down onto it).
+    fn feet_clear(&self, ground: &dyn Fn(Vec3) -> Option<f32>, rig: &RigGeometry) -> bool {
+        let mut at = self.clone();
+        let end = self.ends[2];
+        (0..=(end / 0.005).ceil() as usize).all(|i| {
+            at.t = (0.005 * i as f32).min(end);
+            let joints = forward_kinematics_on(&at.pose(rig), rig);
+            let root = at.root();
+            // The highest ground at each joint's spot, read from far above
+            // (from the joint, a top more than a foot over it was missed).
+            Bone::ALL.into_iter().all(|bone| {
+                let joint = root + self.turn * joints[bone];
+                ground(Vec3::new(joint.x, joint.y + 100.0, joint.z)).is_none_or(|height| height <= joint.y - 0.01 || height < self.ground + STEP_DOWN)
+            })
+        })
+    }
+
+    /// How far the landing has been moved `t` seconds in
+    /// ([`Self::land_shift`]): eased in over the flight from standing still.
+    fn shifted(&self, t: f32) -> Vec3 {
+        self.land_shift * smoothstep((t / self.ends[0].max(1.0e-3)).clamp(0.0, 1.0))
     }
 
     /// Plans the landing for the velocity it left with: a squat, a roll or
@@ -969,11 +1069,12 @@ impl Falling {
     }
 
     /// How far the hips have drifted `t` seconds in from the centre of
-    /// mass's path, going on at their own speed as they left a jump, the
-    /// difference slowing evenly to nothing over [`LEGS_COAST`].
+    /// mass's path: going on at their own speed as they left a jump, the
+    /// difference slowing evenly to nothing over [`LEGS_COAST`]; and the
+    /// landing moved ([`Self::shifted`]).
     fn drift(&self, t: f32) -> Vec3 {
         let coast = t.min(LEGS_COAST);
-        self.hips_drift * (coast - 0.5 * coast * coast / LEGS_COAST)
+        self.hips_drift * (coast - 0.5 * coast * coast / LEGS_COAST) + self.shifted(t)
     }
 
     /// The hips with no wall in the way.

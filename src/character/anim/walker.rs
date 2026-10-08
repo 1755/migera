@@ -328,6 +328,15 @@ const LEDGE_AT_LEAD_IN: f32 = 0.3;
 /// times the legs' 0.015 s spring half-life, for the extension to settle.
 const STOOD_HOLD: f32 = 0.3;
 
+/// Walking, the body is kept this far from a wall, metres, round the root:
+/// less than the 0.25 m the hips stand off a wall faced; looked for this
+/// many ways round. It stops for a wall straight ahead this much further
+/// off, and as far as it goes in this long at its speed.
+pub const BODY_RADIUS: f32 = 0.2;
+const WALL_PROBES: usize = 16;
+const WALL_STOP_MARGIN: f32 = 0.15;
+const WALL_STOP_TIME: f32 = 0.3;
+
 /// How far through its stance a gait's foot bears weight for the foot IK's
 /// hips (`AnimFootIk::gait_bearing`): past it, the foot is rolling off its
 /// toes. A run's foot in its last frame down, pinned behind a body
@@ -970,6 +979,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             footing = Some(crouch_on);
         }
         let crouched = !state.crouching.is_standing();
+        // A wall ahead within its stopping distance (`keep_off_walls`), it
+        // stops; turned along or away from it, it goes on. Stopped only once
+        // held at it, it set off again each time it stood clear, and shuffled.
+        // Not walking to a spot by a wall (a ledge's, a ladder's): that
+        // approach ends nearer than this stops.
+        if !state.on_holds()
+            && !placing
+            && let Some(ground) = ground
+        {
+            let way = state.facing.rotation() * gait_rig.forward();
+            let speed = state.locomotion.root_velocity.length();
+            let ahead = state.locomotion.position + way * (BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed);
+            if ground.0.sample(ahead + Vec3::Y * 100.0).is_some_and(|hit| hit.height > state.locomotion.position.y + super::parkour::fall::STEP_DOWN) {
+                wanted_speed = 0.0;
+            }
+        }
         // From a stand it sets off once its crouch is still.
         let still = fallen
             || !state.posture.is_standing()
@@ -1846,6 +1871,35 @@ pub fn fade_walk_sway(layer: &mut PhaseLayer, running: f32) {
     }
 }
 
+/// The body standing at `at` (the root, on the ground) moved `moved`, kept
+/// out of walls: ground (read from above) more than a step higher than it
+/// stands on within [`BODY_RADIUS`] of the root. Into one, the move slides
+/// along it, or stops; and the wall's way out, if one held it.
+pub fn keep_off_walls(at: Vec3, moved: Vec3, ground: &dyn super::ground::GroundProbe) -> (Vec3, Option<Vec3>) {
+    let wall = |point: Vec3| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > at.y + super::parkour::fall::STEP_DOWN);
+    // The ways round the body a wall is in, standing at `centre`.
+    let walls_at = |centre: Vec3| -> Vec3 {
+        (0..WALL_PROBES)
+            .map(|k| {
+                let angle = std::f32::consts::TAU * k as f32 / WALL_PROBES as f32;
+                Vec3::new(angle.cos(), 0.0, angle.sin())
+            })
+            .filter(|&way| wall(centre + way * BODY_RADIUS))
+            .sum()
+    };
+    let into = walls_at(at + moved);
+    if into == Vec3::ZERO {
+        return (moved, None);
+    }
+    let out = -into.normalize();
+    let slid = moved - out * moved.dot(out).min(0.0);
+    if walls_at(at + slid) == Vec3::ZERO {
+        (slid, Some(out))
+    } else {
+        (Vec3::ZERO, Some(out))
+    }
+}
+
 /// Moves each walker by exactly how far its planted feet moved under it in
 /// the pose just RENDERED, after the springs, before the IK: integrating the
 /// gait's published velocity instead erred by `½·a·dt²` and by the springs'
@@ -1901,6 +1955,10 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
         };
         // A balance recovery step carries the character too.
         let moved = moved + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
+        // Walking, kept out of walls: run on after landing at one's foot, it
+        // went on straight through the block. (On holds or jumping, the
+        // move places the body itself.)
+        let moved = if state.on_holds() || state.jump.is_some() { moved } else { keep_off_walls(state.locomotion.position, moved, ground.0.as_ref()).0 };
         state.locomotion.position += moved;
         // The foot locks keep a planted foot where it is in the WORLD only if
         // they know the body moved over it.
@@ -2057,5 +2115,38 @@ mod tests {
         let (running, walking) = (worst_root_jolt(1.0), worst_root_jolt(0.0));
         assert!(running < 1.0e-4, "running, the root's step changes {:.2} mm in a frame", running * 1e3);
         assert!(walking > 3.0e-3, "the walk's sway on a run's clock jolts the root only {:.2} mm", walking * 1e3);
+    }
+
+    /// Walking into a 3 m block's face from the floor the body stops
+    /// `BODY_RADIUS` off it, held, the face's way out given; diagonally it
+    /// slides along it; away it goes free; and on the top, walking to its
+    /// edge (the floor below), nothing holds it. Run on after landing at a
+    /// wall's foot, it went straight through the block.
+    #[test]
+    fn walking_is_kept_out_of_walls() {
+        use crate::character::anim::ground::FlatGround;
+        use crate::character::anim::parkour::{geometry::LedgeGround, Ledge};
+        let block = Ledge::block(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 3.0);
+        let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: block.to_vec() };
+        // The face at z = -1, facing +z.
+        let walk = |from: Vec3, way: Vec3| {
+            let mut at = from;
+            let mut held = None;
+            for _ in 0..200 {
+                let (moved, blocked) = keep_off_walls(at, way * 0.02, &ground);
+                at += moved;
+                held = blocked;
+            }
+            (at, held)
+        };
+        let (at, held) = walk(Vec3::new(0.0, 0.0, 0.0), Vec3::NEG_Z);
+        assert!((at.z - (-1.0 + BODY_RADIUS)).abs() < 0.03, "head on, stopped at z {:.3}", at.z);
+        assert!(held.is_some_and(|out| out.dot(Vec3::Z) > 0.9), "head on, held by {held:?}");
+        let (at, _) = walk(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, -1.0).normalize());
+        assert!(at.z > -1.0 + BODY_RADIUS - 0.03 && at.x > 1.0, "diagonally, ended at {at:?} (not slid along)");
+        let (at, held) = walk(Vec3::new(0.0, 0.0, -0.75), Vec3::Z);
+        assert!(at.z > 3.0 && held.is_none(), "away, ended at {at:?}, held {held:?}");
+        let (moved, held) = keep_off_walls(Vec3::new(0.0, 3.0, -1.2), Vec3::Z * 0.5, &ground);
+        assert!((moved.z - 0.5).abs() < 1.0e-6 && held.is_none(), "on the top to its edge, moved {moved:?}, held {held:?}");
     }
 }
