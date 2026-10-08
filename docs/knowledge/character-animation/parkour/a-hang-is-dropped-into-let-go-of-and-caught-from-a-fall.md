@@ -16,7 +16,7 @@ code:
   - src/character/anim/walker.rs
   - src/character/anim/parkour/geometry.rs
 sources:
-  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate, a_running_jump_lands_on_the_far_top_or_catches_its_lip, a_fall_lands_both_feet_on_a_top_or_falls_past_it}"
+  - "tests parkour::hang::up::tests::it_lowers_itself_down_into_the_hang, parkour::hang::tests::{letting_go_falls_and_lands, falling_past_a_ledge_it_catches_it, a_ledge_falling_past_is_caught_at_any_frame_rate, letting_go_over_a_step_lands_on_it_or_clears_it, a_jump_falling_short_catches_the_far_ledge, a_jump_falling_short_catches_at_any_frame_rate, a_running_jump_lands_on_the_far_top_or_catches_its_lip, a_fall_lands_both_feet_on_a_top_or_falls_past_it, a_roll_onto_a_top_stays_on_it_or_squats}"
   - "live: --block 0,1,180,3.6,1.2,3.0 --side-ledge 0,1.35,180,1.4,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 25; --block 0,-0.3,0,3.0,1.2,3.0 --side-ledge 0,-1.7,180,3.0,1.2 --start-height 3.0 --jump-at 6:0.3:1.2 [--catch]"
   - "live: character_gallery --block 0,1,180,2.0,1.2,3.0 --start-height 2.0 --drop-down-at 2 --let-go-at 25; and --block 0,1,180,3.6,1.2,3.0,0.15 --side-ledge 0,0.65,180,1.9,1.2 --start-height 3.6 --drop-down-at 2 --let-go-at 30 --catch, Xvfb, BRP"
 aliases:
@@ -246,6 +246,9 @@ variable frame time.
   feet, or its side edge between them, both feet land on it, every ankle
   and ball 3 cm or more in from its edges; a top 0.15 m wide under one foot
   is fallen past to the floor, nothing into it.
+- **Walking off a 4.5 m top onto a 2.5 m one** (rolled): 6 m long, it
+  rolls on it; ending 1 m past the feet, it squats instead. Nothing into its
+  block or under its top.
 
 **Live** (Xvfb, BRP, gizmos on, mesh off; back and side views):
 - **Dropping down** off a 2.0 m top: the wrists end 10 cm under the lip, the
@@ -276,10 +279,16 @@ variable frame time.
 | `catch` | 24 µs (with the swept catch test each frame) |
 | `jump-catch` | 34 µs |
 
+**A roll stays on what it lands on** (`keep_roll_on`). A roll goes about
+4 m along the ground from a 2 m drop. Its way, from where it tucks to where
+it stands, is checked every 0.1 m, 0.25 m either side, to be on ground as
+high as it lands on. If any of it is not, it squats instead (`no_roll`),
+and on a top its feet are put on it again.
+
 ## Revisit when
 
-- **A roll onto a top**: the feet are checked where the squat would land;
-  a roll goes on from there and may roll off its far edge.
+- **Rolling round**: a roll that would go off is turned into a squat, not
+  steered along the top.
 
 ## Related
 

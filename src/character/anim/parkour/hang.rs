@@ -1679,6 +1679,48 @@ mod tests {
         }
     }
 
+    /// Walking off a 4.5 m top at 1.4 m/s onto one 2.5 m high (a 2 m drop,
+    /// rolled, 4 m along the ground): 6 m long, it rolls on it; ending 1 m
+    /// past where the feet land, it squats instead, both feet on it (the
+    /// feet put on it where a squat lands, a roll went on off its far edge).
+    /// Nothing into its block or under its top.
+    #[test]
+    fn a_roll_onto_a_top_stays_on_it_or_squats() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        use crate::character::anim::parkour::Falling;
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let off = |ground: f32| Falling::off(Vec3::new(0.0, 4.5, 0.0), 0.0, forward * 1.4, &stood, ground, 0.0, &stood, &rig);
+        assert!(off(2.5).rolls(), "a 2 m drop squatted");
+        let feet = off(2.5).feet();
+        let ahead = 0.5 * (feet[0] + feet[1]).dot(forward);
+        for (name, long, rolls) in [("6 m long", 6.0, true), ("ending 1 m past the feet", 1.0, false)] {
+            // Its near face 1 m before the feet, out to `long` past them.
+            let top = Ledge::wall(forward * (ahead - 1.0), -forward, 4.0, 2.5, 1.0 + long);
+            let ground = super::super::geometry::LedgeGround { under: Box::new(FlatGround::default()), ledges: vec![top] };
+            let mut falling = off(0.0);
+            falling.land_on(&|at| ground.sample(at).map(|hit| hit.height));
+            assert!((falling.ground() - 2.5).abs() < 1.0e-6, "{name}: landing on {} m", falling.ground());
+            assert_eq!(falling.rolls(), rolls, "{name}: rolling {}", falling.rolls());
+            let (mut into, mut under) = (0.0f32, 0.0f32);
+            loop {
+                let pose = falling.pose(&rig);
+                into = into.max(into_block(&top, &pose, falling.root(), falling.facing(), &rig));
+                if falling.is_landed() {
+                    let at = forward_kinematics_on(&pose, &rig);
+                    let turn = Quat::from_rotation_y(falling.facing());
+                    under = Bone::ALL.iter().map(|&bone| 2.5 - (falling.root() + turn * at[bone]).y).fold(under, f32::max);
+                }
+                if falling.is_done() {
+                    break;
+                }
+                falling.advance(DT);
+            }
+            assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the top's block");
+            assert!(under < 1.0e-3, "{name}: a joint {under:.4} m under the top, landed");
+        }
+    }
+
     /// Letting go from a slab 3.6 m up overhanging a 1.9 m wall by 0.35 m,
     /// reaching up, it catches the wall's ledge as it falls past and hangs
     /// from it: the hands on their hooks, nothing in either block, the

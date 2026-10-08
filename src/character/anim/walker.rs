@@ -333,9 +333,15 @@ const STOOD_HOLD: f32 = 0.3;
 /// many ways round. It stops for a wall straight ahead this much further
 /// off, and as far as it goes in this long at its speed.
 pub const BODY_RADIUS: f32 = 0.2;
-const WALL_PROBES: usize = 16;
+const WALL_PROBES: usize = 32;
 const WALL_STOP_MARGIN: f32 = 0.15;
 const WALL_STOP_TIME: f32 = 0.3;
+/// Going round a wall, the turns off the way wanted it tries, radians, and
+/// how fast it turns onto one (as the approach turns, rad/s).
+pub const DETOUR_STEP: f32 = 0.2618;
+const DETOUR_RATE: f32 = 3.0;
+/// A turn off the way is a way round only if clear this far, metres.
+const DETOUR_CLEAR: f32 = 1.5;
 
 /// How far through its stance a gait's foot bears weight for the foot IK's
 /// hips (`AnimFootIk::gait_bearing`): past it, the foot is rolling off its
@@ -408,6 +414,9 @@ pub struct WalkerState {
     /// ground found below as the root went over the edge, the fall to start.
     pub falling: Option<super::parkour::Falling>,
     pub fall_to: Option<f32>,
+    /// Going round a wall ([`way_round`]): the facing it wants, and the side
+    /// it turned off it.
+    pub detour: Option<(f32, f32)>,
     /// The ledge it walks under, the spot it jumps from, and whether it has
     /// come round in front of it to walk straight in (`LEDGE_LEAD_IN`).
     pub ledge_spot: Option<(super::parkour::Ledge, Vec3, bool)>,
@@ -453,6 +462,7 @@ impl WalkerState {
             hanging: None,
             falling: None,
             fall_to: None,
+            detour: None,
             ledge_spot: None,
             measured: None,
         }
@@ -979,21 +989,46 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             footing = Some(crouch_on);
         }
         let crouched = !state.crouching.is_standing();
-        // A wall ahead within its stopping distance (`keep_off_walls`), it
-        // stops; turned along or away from it, it goes on. Stopped only once
-        // held at it, it set off again each time it stood clear, and shuffled.
+        // A wall ahead within its stopping distance (`keep_off_walls`): it
+        // turns off its way as little as is clear, keeps to that side along
+        // the wall, and back onto its way past its end (`way_round`); with
+        // no way within a quarter turn, it stops. Stopped only once held at
+        // it, it set off again each time it stood clear, and shuffled.
         // Not walking to a spot by a wall (a ledge's, a ladder's): that
-        // approach ends nearer than this stops.
+        // approach ends nearer than this stops; nor on a circle.
         if !state.on_holds()
             && !placing
+            && wanted_speed > 0.0
+            && !matches!(steer, Steer::Circle(_))
             && let Some(ground) = ground
         {
-            let way = state.facing.rotation() * gait_rig.forward();
             let speed = state.locomotion.root_velocity.length();
-            let ahead = state.locomotion.position + way * (BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed);
-            if ground.0.sample(ahead + Vec3::Y * 100.0).is_some_and(|hit| hit.height > state.locomotion.position.y + super::parkour::fall::STEP_DOWN) {
-                wanted_speed = 0.0;
+            let reach = BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed;
+            // Steered toward a facing, that is the way wanted, now; else the
+            // facing it had when it turned off.
+            let side = state.detour.map_or(0.0, |(_, side)| side);
+            let wanted = match steer {
+                Steer::Toward { yaw, .. } => yaw,
+                _ => state.detour.map_or(state.facing.yaw, |(wanted, _)| wanted),
+            };
+            match way_round(state.locomotion.position, wanted, side, reach, gait_rig.forward(), ground.0.as_ref()) {
+                // Clear: back onto its way, the detour over once facing it.
+                WayRound::Clear => {
+                    if state.detour.is_some() {
+                        steer = Steer::Toward { yaw: wanted, rate: DETOUR_RATE };
+                        if super::facing::shortest_angle(state.facing.yaw - wanted).abs() < 0.5 * DETOUR_STEP {
+                            state.detour = None;
+                        }
+                    }
+                }
+                WayRound::Turn { yaw, side } => {
+                    steer = Steer::Toward { yaw, rate: DETOUR_RATE };
+                    state.detour = Some((wanted, side));
+                }
+                WayRound::Blocked => wanted_speed = 0.0,
             }
+        } else if placing || state.on_holds() {
+            state.detour = None;
         }
         // From a stand it sets off once its crouch is still.
         let still = fallen
@@ -1871,33 +1906,104 @@ pub fn fade_walk_sway(layer: &mut PhaseLayer, running: f32) {
     }
 }
 
+/// Which way to walk with a wall ahead ([`way_round`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WayRound {
+    /// The way wanted is clear.
+    Clear,
+    /// Turned to this facing (radians about `+Y`), to this side of the way
+    /// wanted (+1 or -1).
+    Turn { yaw: f32, side: f32 },
+    /// No way within a quarter turn either side: it stops.
+    Blocked,
+}
+
+/// The way round a wall for a body at `at` wanting to face `wanted` (its
+/// facing, radians about `+Y`, the rig facing `forward` at none), looking
+/// `reach` ahead: the way wanted if clear, else the least turn off it, in
+/// steps of [`DETOUR_STEP`] up to a quarter turn, that is clear, trying
+/// `side` first (so it keeps to the side it chose and does not dither).
+/// Walking along the wall, past its end the way wanted is clear again: it
+/// goes round. A wall is ground (read from above) more than a step higher.
+pub fn way_round(at: Vec3, wanted: f32, side: f32, reach: f32, forward: Vec3, ground: &dyn super::ground::GroundProbe) -> WayRound {
+    let wall = |point: Vec3| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > at.y + super::parkour::fall::STEP_DOWN);
+    // The body's width swept along it (a line from the middle cleared a
+    // block's corner the body could not, and it stuck there).
+    let clear = |yaw: f32, reach: f32| {
+        let way = Quat::from_rotation_y(yaw) * forward;
+        let across = Vec3::Y.cross(way) * BODY_RADIUS;
+        let steps = (reach / 0.25).ceil().max(3.0) as usize;
+        (1..=steps).all(|k| [-1.0, 0.0, 1.0].iter().all(|&side| !wall(at + way * (reach * k as f32 / steps as f32) + across * side)))
+    };
+    if clear(wanted, reach) {
+        return WayRound::Clear;
+    }
+    // A way round leads somewhere: clear for `DETOUR_CLEAR` (a turn clear
+    // only to the side wall of a dead end, it went back and forth there).
+    let first = if side < 0.0 { -1.0 } else { 1.0 };
+    for k in 1..=(std::f32::consts::FRAC_PI_2 / DETOUR_STEP).round() as usize {
+        for side in [first, -first] {
+            let yaw = wanted + side * DETOUR_STEP * k as f32;
+            if clear(yaw, reach.max(DETOUR_CLEAR)) {
+                return WayRound::Turn { yaw, side };
+            }
+        }
+    }
+    WayRound::Blocked
+}
+
 /// The body standing at `at` (the root, on the ground) moved `moved`, kept
 /// out of walls: ground (read from above) more than a step higher than it
 /// stands on within [`BODY_RADIUS`] of the root. Into one, the move slides
 /// along it, or stops; and the wall's way out, if one held it.
 pub fn keep_off_walls(at: Vec3, moved: Vec3, ground: &dyn super::ground::GroundProbe) -> (Vec3, Option<Vec3>) {
     let wall = |point: Vec3| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > at.y + super::parkour::fall::STEP_DOWN);
-    // The ways round the body a wall is in, standing at `centre`.
-    let walls_at = |centre: Vec3| -> Vec3 {
+    // How near the nearest wall is standing at `centre` (`BODY_RADIUS` if
+    // none within it), and which way: along each way round a wall is in,
+    // where it starts. (Counted by the probes that hit, a corner's way out
+    // was 22° off, and sliding along it, it stuck.)
+    let clearance = |centre: Vec3| -> (f32, Vec3) {
+        // Clear of every other probe first, the rest not looked at (a corner
+        // can come 0.4 cm in between them; between 8, it came 2.7 cm in): on
+        // open floor, the cost.
+        let coarse = (0..WALL_PROBES).step_by(2).any(|k| {
+            let angle = std::f32::consts::TAU * k as f32 / WALL_PROBES as f32;
+            wall(centre + Vec3::new(angle.cos(), 0.0, angle.sin()) * BODY_RADIUS)
+        });
+        if !coarse {
+            return (BODY_RADIUS, Vec3::ZERO);
+        }
         (0..WALL_PROBES)
             .map(|k| {
                 let angle = std::f32::consts::TAU * k as f32 / WALL_PROBES as f32;
                 Vec3::new(angle.cos(), 0.0, angle.sin())
             })
             .filter(|&way| wall(centre + way * BODY_RADIUS))
-            .sum()
+            .map(|way| {
+                let (mut low, mut high) = (0.0, BODY_RADIUS);
+                for _ in 0..8 {
+                    let middle = 0.5 * (low + high);
+                    if wall(centre + way * middle) { high = middle } else { low = middle }
+                }
+                (high, way)
+            })
+            .fold((BODY_RADIUS, Vec3::ZERO), |nearest, found| if found.0 < nearest.0 { found } else { nearest })
     };
-    let into = walls_at(at + moved);
-    if into == Vec3::ZERO {
-        return (moved, None);
+    // Moved, then pushed back out of any wall it reaches, along the way it
+    // found it, a few rounds (a corner found along two ways): it slides
+    // along, and stops only square on. (Its move cut to the part along a
+    // wall instead, it stuck at a block's corner.)
+    let mut to = at + moved;
+    let mut out = None;
+    for _ in 0..4 {
+        let (near, toward) = clearance(to);
+        if toward == Vec3::ZERO {
+            break;
+        }
+        to -= toward * (BODY_RADIUS - near + 1.0e-3);
+        out = Some(-toward);
     }
-    let out = -into.normalize();
-    let slid = moved - out * moved.dot(out).min(0.0);
-    if walls_at(at + slid) == Vec3::ZERO {
-        (slid, Some(out))
-    } else {
-        (Vec3::ZERO, Some(out))
-    }
+    (to - at, out)
 }
 
 /// Moves each walker by exactly how far its planted feet moved under it in
@@ -2117,9 +2223,74 @@ mod tests {
         assert!(walking > 3.0e-3, "the walk's sway on a run's clock jolts the root only {:.2} mm", walking * 1e3);
     }
 
+    /// Walking at 1.4 m/s straight at a 2 m block it turns off and goes
+    /// round it, back onto its way past it; along a wall too long to see
+    /// the end of, it follows it; into a dead end (three walls), it stops.
+    /// Never into a wall. (It stopped at the first wall.)
+    #[test]
+    fn walking_goes_round_a_wall() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        use crate::character::anim::parkour::{geometry::LedgeGround, Ledge};
+        let forward = Vec3::NEG_Z;
+        // A point walker: turned toward its steer at the detour's rate,
+        // moved through `keep_off_walls`, wanting to face 0 (-Z).
+        let walk = |ledges: Vec<Ledge>, seconds: f32| {
+            let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges };
+            let (dt, speed) = (1.0 / 60.0, 1.4);
+            let (mut at, mut yaw, mut detour, mut deepest, mut stopped) = (Vec3::ZERO, 0.0f32, None::<(f32, f32)>, 0.0f32, false);
+            for _ in 0..(seconds / dt) as usize {
+                let reach = BODY_RADIUS + WALL_STOP_MARGIN + WALL_STOP_TIME * speed;
+                let (wanted, side) = detour.unwrap_or((0.0, 0.0));
+                let (mut toward, mut go) = (wanted, true);
+                match way_round(at, wanted, side, reach, forward, &ground) {
+                    WayRound::Clear => {
+                        if detour.is_some() && crate::character::anim::facing::shortest_angle(yaw - wanted).abs() < 0.5 * DETOUR_STEP {
+                            detour = None;
+                        }
+                    }
+                    WayRound::Turn { yaw, side } => {
+                        toward = yaw;
+                        detour = Some((wanted, side));
+                    }
+                    WayRound::Blocked => go = false,
+                }
+                stopped = !go;
+                let turn = crate::character::anim::facing::shortest_angle(toward - yaw);
+                yaw += turn.clamp(-DETOUR_RATE * dt, DETOUR_RATE * dt);
+                if go {
+                    at += keep_off_walls(at, Quat::from_rotation_y(yaw) * forward * (speed * dt), &ground).0;
+                }
+                // Whether the body's circle, less 1 cm, reaches a block.
+                deepest = (0..16)
+                    .map(|k| at + Quat::from_rotation_y(k as f32 * std::f32::consts::TAU / 16.0) * Vec3::X * (BODY_RADIUS - 0.01))
+                    .filter(|&point| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > 0.3))
+                    .count()
+                    .max(deepest as usize) as f32;
+            }
+            (at, yaw, stopped, deepest)
+        };
+        // A 2 m block straight ahead, its near face 2 m off.
+        let block = Ledge::block(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 2.0, 2.0, 3.0);
+        let (at, yaw, stopped, into) = walk(block.to_vec(), 8.0);
+        assert!(into == 0.0, "round the block, the body went into it");
+        assert!(at.z < -5.0 && !stopped, "round the block, ended at {at:?}, stopped {stopped}");
+        assert!(crate::character::anim::facing::shortest_angle(yaw).abs() < 0.2, "past the block, facing {yaw:.2} off its way");
+        // A wall 40 m wide straight ahead: along it.
+        let wall = Ledge::block(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 40.0, 1.0, 3.0);
+        let (at, _, stopped, into) = walk(wall.to_vec(), 6.0);
+        assert!(into == 0.0 && !stopped && at.x.abs() > 3.0, "along the wall, ended at {at:?}, stopped {stopped}");
+        // A dead end: walls ahead and either side, closed.
+        let ahead = Ledge::block(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 4.0, 1.0, 3.0);
+        let left = Ledge::block(Vec3::new(-0.8, 0.0, -0.5), Vec3::X, 3.0, 0.5, 3.0);
+        let right = Ledge::block(Vec3::new(0.8, 0.0, -0.5), Vec3::NEG_X, 3.0, 0.5, 3.0);
+        let (_, _, stopped, into) = walk([ahead, left, right].concat(), 6.0);
+        assert!(into == 0.0 && stopped, "in the dead end: stopped {stopped}");
+    }
+
     /// Walking into a 3 m block's face from the floor the body stops
     /// `BODY_RADIUS` off it, held, the face's way out given; diagonally it
-    /// slides along it; away it goes free; and on the top, walking to its
+    /// slides along it and on past its end; away it goes free; never into
+    /// it; and on the top, walking to its
     /// edge (the floor below), nothing holds it. Run on after landing at a
     /// wall's foot, it went straight through the block.
     #[test]
@@ -2129,6 +2300,12 @@ mod tests {
         let block = Ledge::block(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 3.0);
         let ground = LedgeGround { under: Box::new(FlatGround::default()), ledges: block.to_vec() };
         // The face at z = -1, facing +z.
+        // The body nearer the block (x -1..1, z -3..-1) than its radius,
+        // less 2 cm.
+        let inside = |at: Vec3| {
+            let (dx, dz) = ((at.x.abs() - 1.0).max(0.0), (at.z - (-1.0)).max(-3.0 - at.z).max(0.0));
+            dx.hypot(dz) < BODY_RADIUS - 0.02
+        };
         let walk = |from: Vec3, way: Vec3| {
             let mut at = from;
             let mut held = None;
@@ -2136,6 +2313,7 @@ mod tests {
                 let (moved, blocked) = keep_off_walls(at, way * 0.02, &ground);
                 at += moved;
                 held = blocked;
+                assert!(!inside(at), "walking {way:?}, the body at {at:?} reached into the block");
             }
             (at, held)
         };
@@ -2143,7 +2321,7 @@ mod tests {
         assert!((at.z - (-1.0 + BODY_RADIUS)).abs() < 0.03, "head on, stopped at z {:.3}", at.z);
         assert!(held.is_some_and(|out| out.dot(Vec3::Z) > 0.9), "head on, held by {held:?}");
         let (at, _) = walk(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, -1.0).normalize());
-        assert!(at.z > -1.0 + BODY_RADIUS - 0.03 && at.x > 1.0, "diagonally, ended at {at:?} (not slid along)");
+        assert!(at.x > 1.0 + BODY_RADIUS && at.z < -2.0, "diagonally, ended at {at:?} (not slid along and past its end)");
         let (at, held) = walk(Vec3::new(0.0, 0.0, -0.75), Vec3::Z);
         assert!(at.z > 3.0 && held.is_none(), "away, ended at {at:?}, held {held:?}");
         let (moved, held) = keep_off_walls(Vec3::new(0.0, 3.0, -1.2), Vec3::Z * 0.5, &ground);

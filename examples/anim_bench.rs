@@ -320,10 +320,36 @@ fn main() {
         step(&mut states, &layer, &base, &springs, DT, &posed, &rig);
     }
 
+    // `--walls N`: each character also kept out of walls and steered round
+    // them as the walker is each frame (`walker::keep_off_walls`,
+    // `walker::way_round`), against N blocks 2 m square in a row, each
+    // character walking straight into one and held at it (the costly case:
+    // in touch every frame).
+    let walls = walls();
+    let blocks: Vec<migera::character::anim::parkour::Ledge> = (0..walls)
+        .flat_map(|i| migera::character::anim::parkour::Ledge::block(Vec3::new(3.0 * i as f32, 0.0, -1.0), Vec3::Z, 2.0, 2.0, 3.0))
+        .collect();
+    let ground = migera::character::anim::parkour::geometry::LedgeGround { under: Box::new(migera::character::anim::ground::FlatGround::default()), ledges: blocks };
+    // With `--walls-away`, walking away from them instead: the open floor,
+    // nothing in reach (the common case).
+    let away = std::env::args().any(|a| a == "--walls-away");
+    let way = if away { Vec3::Z } else { Vec3::NEG_Z };
+    let mut walkers: Vec<Vec3> = (0..characters).map(|i| Vec3::new(3.0 * (i % walls.max(1)) as f32, 0.0, -0.5)).collect();
+    let keep_off = |walkers: &mut Vec<Vec3>| {
+        use migera::character::anim::walker::{keep_off_walls, way_round};
+        for at in walkers.iter_mut() {
+            std::hint::black_box(way_round(*at, 0.0, 0.0, 0.77, way, &ground));
+            *at += keep_off_walls(*at, way * (1.4 * DT), &ground).0;
+        }
+    };
+
     let mut samples: Vec<f64> = Vec::with_capacity(frames);
     for _ in 0..frames {
         let started = Instant::now();
         step(&mut states, &layer, &base, &springs, DT, &posed, &rig);
+        if walls > 0 {
+            keep_off(&mut walkers);
+        }
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
     }
 
@@ -346,6 +372,11 @@ fn main() {
         Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
+    };
+    let gait = match (walls, away) {
+        (0, _) => gait,
+        (_, false) => format!("{gait}   held at walls ({walls} blocks)"),
+        (_, true) => format!("{gait}   clear of walls ({walls} blocks)"),
     };
     println!(
         "anim_bench: {characters} characters x {frames} frames{gait}   \
@@ -397,6 +428,12 @@ fn step(
 }
 
 /// `--crouch-from C`: a sneak's crouch changing from C, half-way.
+/// `--walls N`: blocks the characters are kept off (see the timed loop).
+fn walls() -> usize {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == "--walls").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
 fn crouch_from() -> Option<f32> {
     let args: Vec<String> = std::env::args().collect();
     args.iter().position(|a| a == "--crouch-from").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok())

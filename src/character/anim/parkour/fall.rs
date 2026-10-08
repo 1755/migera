@@ -60,6 +60,10 @@ const LAND_STEP: f32 = 0.01;
 const FOOT_HEEL: f32 = 0.05;
 const FOOT_BALL: f32 = 0.12;
 const FOOT_SIDE: f32 = 0.05;
+/// A roll's way along the ground is checked every this far, and this far
+/// either side of it (the tucked body's half width), metres.
+const ROLL_ROOM_STEP: f32 = 0.1;
+const ROLL_HALF_WIDTH: f32 = 0.25;
 const AHEAD: f32 = 0.01;
 /// The trunk leans forward this much a metre of the landing's depth,
 /// radians; flying, this much.
@@ -224,7 +228,6 @@ struct Roll {
     end: Vec3,
     /// Where the root stands at the end; and its resting height above the
     /// ground from the end of the squat's give on, every `REST_STEP`.
-    #[cfg_attr(not(test), allow(dead_code))]
     end_root: Vec3,
     rests: Vec<f32>,
     /// Tucking, how far the eased height is lifted, every `REST_STEP`.
@@ -320,6 +323,9 @@ pub struct Falling {
     /// How far the landing is moved to put both feet on a top, horizontal
     /// ([`Self::shifted`]).
     land_shift: Vec3,
+    /// Squatting where a roll would go off what it lands on
+    /// ([`Self::keep_roll_on`]).
+    no_roll: bool,
     /// Rolling, not squatting; landing hurt; the rig it was measured on.
     roll: Option<Roll>,
     hurt: bool,
@@ -373,6 +379,7 @@ impl Falling {
             from_ahead: None,
             hips_drift: Vec3::ZERO,
             land_shift: Vec3::ZERO,
+            no_roll: false,
             roll: None,
             hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
@@ -426,6 +433,7 @@ impl Falling {
     pub fn land_on(&mut self, ground: &dyn Fn(Vec3) -> Option<f32>) {
         let rig = self.rig.clone();
         let [flight, ..] = self.ends;
+        let below = self.ground;
         // Over a top and above it the step before: come down onto it, not
         // into its side (reaching its footprint already under its top, a
         // jump falling short landed on it through the wall, 16 cm in).
@@ -442,10 +450,45 @@ impl Falling {
             let feet = hips - Vec3::Y * self.touch_height;
             let top = ahead.iter().filter_map(|&ahead| ground(feet + ahead)).filter(|&top| top > self.ground + STEP_DOWN).reduce(f32::max);
             if let Some(top) = top.filter(|&top| feet.y <= top && over == Some(top)) {
-                self.land_both_feet_on(top, ground, &rig);
+                self.land_both_feet_on(top, below, ground, &rig);
+                self.keep_roll_on(below, ground, &rig);
                 return;
             }
             over = top.filter(|&top| feet.y > top);
+        }
+        self.keep_roll_on(below, ground, &rig);
+    }
+
+    /// Rolling, the roll's way along the ground kept on ground as high as it
+    /// lands on, every [`ROLL_ROOM_STEP`] from where it tucks to where it
+    /// stands, a body's width either side; else it squats (the feet put on
+    /// a top again). The feet put on a top where a squat lands, a roll went
+    /// on 1.5-2 m and off its far edge.
+    fn keep_roll_on(&mut self, below: f32, ground: &dyn Fn(Vec3) -> Option<f32>, rig: &RigGeometry) {
+        let Some(roll) = self.roll.as_ref() else {
+            return;
+        };
+        let level = self.ground;
+        let on = |point: Vec3| ground(Vec3::new(point.x, level + 0.1, point.z)).is_some_and(|height| (height - level).abs() < 0.05);
+        let across = Vec3::Y.cross(roll.way) * ROLL_HALF_WIDTH;
+        let legs = [(roll.from, roll.tucked), (roll.tucked, roll.rolled), (roll.rolled, roll.end_root)];
+        let stays = legs.iter().all(|&(a, b)| {
+            let steps = ((flat_of(b - a).length() / ROLL_ROOM_STEP).ceil() as usize).max(1);
+            (0..=steps).all(|k| {
+                let point = a.lerp(b, k as f32 / steps as f32);
+                [-1.0, 0.0, 1.0].iter().all(|&side| on(point + across * side))
+            })
+        });
+        if stays {
+            return;
+        }
+        // Squatting: on a top, both feet on it again (or past it).
+        self.no_roll = true;
+        self.land_shift = Vec3::ZERO;
+        if level > below + STEP_DOWN {
+            self.land_both_feet_on(level, below, ground, rig);
+        } else {
+            self.replan(rig);
         }
     }
 
@@ -454,8 +497,7 @@ impl Falling {
     /// way it falls, between or under the feet); else not on it at all,
     /// falling on to the ground below. Landed as it fell, a foot was left
     /// over the edge, in the air.
-    fn land_both_feet_on(&mut self, top: f32, ground: &dyn Fn(Vec3) -> Option<f32>, rig: &RigGeometry) {
-        let below = self.ground;
+    fn land_both_feet_on(&mut self, top: f32, below: f32, ground: &dyn Fn(Vec3) -> Option<f32>, rig: &RigGeometry) {
         self.ground = top;
         self.replan(rig);
         let forward = flat_of(self.velocity).try_normalize().unwrap_or(self.turn * rig.forward());
@@ -544,7 +586,7 @@ impl Falling {
         // squat; not hurt.
         let drop = self.dropped();
         let braking = flat_of(self.velocity).length() / landing_for(drop).0;
-        if !self.hurt && self.wall.is_none() && (drop > ROLL_DROP || (drop > ROLL_LOW && braking > MOST_BRAKING)) {
+        if !self.hurt && self.wall.is_none() && !self.no_roll && (drop > ROLL_DROP || (drop > ROLL_LOW && braking > MOST_BRAKING)) {
             self.plan_roll(rig);
         }
     }

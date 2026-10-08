@@ -157,8 +157,27 @@ fall](docs/knowledge/character-animation/parkour/a-hang-is-dropped-into-let-go-o
     work.
   - not covered: steering round a wall; a roll onto a top may roll off its
     far edge.
+- **Follow-up, going round walls, a roll on a top, and the cost:**
+  - with a wall ahead it turns off by the least clear angle (15° steps, a
+    quarter turn at most), keeps to that side, and turns back onto its way
+    past the wall's end; in a dead end it stops (`way_round`). The body is
+    pushed back out of walls after each move, not cut to the part along
+    them: at a block's corner that stuck. Turns must be clear for 1.5 m,
+    the body's width swept.
+  - headless: round a 2 m block, along a 40 m wall, stopped in a dead end,
+    never into a wall. Live: walking straight at a block, it passes along
+    its side and walks on.
+  - a roll's way along the ground (about 4 m from a 2 m drop) is checked
+    to stay on what it lands on; else it squats, its feet put on the top.
+  - cost (`anim_bench --walls N`, 100 characters, over the walk's 24 µs):
+    open floor 1.0 / 6.6 / 31 µs with 1 / 10 / 50 blocks; held at a wall
+    5.3 / 34 / 161 µs. Linear in the level's ledges (`LedgeGround` has no
+    spatial index). Checking 16 of the 32 probes first halved the
+    open-floor cost.
+  - not covered: a spatial index for `LedgeGround`; going back to the line
+    it was on past a block.
 
-1246 library tests pass; clippy is clean.
+1248 library tests pass; clippy is clean.
 
 ### Parkour, step 4: falling off an edge, landing from height, rolling
 
