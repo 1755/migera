@@ -74,6 +74,10 @@ enum Gait {
     /// 2.5 m behind; from the launch to the catch, the catch tested each
     /// frame of the flight.
     Leap(migera::character::anim::parkour::hang::Leap),
+    /// Mantling onto a 1.1 m wall from standing in front of it.
+    Mantle,
+    /// Speed vaulting a 0.9 m wall from a run at 3.5 m/s.
+    Vault,
 }
 
 fn main() {
@@ -111,7 +115,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -148,6 +152,15 @@ fn main() {
                 }
                 _ => Some((hanging, 3.5)),
             }
+        }
+        // Mantling onto a 1.1 m wall from standing: its whole length (2.9 s).
+        Gait::Mantle => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 1.1, 1.0);
+            let square = Hanging::square(&ledge, rig.forward());
+            let spot = Hanging::mantle_spot(&ledge, &[], Vec3::ZERO, square, &stood, &rig);
+            let hanging = Hanging::mantle(&ledge, &[], spot, square, 0.0, [None; 2], &stood, &rig).expect("a 1.1 m wall mantled");
+            Some((hanging, 2.9))
         }
         // Dropping down: from its start to hanging (5 s).
         Gait::DropDown => {
@@ -280,6 +293,15 @@ fn main() {
             } else {
                 Jump::plan(JumpAsk::forward(height, distance), &stood, &rig)
             })
+        }
+        // A speed vault over a 0.9 m wall 0.3 m deep from a run at 3.5 m/s,
+        // from its best take-off: posed through its whole length, as a jump.
+        Gait::Vault => {
+            use migera::character::anim::jump::{Jump, RunStart};
+            use migera::character::anim::parkour::vault::Obstacle;
+            let start = RunStart { leg: 0, speed: 3.5 };
+            let near = Jump::vault_takeoff(0.3, 0.9, start, &stood, &rig);
+            Some(Jump::vault(Obstacle { near, depth: 0.3, top: 0.9 }, start, &stood, &rig).expect("a 0.9 m wall vaulted"))
         }
         _ => None,
     };
@@ -419,6 +441,8 @@ fn main() {
         Gait::Shimmy(corner) => format!("   shimmying {}", if corner { "round a corner" } else { "along a ledge" }),
         Gait::Drop(roll) => format!("   walking off a top and {}", if roll { "rolling (2.2 m)" } else { "squatting (0.9 m)" }),
         Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
+        Gait::Mantle => "   mantling onto a 1.1 m wall from standing".to_string(),
+        Gait::Vault => "   speed vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
         Gait::Leap(way) => {
@@ -543,6 +567,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("drop") => Gait::Drop(false),
         Some("roll") => Gait::Drop(true),
         Some("drop-down") => Gait::DropDown,
+        Some("mantle") => Gait::Mantle,
+        Some("vault") => Gait::Vault,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

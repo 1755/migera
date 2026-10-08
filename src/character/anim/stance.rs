@@ -496,6 +496,23 @@ pub fn move_pelvis_and_feet(
     }
 }
 
+/// Turns a leg (`[socket, knee, ankle]`) about the line from its socket to
+/// its ankle so its knee points as near `toward` (the pose's frame) as it
+/// can, by `weight`; the foot turned back, keeping its attitude.
+pub fn knee_toward(pose: &mut LocalPose, rig: &super::rig::RigGeometry, [socket, knee, ankle]: [Bone; 3], toward: Vec3, weight: f32) {
+    use super::rig::{delta_after_world_turn, forward_kinematics_on};
+    let at = forward_kinematics_on(pose, rig);
+    let axis = (at[ankle] - at[socket]).normalize_or_zero();
+    let square = |v: Vec3| (v - axis * v.dot(axis)).normalize_or_zero();
+    let (now, wanted) = (square(at[knee] - at[socket]), square(toward));
+    if axis == Vec3::ZERO || now == Vec3::ZERO || wanted == Vec3::ZERO {
+        return;
+    }
+    let roll = Quat::from_axis_angle(axis, now.cross(wanted).dot(axis).atan2(now.dot(wanted)) * weight);
+    pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, roll);
+    pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, roll.inverse());
+}
+
 /// Puts `ankle`'s leg's ankle at `target` (hips-relative), its foot keeping
 /// its attitude in the world: bends the knee just enough and turns the leg
 /// about its hip. For stepping a foot somewhere; a target out of reach is

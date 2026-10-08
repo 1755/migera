@@ -5,6 +5,7 @@
 pub mod fall;
 pub mod geometry;
 pub mod hang;
+pub mod vault;
 
 pub use fall::Falling;
 pub use geometry::{Ledge, LedgeGround};

@@ -7,8 +7,15 @@ tags:
   - biomechanics
   - locomotion
   - character-animation
-updated: 2026-10-07
+updated: 2026-10-08
 sources:
+  - "Mansour et al. 2024, Hum Mov (hummov.awf.wroc.pl, 110 m hurdle clearance)"
+  - "Slawinski et al. 2019, Front Sports Act Living, doi:10.3389/fspor.2019.00063"
+  - "Feletti et al. 2023, J Hum Kinet (fluency in parkour)"
+  - "Chardon et al. 2024, Sensors (PMC11644976)"
+  - "Patla and Rietdyk 1993, Gait Posture (obstacle crossing)"
+  - "Adams, MRes thesis on parkour vault landing forces (jmablog.com, not peer reviewed)"
+  - "LAAS parkour motion capture database, gepettoweb.laas.fr/parkour"
   - "Gosine, Komisar and Novak 2024, Human Factors 66:56 (PMC10756024)"
   - "Hiley and Yeadon 2003, J Biomech 36:313 (PubMed 12594979)"
   - "Yeadon and Hiley 2000, Hum Mov Sci 19:153, doi:10.1016/S0167-9457(00)00008-7"
@@ -120,10 +127,35 @@ on the forefoot in 93 % of trials (Standing and Maulder 2015).
 
 ## Vaults and mantles
 
-- **Kong vault from a stand** (11 traceurs; Maldonado et al. 2020): take-off,
-  flight, landing; early in take-off the feet carry 1.2 BW, the hands 0.3
-  [summary].
-- **Speed and lazy vaults: no peer-reviewed numbers.**
+- **Kong vault from a stand** (11 traceurs; Maldonado et al. 2020): started
+  half a body height from the bar; take-off in two parts, feet and hands
+  down extending, then the hands alone from about 40 % of it, the lower
+  body flexing over; the feet carry most of the force [durations not
+  reached].
+- **Landing after a vault** (10 traceurs, Adams, thesis): peak vertical
+  force, precision landing against running on: kong 3.71 / 2.03 body
+  weights, step 3.15 / 2.05, dash 3.12 / 2.30.
+- **Fluency** (17 traceurs; Feletti et al. 2023): over a monkey vault,
+  advanced traceurs lose a median 0.21 m/s, beginners 1.43.
+- **Speed, lazy, step, dash and reverse vaults, and any mantle: no
+  kinematics published.** Coaching: the speed vault is the fastest, off one
+  foot, over hip-high obstacles. The LAAS parkour motion database (5
+  experts; safety and kong vaults, pull-ups, muscle-ups; 400 Hz markers,
+  force plates) is raw data to measure them from.
+- **Proxies, clearing a barrier at a run:**
+  - 110 m hurdles, 1.067 m (20 athletes; Mansour et al. 2024): take-off
+    1.95-2.16 m before, landing 1.65-1.68 m after, flight 0.37-0.41 s, COM
+    0.23-0.39 m over the hurdle;
+  - steeplechase, a 0.762 m barrier (1 elite; Slawinski et al. 2019): 5.0
+    m/s at take-off and 5.18 landing, take-off 1.34 m before, landing
+    1.17 m after, 0.45 s to clear;
+  - gymnastics, the hands on the vaulting table 0.12-0.22 s (0.15 ± 0.03 s
+    for handsprings).
+- **Stepping over in a walk** (28 adults, a 15 cm obstacle; Chardon et al.
+  2024): the lead toe clears by 10 cm, the trail toe by 32 cm; the lead
+  foot 1.05 m before it, the trail 0.90 m after; the speed kept (1.19 to
+  1.15 m/s). Toe clearance stays about 10 cm whatever the height (Patla and
+  Rietdyk 1993).
 
 ## Walls
 

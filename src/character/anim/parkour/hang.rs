@@ -61,6 +61,13 @@ pub enum HangAsk {
     /// Hanging from it, leap up, back or aside ([`Leap`]), at a ledge among
     /// [`Walker::ledges`](crate::character::anim::Walker::ledges).
     Leap(Leap),
+    /// Walk to it, a block waist to chest high, put the hands on its top,
+    /// and mantle up onto it ([`Hanging::mantle`]).
+    Mantle,
+    /// Running at it, a low obstacle, speed vault over it and run on
+    /// (`Jump::vault`): taken from the foot that comes down nearest the best
+    /// take-off.
+    Vault,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -941,7 +948,7 @@ impl Hanging {
 
     /// Whether its feet are on the floor: jumping, until it leaves it.
     pub fn feet_down(&self) -> bool {
-        self.phase == Phase::Jumping && !self.jump.airborne()
+        (self.phase == Phase::Jumping && !self.jump.airborne()) || self.mantle_feet_down()
     }
 
     /// The ledge it holds or reaches for.

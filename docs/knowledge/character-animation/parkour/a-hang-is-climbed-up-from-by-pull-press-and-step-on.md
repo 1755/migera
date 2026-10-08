@@ -142,5 +142,6 @@ ankles 9 cm above the top.
 - [Parkour moves, step by step](./parkour-moves-implementation-design.md) — prerequisite: the design this is step 2 of.
 - [A ledge is caught near the top of a jump and hung from](./a-ledge-is-caught-near-the-top-of-a-jump-and-hung-from.md) — prerequisite: the hang this climbs up from, its grips and its swing.
 - [Parkour movement data](./parkour-movement-data.md) — context: why the climb-up's timings are set by eye.
+- [A block is mantled as a climb up from the floor](./a-block-is-mantled-as-a-climb-up-from-the-floor.md) — applies: a mantle shares this plan's press, step on and stand, with its own start; the foot path's no-nearer-the-face rule came from it.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — applies: the landing hand-off (`LadderGround`) `LedgeGround` copies.
 - [Unsigned measurements cannot see direction](../../engineering-practice/testing/unsigned-measurements-cannot-see-direction.md) — deeper: why the knee check is a hinge in the pelvis's frame, not the thigh's.

@@ -196,3 +196,4 @@ The free thigh drives near level for a leap, hardly for a hop.
 - [A jump is planned as its centre of mass's path](./a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the COM planning, pelvis solve, spring lead and landing pins this builds on.
 - [A jump forward leans out over its toes, and its travel is the root's](./a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md) — prerequisite: travel as root motion, and the two-foot landing a stopping jump reuses.
 - [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — context: the run whose stance is replayed, and its root velocity.
+- [A low obstacle is speed-vaulted as a reshaped running leap](../parkour/a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md) — applies: a speed vault is this leap with its flight reshaped over the obstacle.

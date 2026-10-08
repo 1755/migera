@@ -23,7 +23,7 @@
 
 use bevy::math::{Quat, Vec3};
 
-use super::{Hanging, Phase, ARMS, LEGS, SIGN};
+use super::{HandGrip, Hanging, Ledge, Phase, ARMS, LEGS, SIGN};
 use crate::character::anim::armik::frame_turn;
 use crate::character::anim::gait::smoothstep;
 use crate::character::anim::hand::GRIP_RADIUS;
@@ -111,6 +111,52 @@ const MISS_EASED: f32 = 0.6;
 /// round at 6.7 m/s².
 const START_SPEED: f32 = 0.25;
 
+/// Mantling ([`Hanging::mantle`]): how long each part takes, seconds: the
+/// hands onto the top as the knees dip, the drive up until the feet leave
+/// the floor, the press, step on, stand up. No mantle has measured timings
+/// (`parkour-movement-data`); set by eye.
+const MANTLE_PARTS: [f32; 5] = [0.45, 0.25, 0.4, 0.6, 1.2];
+/// The dip as the hands land on the top: the hips this far down and in
+/// toward the face, metres, the trunk leant, radians.
+const DIPPED: (f32, f32, f32) = (0.1, 0.05, 0.45);
+/// Leaving the floor: the hips this far in toward the face, metres, at
+/// standing height, the trunk leant, radians.
+const DRIVEN: (f32, f32) = (0.08, 0.7);
+/// Where it stands to mantle: the hips this far out from the face, metres
+/// (walking, it keeps its body 0.2 m off a wall).
+pub const MANTLE_OUT: f32 = 0.3;
+/// The lowest lip it mantles onto, metres above where it stands, about its
+/// hips' height: lower, it steps up or vaults.
+pub const MANTLE_LOWEST: f32 = 0.85;
+/// The highest lip it mantles onto is this far under its standing
+/// shoulders, metres (chest high): at the shoulders' height (1.4 m), an
+/// elbow went 1.4 cm into the wall reaching, flipped round at 10 m/s, and
+/// the hips rose 0.75 m at 9.4 m/s², a jump's work.
+const MANTLE_UNDER_SHOULDERS: f32 = 0.1;
+/// At the dip, each wrist on its press no farther from its lifted shoulder
+/// than this share of the arm: farther, the top is too high to mantle.
+const MANTLE_REACH: f32 = 1.0;
+/// Mantling, the shoulders' middle is kept this far out from the face while
+/// under the lip (and this far above it), metres: a shoulder joint is
+/// about 0.1 m inside the body's front.
+const SHOULDERS_OFF: f32 = 0.18;
+/// Leaving the floor free of a wall, a leg reaches at most this share of
+/// its length (standing, 0.991).
+const MANTLE_LEG: f32 = 0.995;
+/// The hands move from where they hang onto the top over these shares of
+/// the reach: the lead, then the other.
+const MANTLE_HANDS: [(f32, f32); 2] = [(0.0, 0.8), (0.2, 1.0)];
+/// The arms go from the standing pose's to the reach's over this share of
+/// it.
+const MANTLE_ARMS_IN: f32 = 0.25;
+
+/// A mantle's start, standing: each wrist and its hand's world turn.
+#[derive(Debug, Clone, Copy)]
+struct Stand {
+    wrists: [Vec3; 2],
+    turns: [Quat; 2],
+}
+
 /// A path's knot: when, where, and how fast.
 #[derive(Debug, Clone, Copy)]
 struct Knot {
@@ -184,6 +230,15 @@ fn across(t: f32, (from, to): (f32, f32)) -> f32 {
     smoothstep(((t - from) / (to - from).max(1.0e-6)).clamp(0.0, 1.0))
 }
 
+/// When each part ends, from how long each takes.
+fn ends_of(parts: [f32; 5]) -> [f32; 5] {
+    let mut ends = parts;
+    for k in 1..5 {
+        ends[k] += ends[k - 1];
+    }
+    ends
+}
+
 /// A climb up from a hang, as planned.
 #[derive(Debug, Clone)]
 pub(super) struct ClimbUp {
@@ -214,6 +269,9 @@ pub(super) struct ClimbUp {
     /// standing spot as it began, eased out over the first of it.
     lowering: bool,
     missed: Vec3,
+    /// Mantling from standing on the floor ([`Hanging::mantle`]), not
+    /// climbing from a hang.
+    stand: Option<Stand>,
 }
 
 impl ClimbUp {
@@ -244,6 +302,52 @@ impl ClimbUp {
 }
 
 impl Hanging {
+    /// Where a walker's root stands to mantle onto `ledge`, facing `square`
+    /// (radians about `+Y`), from near `near`: its hips [`MANTLE_OUT`] out
+    /// from the face, on the floor at `near`'s height.
+    pub fn mantle_spot(ledge: &Ledge, others: &[Ledge], near: Vec3, square: f32, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
+        Self::spot(ledge, others, near, square, stood, rig) + ledge.out * (MANTLE_OUT - super::SPOT_OUT)
+    }
+
+    /// A mantle onto `ledge`'s top by a walker standing at `root` facing
+    /// `square` (radians about `+Y`), its hips `drop` below standing (on
+    /// `rig`, its hands' own grips `grips`): the hands onto the top as the
+    /// knees dip, a drive up off the floor with the arms pressing, the feet
+    /// onto the face, then the climb up's press, step on and stand
+    /// ([`Self::climb_up`]). `None` if the lip is lower than
+    /// [`MANTLE_LOWEST`] above the floor, the top has no room to stand on,
+    /// or the hands cannot reach it as it dips.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mantle(ledge: &Ledge, others: &[Ledge], root: Vec3, square: f32, drop: f32, grips: [Option<HandGrip>; 2], stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let rise = ledge.height() - root.y;
+        let mut hanging = Self::blank(ledge, root, square, drop, stood, rig);
+        let shoulders = 0.5 * (hanging.body.shoulders[0].y + hanging.body.shoulders[1].y) + hanging.body.hips.y;
+        if rise < MANTLE_LOWEST || rise > shoulders - MANTLE_UNDER_SHOULDERS || ledge.depth < LEAST_DEPTH {
+            return None;
+        }
+        hanging.take_grips(grips, rig);
+        hanging.others = others.iter().filter(|other| !super::shimmy::same(other, ledge)).copied().collect();
+        hanging.place_hands(rig);
+        hanging.phase = Phase::Hanging;
+        hanging.since = 10.0;
+        // Braced if its face comes down to the floor.
+        hanging.braced = ledge.wall_below >= rise - super::WALL_MARGIN;
+        let up = hanging.plan_mantle(rig)?;
+        hanging.up = Some(up);
+        Some(hanging)
+    }
+
+    /// Whether it is mantling ([`Self::mantle`]) rather than climbing up
+    /// from a hang.
+    pub fn is_mantling(&self) -> bool {
+        self.up.as_ref().is_some_and(|up| up.stand.is_some())
+    }
+
+    /// Whether its feet are on the floor still, mantling.
+    pub(super) fn mantle_feet_down(&self) -> bool {
+        self.up.as_ref().is_some_and(|up| up.stand.is_some() && up.t < up.ends[1])
+    }
+
     /// Where a walker stands on the top to lower itself down into this hang
     /// (as a climb up from it would end): its root, facing as the hang does
     /// (in, its back to the drop).
@@ -315,21 +419,129 @@ impl Hanging {
         along * s.dalong + out * (s.dr * sin + s.r * cos * s.dtheta) - Vec3::Y * (s.dr * cos - s.r * sin * s.dtheta)
     }
 
+    /// The hips under shoulders at `at`, the trunk leant `lean`: from the
+    /// leant pose's own shoulders. The whole trunk turned by the lean about
+    /// the hips put the press's shoulders 6 cm too high, its arms already
+    /// straight.
+    fn under(&self, at: Vec3, lean: f32, rig: &RigGeometry) -> Vec3 {
+        let leant = forward_kinematics_on(&crate::character::anim::jump::upper(&self.body.stood, rig, lean, (0.0, 0.0)), rig);
+        at - self.turn * (0.5 * (leant[ARMS[0].shoulder] + leant[ARMS[1].shoulder]) - leant[Bone::Hips])
+    }
+
     fn plan_up(&self, rig: &RigGeometry) -> ClimbUp {
+        let ends = ends_of(PARTS);
         let out = self.ledge.out;
-        let mut ends = PARTS;
-        for k in 1..5 {
-            ends[k] += ends[k - 1];
+        let lip = self.ledge.nearest(self.grip, 0.0);
+        let start = self.hang_hips();
+        let (pulled_out, pulled_below, pulled_lean) = PULLED;
+        let (turned_out, turned_above, turned_lean) = TURNED;
+        let pulled = self.under(lip + out * pulled_out - Vec3::Y * pulled_below, pulled_lean, rig);
+        let turned = self.under(lip + out * turned_out + Vec3::Y * turned_above, turned_lean, rig);
+        let mut up = self.plan_on(rig, ends, [(start, self.lean_at(start)), (pulled, pulled_lean), (turned, turned_lean)], self.hang_velocity());
+
+        // Where the legs are now, as the hang poses them.
+        let pose = self.hanging_pose(rig);
+        let at = forward_kinematics_on(&pose, rig);
+        let world = accumulate_world_rotations(&pose, rig);
+        let root = self.root();
+        up.from_ankles = LEGS.map(|(_, _, ankle, _)| root + self.turn * at[ankle]);
+        up.from_attitudes = LEGS.map(|(_, _, ankle, _)| self.turn * world[ankle]);
+
+        // Braced, each foot steps up to where its leg pushes from at the end
+        // of the pull.
+        up.holds = self.braced.then(|| {
+            let trunk = self.trunk_at(pulled_lean);
+            [0, 1].map(|side| {
+                let socket = pulled + trunk * self.body.sockets[side];
+                [self.wall_ankle(side, self.wall_balls[side]), self.wall_ankle(side, self.wall_ball(side, socket, PUSH_LEG))]
+            })
+        });
+        up.hooks = self.wrists();
+        up
+    }
+
+    /// A mantle onto the top from standing where it stood
+    /// ([`Hanging::mantle`]): `None` if its hands cannot reach the top as it
+    /// dips.
+    fn plan_mantle(&self, rig: &RigGeometry) -> Option<ClimbUp> {
+        let ends = ends_of(MANTLE_PARTS);
+        let out = self.ledge.out;
+        // The hips standing, down by the foot IK's drop (`up_sink` gives it
+        // back to the root).
+        let start = self.stood_at + self.turn * self.body.hips - Vec3::Y * self.drop;
+        let (dip, dip_in, dip_lean) = DIPPED;
+        let dipped = start - out * dip_in - Vec3::Y * dip;
+        let (drive_in, drive_lean) = DRIVEN;
+        let driven = start - out * drive_in + Vec3::Y * self.drop;
+        // Leant no further than keeps the shoulders off the face: leant as
+        // far at a 1.4 m wall, a shoulder went 9 cm into it.
+        let (dip_lean, drive_lean) = (self.clear_lean(dipped, dip_lean, rig), self.clear_lean(driven, drive_lean, rig));
+        let mut up = self.plan_on(rig, ends, [(start, 0.0), (dipped, dip_lean), (driven, drive_lean)], Vec3::ZERO);
+        // At the dip and as the feet leave: on a 0.75 m block, the shoulders
+        // rising to the drive pulled a hand 3.5 cm off the top.
+        for (hips, lean) in [(dipped, dip_lean), (driven, drive_lean)] {
+            let trunk = self.trunk_at(lean);
+            if (0..2).any(|side| self.reach(side, hips, trunk, up.presses[side]) > MANTLE_REACH) {
+                return None;
+            }
         }
-        let arm = 0.5 * (self.body.arms[0] + self.body.arms[1]);
-        // The hips under shoulders at `at`, the trunk leant `lean`: from the
-        // leant pose's own shoulders. The whole trunk turned by the lean about
-        // the hips put the press's shoulders 6 cm too high, its arms already
-        // straight.
-        let under = |at: Vec3, lean: f32| {
-            let leant = forward_kinematics_on(&crate::character::anim::jump::upper(&self.body.stood, rig, lean, (0.0, 0.0)), rig);
-            at - self.turn * (0.5 * (leant[ARMS[0].shoulder] + leant[ARMS[1].shoulder]) - leant[Bone::Hips])
+
+        // Standing as the standing pose stands, where it stood.
+        let at = forward_kinematics_on(&self.body.stood, rig);
+        let world = accumulate_world_rotations(&self.body.stood, rig);
+        let root = self.stood_at;
+        up.from_ankles = LEGS.map(|(_, _, ankle, _)| root + self.turn * at[ankle]);
+        up.from_attitudes = LEGS.map(|(_, _, ankle, _)| self.turn * world[ankle]);
+        up.stand = Some(Stand {
+            wrists: ARMS.map(|arm| root + self.turn * at[arm.wrist]),
+            turns: [0, 1].map(|side| self.turn * (world[ARMS[side].wrist] * self.body.hand_binds[side].inverse())),
+        });
+
+        // Off the floor, each foot onto the face, where its leg pushes from
+        // as it presses.
+        up.holds = self.braced.then(|| {
+            let (pressed, lean) = (up.hips.at(ends[2]), up.lean.at(ends[2]).x);
+            let trunk = self.trunk_at(lean);
+            [0, 1].map(|side| {
+                let socket = pressed + trunk * self.body.sockets[side];
+                [up.from_ankles[side], self.wall_ankle(side, self.wall_ball(side, socket, PUSH_LEG))]
+            })
+        });
+        up.hooks = up.stand.map_or(up.hooks, |stand| stand.wrists);
+        Some(up)
+    }
+
+    /// The middle of the shoulders, the hips at `hips` and the trunk leant
+    /// `lean` toward the wall (the leant pose's own).
+    fn shoulders_at(&self, hips: Vec3, lean: f32, rig: &RigGeometry) -> Vec3 {
+        hips + (self.under(Vec3::ZERO, lean, rig) * -1.0)
+    }
+
+    /// The most of `wanted` the trunk leans from hips at `hips` while the
+    /// shoulders stay [`SHOULDERS_OFF`] out from the face, under the lip.
+    fn clear_lean(&self, hips: Vec3, wanted: f32, rig: &RigGeometry) -> f32 {
+        let clear = |lean: f32| {
+            let shoulders = self.shoulders_at(hips, lean, rig);
+            shoulders.y > self.ledge.height() + SHOULDERS_OFF || self.ledge.out_of(shoulders) >= SHOULDERS_OFF
         };
+        if clear(wanted) {
+            return wanted;
+        }
+        let (mut low, mut high) = (0.0, wanted);
+        for _ in 0..20 {
+            let middle = 0.5 * (low + high);
+            if clear(middle) { low = middle } else { high = middle }
+        }
+        low
+    }
+
+    /// The plan from its first three knots (`head`: the hips and the trunk's
+    /// lean at the start and at the ends of the first two parts, `start`
+    /// the hips' velocity) through the press, the step on and standing on
+    /// the top. The legs' and hands' starts are left to the caller.
+    fn plan_on(&self, rig: &RigGeometry, ends: [f32; 5], head: [(Vec3, f32); 3], start: Vec3) -> ClimbUp {
+        let out = self.ledge.out;
+        let arm = 0.5 * (self.body.arms[0] + self.body.arms[1]);
         let lip = self.ledge.nearest(self.grip, 0.0);
 
         // Each hand pressing flat on the top: the palm's middle on it behind
@@ -352,29 +564,25 @@ impl Hanging {
         let end_root = Vec3::new(end_root.x, self.ledge.height(), end_root.z);
         let spots = LEGS.map(|(_, _, ankle, _)| end_root + self.turn * stood[ankle]);
 
-        let start = self.hang_hips();
-        let (pulled_out, pulled_below, pulled_lean) = PULLED;
-        let (turned_out, turned_above, turned_lean) = TURNED;
         let (press_reach, pressed_lean) = PRESSED;
         let (stepped_in, stepped_up, stepped_lean) = STEPPED;
         let press_middle = 0.5 * (presses[0] + presses[1]);
-        let pulled = under(lip + out * pulled_out - Vec3::Y * pulled_below, pulled_lean);
-        let turned = under(lip + out * turned_out + Vec3::Y * turned_above, turned_lean);
-        let pressed = under(press_middle + Vec3::Y * (press_reach * arm), pressed_lean);
+        let pressed = self.under(press_middle + Vec3::Y * (press_reach * arm), pressed_lean, rig);
         let stepped = pressed - out * stepped_in + Vec3::Y * stepped_up;
         let end_hips = end_root + self.turn * self.body.hips - Vec3::Y * self.drop;
         let (held_share, held_in, held_up) = HIPS_HELD;
         let held_at = ends[3] + held_share * (ends[4] - ends[3]);
         let held = stepped - out * held_in + Vec3::Y * held_up;
+        let [(first, first_lean), (second, second_lean), (third, third_lean)] = head;
         let hips = Track::through(
-            &[(0.0, start), (ends[0], pulled), (ends[1], turned), (ends[2], pressed), (ends[3], stepped), (held_at, held), (ends[4], end_hips)],
-            self.hang_velocity(),
+            &[(0.0, first), (ends[0], second), (ends[1], third), (ends[2], pressed), (ends[3], stepped), (held_at, held), (ends[4], end_hips)],
+            start,
         );
         let lean = Track::through(
             &[
-                (0.0, Vec3::X * self.lean_at(start)),
-                (ends[0], Vec3::X * pulled_lean),
-                (ends[1], Vec3::X * turned_lean),
+                (0.0, Vec3::X * first_lean),
+                (ends[0], Vec3::X * second_lean),
+                (ends[1], Vec3::X * third_lean),
                 (ends[2], Vec3::X * pressed_lean),
                 (ends[3], Vec3::X * stepped_lean),
                 (held_at, Vec3::X * stepped_lean),
@@ -382,27 +590,24 @@ impl Hanging {
             ],
             Vec3::ZERO,
         );
-
-        // Where the legs are now, as the hang poses them.
-        let pose = self.hanging_pose(rig);
-        let at = forward_kinematics_on(&pose, rig);
-        let world = accumulate_world_rotations(&pose, rig);
-        let root = self.root();
-        let from_ankles = LEGS.map(|(_, _, ankle, _)| root + self.turn * at[ankle]);
-        let from_attitudes = LEGS.map(|(_, _, ankle, _)| self.turn * world[ankle]);
-
-        // Braced, each foot steps up to where its leg pushes from at the end
-        // of the pull.
-        let holds = self.braced.then(|| {
-            let trunk = self.trunk_at(pulled_lean);
-            [0, 1].map(|side| {
-                let socket = pulled + trunk * self.body.sockets[side];
-                [self.wall_ankle(side, self.wall_balls[side]), self.wall_ankle(side, self.wall_ball(side, socket, PUSH_LEG))]
-            })
-        });
-
-        let hooks = self.wrists();
-        ClimbUp { t: 0.0, ends, hips, lean, from_ankles, from_attitudes, holds, hooks, presses, press_turns, spots, end_root, lead: 0, lowering: false, missed: Vec3::ZERO }
+        ClimbUp {
+            t: 0.0,
+            ends,
+            hips,
+            lean,
+            from_ankles: [Vec3::ZERO; 2],
+            from_attitudes: [Quat::IDENTITY; 2],
+            holds: None,
+            hooks: [Vec3::ZERO; 2],
+            presses,
+            press_turns,
+            spots,
+            end_root,
+            lead: 0,
+            lowering: false,
+            missed: Vec3::ZERO,
+            stand: None,
+        }
     }
 
     /// The root, in the world, climbing up: under the hips as the standing
@@ -412,9 +617,10 @@ impl Hanging {
     }
 
     /// How far the hips are below standing as it stands up: the foot IK's
-    /// drop, eased in.
+    /// drop, eased in; mantling, eased out first as it dips.
     fn up_sink(&self, up: &ClimbUp) -> f32 {
-        self.drop * across(up.t, (up.ends[3], up.ends[4]))
+        let standing = if up.stand.is_some() { 1.0 - across(up.t, (0.0, up.ends[0])) } else { 0.0 };
+        self.drop * (standing + across(up.t, (up.ends[3], up.ends[4])))
     }
 
     /// Each wrist and its hand's world turn, how far each has turned over
@@ -424,10 +630,18 @@ impl Hanging {
         let (pulled, turned) = (up.ends[0], up.ends[1]);
         let span = turned - pulled;
         let mut wrists = up.hooks;
-        let mut turns = [self.hook_turn(0), self.hook_turn(1)];
+        let mut turns = up.stand.map_or([self.hook_turn(0), self.hook_turn(1)], |stand| stand.turns);
         let mut pressing = [0.0; 2];
         for side in 0..2 {
-            let window = if side == up.lead { (pulled, pulled + 0.65 * span) } else { (pulled + 0.35 * span, turned) };
+            // Mantling, from where they hang onto the top as it dips.
+            let window = match up.stand {
+                Some(_) => {
+                    let (from, to) = MANTLE_HANDS[if side == up.lead { 0 } else { 1 }];
+                    (from * pulled, to * pulled)
+                }
+                None if side == up.lead => (pulled, pulled + 0.65 * span),
+                None => (pulled + 0.35 * span, turned),
+            };
             let s = across(up.t, window);
             // The elbow turns from the hang's way to the press's over the
             // second half of the hand's move, the arm opening out: over the
@@ -448,6 +662,8 @@ impl Hanging {
         }
         let (stepped, stood) = (up.ends[3], up.ends[4]);
         let holding = 1.0 - across(up.t, (stepped + LET_GO.0 * (stood - stepped), stepped + LET_GO.1 * (stood - stepped)));
+        // Mantling, the arms taken from the standing pose's as they start.
+        let holding = if up.stand.is_some() { holding.min(across(up.t, (0.0, MANTLE_ARMS_IN * pulled))) } else { holding };
         (wrists, turns, pressing, holding)
     }
 
@@ -460,6 +676,9 @@ impl Hanging {
         let socket = hips + trunk * self.body.sockets[side];
         let down = ((DANGLE * self.body.legs[side]).powi(2) - DANGLE_OUT * DANGLE_OUT).max(0.0).sqrt();
         let hanging = (socket - Vec3::Y * down + self.ledge.out * DANGLE_OUT, self.turn * self.body.attitudes[side]);
+        if up.stand.is_some() {
+            return self.foot_off_floor(up, side, t, socket, hanging);
+        }
         let (ankle, attitude, out) = match up.holds {
             Some(holds) => {
                 // Up the wall through the pull, one foot then the other.
@@ -483,6 +702,42 @@ impl Hanging {
         let settle = across(t, (0.0, SETTLE_IN));
         let aside = self.turn * self.rig.left() * (SIGN[side] * KNEES_OUT);
         (up.from_ankles[side].lerp(ankle, settle), up.from_attitudes[side].slerp(attitude, settle), aside * (out * settle))
+    }
+
+    /// Mantling, foot `side`'s ankle and world rotation and how far its knee
+    /// turns out (0-1), at `t`, its socket at `socket`: planted where it
+    /// stood until the feet leave the floor, then onto the face under the
+    /// top (braced), or hanging under the hips (`hanging`).
+    fn foot_off_floor(&self, up: &ClimbUp, side: usize, t: f32, socket: Vec3, hanging: (Vec3, Quat)) -> (Vec3, Quat, Vec3) {
+        let (left, pressed) = (up.ends[1], up.ends[2]);
+        let span = pressed - left;
+        // Both from the moment they leave: the trail held on the floor a
+        // moment longer was out of its leg's reach (4 cm) as the hips rose.
+        let window = if side == up.lead { (left, left + 0.7 * span) } else { (left, pressed) };
+        let s = across(t, window);
+        let (from, attitude) = (up.from_ankles[side], up.from_attitudes[side]);
+        let Some(holds) = up.holds else {
+            // From its socket, no farther than a dangling leg reaches: moved
+            // straight from the floor, the rising hips left it 11 cm out of
+            // reach.
+            // The cap eased in from where the planted leg reaches (standing,
+            // past `DANGLE`), and never quite straight: asked for the whole
+            // leg as the hips rose, the knee fell 5 mm short.
+            let leg = self.body.legs[side];
+            let planted = (from - socket).length().min(MANTLE_LEG * leg);
+            let reach = planted + s * (DANGLE * leg - planted);
+            let off = (from - socket).lerp(hanging.0 - socket, s);
+            return (socket + off.clamp_length_max(reach), attitude.slerp(hanging.1, s), Vec3::ZERO);
+        };
+        let [_, to] = holds[side];
+        let on_wall = from.lerp(to, s) + self.ledge.out * (STEP_OUT * (std::f32::consts::PI * s).sin());
+        // Out of the leg's reach as the hips rise, it smears up the face.
+        let reach = SMEAR_LEG * self.body.legs[side];
+        let off = on_wall - socket;
+        let flat = Vec3::new(off.x, 0.0, off.z).length();
+        let on_wall = if s > 0.0 && off.length() > reach && flat < reach { Vec3::new(on_wall.x, socket.y - (reach * reach - flat * flat).sqrt(), on_wall.z) } else { on_wall };
+        let aside = self.turn * self.rig.left() * (SIGN[side] * KNEES_OUT);
+        (on_wall, attitude.slerp(self.toes_up(side), s), aside * s)
     }
 
     /// Foot `side`'s ankle and world rotation, and where its knee is turned
@@ -514,7 +769,14 @@ impl Hanging {
         };
         let path = Track::through(&[(0.0, from), (face_at, on_face(face_out, -face_below)), (lifted_at, on_face(face_out, lift)), (1.0, to)], Vec3::ZERO);
         let attitude = if s < face_at { attitude.slerp(self.toes_up(side), across(s, (0.0, face_at))) } else { self.toes_up(side).slerp(standing, across(s, (face_at, 1.0))) };
-        (path.at(s), attitude, knee * (1.0 - across(s, (0.0, face_at))))
+        // Below the lip, no nearer the face than it starts or the face knot,
+        // whichever is less: the spline bowed in toward the spot on the top,
+        // and mantling, a foot leaving its hold on the face (0.13 m out) put
+        // its toes 8 mm into it.
+        let p = path.at(s);
+        let least = self.ledge.out_of(from).min(face_out);
+        let p = if p.y < self.ledge.height() { p + self.ledge.out * (least - self.ledge.out_of(p)).max(0.0) } else { p };
+        (p, attitude, knee * (1.0 - across(s, (0.0, face_at))))
     }
 
     /// The climb's pose: the trunk leant as planned on the hips' path, the
@@ -561,6 +823,10 @@ impl Hanging {
     /// How closed each hand is climbing up: hooked, opening as it comes up
     /// over the lip, open pressing.
     pub(super) fn up_grips(&self, up: &ClimbUp) -> [f32; 2] {
+        // Mantling, open from the start: they only ever press.
+        if up.stand.is_some() {
+            return [0.0; 2];
+        }
         let (pulled, turned) = (up.ends[0], up.ends[1]);
         let span = turned - pulled;
         [0, 1].map(|side| {
@@ -581,20 +847,10 @@ impl Hanging {
     }
 }
 
-/// Turns `leg` (socket, knee, ankle, toe) about the line from its socket to
-/// its ankle so its knee points as near `toward` (the pose's frame) as it
-/// can, by `weight`; the foot turned back, keeping its attitude.
+/// [`knee_toward`](crate::character::anim::stance::knee_toward) for `leg`
+/// (socket, knee, ankle, toe).
 fn knee_toward(pose: &mut LocalPose, rig: &RigGeometry, (socket, knee, ankle, _): (Bone, Bone, Bone, Bone), toward: Vec3, weight: f32) {
-    let at = forward_kinematics_on(pose, rig);
-    let axis = (at[ankle] - at[socket]).normalize_or_zero();
-    let square = |v: Vec3| (v - axis * v.dot(axis)).normalize_or_zero();
-    let (now, wanted) = (square(at[knee] - at[socket]), square(toward));
-    if axis == Vec3::ZERO || now == Vec3::ZERO || wanted == Vec3::ZERO {
-        return;
-    }
-    let roll = Quat::from_axis_angle(axis, now.cross(wanted).dot(axis).atan2(now.dot(wanted)) * weight);
-    pose.rotations[socket] = delta_after_world_turn(pose, rig, socket, roll);
-    pose.rotations[ankle] = delta_after_world_turn(pose, rig, ankle, roll.inverse());
+    crate::character::anim::stance::knee_toward(pose, rig, [socket, knee, ankle], toward, weight);
 }
 
 #[cfg(test)]
@@ -839,6 +1095,165 @@ mod tests {
             assert!(hanging.is_hanging() && !hanging.is_climbing_up(), "{name}: not hanging at the end");
             assert!(held < 1.0e-3, "{name}: a wrist {held:.4} m off its hook");
         }
+    }
+
+    /// A walker on its spot in front of `ledge`, mantling onto it.
+    fn mantling(ledge: &super::super::Ledge) -> Option<Hanging> {
+        let (stood, rig) = real_stood();
+        let square = Hanging::square(ledge, rig.forward());
+        let root = Hanging::mantle_spot(ledge, &[], Vec3::new(0.2, 0.0, 1.0), square, &stood, &rig);
+        Hanging::mantle(ledge, &[], root, square, 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig)
+    }
+
+    /// What a mantle measured, frame by frame.
+    #[derive(Debug, Default)]
+    struct Mantled {
+        /// The most any joint starts from the standing pose where it stood,
+        /// metres.
+        from_standing: f32,
+        /// The most an ankle strays from where it stood until the feet leave
+        /// the floor, and from the face braced, and from its spot on the top
+        /// once on it, metres.
+        planted_off: f32,
+        wall_off: f32,
+        landed_off: f32,
+        /// The most a hand strays from its press, pressing, metres.
+        pressed_off: f32,
+        /// The deepest any joint goes into the block, metres, and which, when.
+        into_block: f32,
+        deepest: Option<(Bone, f32)>,
+        knee_turned: f32,
+        /// The hips' greatest acceleration, m/s², and when; the fastest any
+        /// joint moves, m/s, and which, when.
+        acceleration: f32,
+        accelerated_at: f32,
+        fastest: f32,
+        fastest_bone: Option<(Bone, f32)>,
+        /// At the end: the root from its spot on the top, each ankle from its
+        /// own, metres; whether done.
+        root_off: f32,
+        ankles_off: f32,
+        done: bool,
+    }
+
+    fn mantled(ledge: &super::super::Ledge) -> Mantled {
+        let (stood, rig) = real_stood();
+        let stood_folds = {
+            let (at, pelvis) = (forward_kinematics_on(&stood, &rig), accumulate_world_rotations(&stood, &rig)[Bone::Hips]);
+            LEGS.map(|(socket, knee, ankle, _)| (pelvis.inverse() * (at[knee] - at[socket]).cross(at[ankle] - at[knee])).normalize())
+        };
+        let mut hanging = mantling(ledge).expect("in reach");
+        assert!(hanging.is_mantling());
+        let world = |hanging: &Hanging| {
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            BoneSet::from_fn(|bone| hanging.root() + turn * at[bone])
+        };
+        let mut m = Mantled::default();
+        let first = world(&hanging);
+        let standing = forward_kinematics_on(&stood, &rig);
+        let turn = Quat::from_rotation_y(hanging.facing());
+        let stood_at = hanging.root();
+        m.from_standing = Bone::ALL.iter().map(|&bone| (first[bone] - (stood_at + turn * standing[bone])).length()).fold(0.0, f32::max);
+        let ends = hanging.up.as_ref().expect("mantling").ends;
+        let mut last = first;
+        let mut hips = vec![first[Bone::Hips]];
+        while !hanging.is_done() {
+            hanging.advance(DT);
+            let up = hanging.up.as_ref().expect("mantling");
+            let now = world(&hanging);
+            hips.push(now[Bone::Hips]);
+            for side in 0..2 {
+                let off = (now[LEGS[side].2] - hanging.foot_up(up, side).0).length();
+                let landed = if side == up.lead { ends[3] } else { ends[3] + TRAIL_ON.1 * (ends[4] - ends[3]) };
+                if up.t <= ends[1] {
+                    m.planted_off = m.planted_off.max(off);
+                } else if up.t < ends[2] {
+                    m.wall_off = m.wall_off.max(off);
+                } else if up.t >= landed {
+                    m.landed_off = m.landed_off.max(off);
+                }
+            }
+            let (wrists, _, _, holding) = hanging.hands_up(up);
+            if up.t > ends[0] && holding >= 1.0 {
+                for side in 0..2 {
+                    m.pressed_off = m.pressed_off.max((now[ARMS[side].wrist] - wrists[side]).length());
+                }
+            }
+            let pose = hanging.pose(&rig);
+            let (at, pelvis) = (forward_kinematics_on(&pose, &rig), accumulate_world_rotations(&pose, &rig)[Bone::Hips]);
+            for (side, (socket, knee, ankle, _)) in LEGS.into_iter().enumerate() {
+                let fold = (at[knee] - at[socket]).normalize_or_zero().cross((at[ankle] - at[knee]).normalize_or_zero());
+                if fold.length() > KNEE_BENT {
+                    m.knee_turned = m.knee_turned.max((pelvis.inverse() * fold).normalize().dot(stood_folds[side]).clamp(-1.0, 1.0).acos());
+                }
+            }
+            for bone in Bone::ALL {
+                let depth = inside(ledge, now[bone]);
+                if depth > m.into_block {
+                    (m.into_block, m.deepest) = (depth, Some((bone, up.t)));
+                }
+                let speed = (now[bone] - last[bone]).length() / DT;
+                if speed > m.fastest {
+                    (m.fastest, m.fastest_bone) = (speed, Some((bone, up.t)));
+                }
+            }
+            last = now;
+            assert!(up.t < 10.0, "never done");
+        }
+        for (k, w) in hips.windows(3).enumerate() {
+            let a = ((w[2] - 2.0 * w[1] + w[0]) / (DT * DT)).length();
+            if a > m.acceleration {
+                (m.acceleration, m.accelerated_at) = (a, k as f32 * DT);
+            }
+        }
+        let up = hanging.up.as_ref().expect("mantling");
+        m.root_off = (hanging.root() - up.end_root).length();
+        let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+        let turn = Quat::from_rotation_y(hanging.facing());
+        m.ankles_off = (0..2).map(|side| (hanging.root() + turn * at[LEGS[side].2] - up.spots[side]).length()).fold(0.0, f32::max);
+        m.done = hanging.is_done();
+        m
+    }
+
+    /// From standing in front of a block waist to chest high, braced on its
+    /// face or (a high table) hanging free, it mantles onto the top: it
+    /// starts from the standing pose, the feet stay planted until they
+    /// leave the floor, the hands held on their presses, nothing goes into
+    /// the block, and it stands still on the top at the end.
+    #[test]
+    fn it_mantles_onto_a_block_waist_to_chest_high() {
+        // Its shoulders stand 1.40 m up: up to 1.30 m is chest high.
+        for (height, below) in [(0.85, 0.85), (0.95, 0.95), (1.15, 1.15), (1.28, 1.28), (1.15, 0.3)] {
+            let ledge = wall(height, below);
+            let m = mantled(&ledge);
+            let name = format!("{height} m, {below} m of wall");
+            assert!(m.done, "{name}: not done");
+            assert!(m.from_standing < 0.01, "{name}: started {:.4} m from standing", m.from_standing);
+            assert!(m.planted_off < 1.0e-3, "{name}: a planted ankle {:.4} m off where it stood", m.planted_off);
+            assert!(m.wall_off < 1.0e-3 && m.landed_off < 1.0e-3, "{name}: an ankle {:.4} m off the face, {:.4} m off the top", m.wall_off, m.landed_off);
+            assert!(m.pressed_off < 1.0e-3, "{name}: a hand {:.4} m off its press", m.pressed_off);
+            assert!(m.into_block < 1.0e-3, "{name}: {:?} {:.4} m into the block", m.deepest, m.into_block);
+            assert!(m.knee_turned < KNEE_TURN, "{name}: a knee's hinge turned {:.2} rad from standing's", m.knee_turned);
+            assert!(m.root_off < 1.0e-4 && m.ankles_off < 1.0e-3, "{name}: the root {:.4} m off its spot, an ankle {:.4} m", m.root_off, m.ankles_off);
+            assert!(m.fastest < 5.5, "{name}: {:?} moved at {:.2} m/s", m.fastest_bone, m.fastest);
+            assert!(m.acceleration < MOST_MANTLE_ACCELERATION, "{name}: the hips accelerated {:.1} m/s² at {:.2} s", m.acceleration, m.accelerated_at);
+        }
+    }
+
+    /// The hips' acceleration a mantle stays under, m/s²: its drive off the
+    /// floor is a jump's push (a jump's peaks near 1.5 g above gravity);
+    /// 1 g (7.7 measured, chest high).
+    const MOST_MANTLE_ACCELERATION: f32 = 9.8;
+
+    /// A lip lower than a mantle's (a step or a vault's), one out of reach
+    /// standing (a jump's), or a top with no room to stand on, is not
+    /// mantled.
+    #[test]
+    fn a_block_too_low_too_high_or_too_shallow_is_not_mantled() {
+        assert!(mantling(&wall(0.75, 0.75)).is_none(), "mantled a 0.75 m block");
+        assert!(mantling(&wall(1.4, 1.4)).is_none(), "mantled a wall at its shoulders' height");
+        assert!(mantling(&super::super::Ledge { depth: 0.3, ..wall(1.1, 1.1) }).is_none(), "mantled onto a 0.3 m top");
     }
 
     /// With no room on the top to stand, it does not climb up.

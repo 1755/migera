@@ -41,6 +41,59 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 7: mantling a block, speed vaulting a low obstacle
+
+**Mantle.** Asked `HangAsk::Mantle` at a block waist to chest high, it walks
+to stand 0.3 m from the face, the hands go onto the top as the knees dip, a
+drive leaves the floor with the arms pressing, the feet go onto the face (or
+hang, under a high table), and the climb-up's press, step-on and stand-up
+finish (`Hanging::mantle`, `parkour/hang/up.rs`). Note: [a block is mantled
+as a climb up from the
+floor](docs/knowledge/character-animation/parkour/a-block-is-mantled-as-a-climb-up-from-the-floor.md).
+
+**Speed vault.** Asked `HangAsk::Vault` running at an obstacle 0.75 m to
+hip high, at most 0.7 m deep, it adjusts its last steps so a foot comes
+down at the best take-off, then takes a running leap whose flight is
+reshaped: the hips roll the tucked legs out over the top to the lead leg's
+side, the trunk leans onto the other hand planted on the top, the body
+moved as a whole to keep the leap's COM, and it lands running on
+(`Jump::vault`, `parkour/vault.rs`). Note: [a low obstacle is speed-vaulted
+as a reshaped running
+leap](docs/knowledge/character-animation/parkour/a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md).
+
+- **Fixed on the way:** a trailing toe 1.6 cm into the near face, pointed
+  as it left; a planted hand let go in 0.12 s whipped at 11 m/s; a lead toe
+  2.4 cm in, tucked too low; the take-off leg let down to the landing's
+  swing, behind the obstacle, swung back through it (12 cm); the arm
+  solved again on its last solve crept and lifted the clavicle each pass.
+- **Headless, mantle** (0.85, 0.95, 1.15, 1.28 m, and a 1.15 m table with
+  0.3 m of face): starts from the standing pose (under 0.1 mm), the feet
+  planted until they leave (under 0.01 mm), on the face within 1 mm, the
+  hands on their presses within 0.1 mm, nothing into the block, the hips at
+  most 7.7 m/s² (the drive, chest high), standing on the top at its spot.
+  Refused: 0.75 m (step or vault), 1.4 m (a jump's), a 0.3 m top.
+- **Headless, vault** (0.75/0.25, 0.9/0.3, 1.0/0.5 m, 3 and 4 m/s, either
+  foot, 0-0.4 m past the best take-off; 36 vaults): nothing into the
+  obstacle (a toe skims at most 0.32 mm), the hand on its plant within
+  0.13 mm, the COM on the leap's parabola within 0.19 mm, no joint over
+  13.6 m/s about the COM (bound 14, by eye), running on at 2.98-3.0 m/s
+  from 3 and 3.13-3.70 from 4. Refused: a 0.3 m kerb, 1.2 m, 1 m deep,
+  from 1.5 m/s.
+- **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off): the mantle onto a
+  1.1 m block, from the left, back and top: hands on the top, feet on the
+  face, standing on top. The vault of a 0.9 m block at 3.5 m/s: the pace
+  stretched to 1.2 over the last steps, taken off 0.15 m past the best,
+  over the top from the right, top and front views (the side views are
+  hard to read: the block hides the crossing).
+- **Gallery:** `--mantle-at T` and `--vault-at T` (with `--anim-speed`), e.g.
+  `--block 0,-8,180,0.9,3.0,0.3 --vault-at 0.5 --anim-speed 3.5
+  --step-seconds 0.0333333`.
+- **Cost** (`anim_bench --characters 100`): `mantle` 44 µs (`hang-up`
+  45-50); `vault` 152 µs over its 0.9 s, against a plain running leap's
+  71 µs: the reshaping and the four arm solves each pose.
+
+1256 library tests pass; clippy is clean.
+
 ### Parkour, step 6: leaping from a hang, up, aside or back
 
 Hanging, asked `HangAsk::Leap(Leap::Up | Aside | Back)`, it leaps at a ledge

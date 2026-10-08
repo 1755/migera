@@ -1420,6 +1420,14 @@ struct HangSchedule {
     /// among the others.
     leap: Option<(f32, migera::character::anim::parkour::hang::Leap)>,
     leap_fired: bool,
+    /// Mantling onto the ledge's top, a block waist to chest high
+    /// (`--mantle-at T`).
+    mantle_at: Option<f32>,
+    mantle_fired: bool,
+    /// Vaulting the ledge's block running at it (`--vault-at T`, with
+    /// `--anim-speed` a run's).
+    vault_at: Option<f32>,
+    vault_fired: bool,
 }
 
 impl HangSchedule {
@@ -1461,6 +1469,8 @@ impl HangSchedule {
                 "--climb-up-at" => schedule.up_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--let-go-at" => schedule.let_go_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--drop-down-at" => schedule.drop_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--mantle-at" => schedule.mantle_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--vault-at" => schedule.vault_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--catch" => schedule.catch = true,
                 "--leap-at" => {
                     use migera::character::anim::parkour::hang::{Leap, Shimmy};
@@ -1526,6 +1536,14 @@ impl HangSchedule {
         if !self.up_fired && self.up_at.is_some_and(|at| elapsed >= at) {
             self.up_fired = true;
             return Some(HangAsk::ClimbUp);
+        }
+        if !self.mantle_fired && self.mantle_at.is_some_and(|at| elapsed >= at) {
+            self.mantle_fired = true;
+            return Some(HangAsk::Mantle);
+        }
+        if !self.vault_fired && self.vault_at.is_some_and(|at| elapsed >= at) {
+            self.vault_fired = true;
+            return Some(HangAsk::Vault);
         }
         if self.fired || self.at.is_none_or(|at| elapsed < at) {
             return None;

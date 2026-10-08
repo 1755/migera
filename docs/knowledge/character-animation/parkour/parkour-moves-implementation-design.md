@@ -221,9 +221,13 @@ its API, its tests, and when it is done.
   up, stand. Vault over a low obstacle while running: the speed vault
   (one hand, legs swung to the side) and the lazy vault; the run resumes on
   the far side (as the leap runs on).
-- **Data.** Thin: a kong vault's take-off loads the feet 1.2 body weights,
-  the hands 0.3 (unverified summary); no speed or lazy vault numbers.
+- **Data.** Thin: no mantle or speed-vault kinematics; hurdle and
+  steeplechase clearance, vault-table contact and a monkey vault's speed
+  loss as proxies.
 - **Tests.** Nothing through the obstacle; the run's pace kept across.
+- **Built** 2026-10-08: [the mantle](./a-block-is-mantled-as-a-climb-up-from-the-floor.md)
+  and [the speed vault](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md).
+  The lazy vault is not built.
 
 ### Step 8: walls
 
@@ -323,10 +327,22 @@ its API, its tests, and when it is done.
   then a `Falling` aimed at the ledge leapt at; up, aside, and back turning
   round to catch or land. The flight is ballistic but for the hold off the
   wall it faces.
-- Steps 7-10: not started.
+- **Step 7**, mantle and vault: built 2026-10-08. A mantle onto a block
+  0.85 m to chest high from a stand is the climb-up's plan with a new start
+  ([its note](./a-block-is-mantled-as-a-climb-up-from-the-floor.md)). A
+  speed vault is a running leap reshaped over the obstacle, the walker
+  adjusting its last steps to the take-off ([its
+  note](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md)).
+  Not built: the lazy vault, a mantle from a walk.
+- Steps 8-10: not started.
+- Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
+  more jumps, free climbing on holds, any wall, overhangs and windows,
+  perches, swinging fixtures, slides and long falls): designed in [their
+  own note](./parkour-moves-beyond-the-first-ten-steps.md), not started.
 
 ## Related
 
+- [Parkour moves beyond the first ten steps](./parkour-moves-beyond-the-first-ten-steps.md) — deeper: steps 11-18, what an Assassin's-Creed-style game needs past these ten.
 - [Parkour movement data](./parkour-movement-data.md) — deeper: every step's measured numbers, their sources, and the gaps.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — prerequisite: the holds model, grips, shoulder lift, hips' bow and led poses steps 1-3 build on.
 - [A jump is planned as its centre of mass's path](../ik-and-locomotion/a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the COM-path planning and landing that steps 1, 4 and 6 extend.

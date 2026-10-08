@@ -339,6 +339,8 @@ pub struct Jump {
     /// How far the root moves, in the pose's frame, to meet the standing
     /// pose once it has stood ([`Self::settle`]).
     settle: Vec3,
+    /// Vaulting an obstacle ([`Jump::vault`]): the flight reshaped over it.
+    vault: Option<Box<super::parkour::vault::Vaulting>>,
 }
 
 /// Where the feet stand, worked out once from the standing pose; and how a
@@ -442,6 +444,7 @@ impl Jump {
             feet,
             run: None,
             settle: Vec3::ZERO,
+            vault: None,
         };
         let asked = ask.distance.max(0.0);
         let passes = if asked > 0.0 { 6 } else { 1 };
@@ -706,8 +709,29 @@ impl Jump {
         (swing * self.arms, elbow * self.arms)
     }
 
-    /// The pose `t` seconds in, from standing in `stood`.
+    /// The pose `t` seconds in, from standing in `stood`; vaulting, its
+    /// flight reshaped over the obstacle.
     pub fn pose_at(&self, t: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
+        let pose = self.pose_at_unshaped(t, stood, rig);
+        match self.vault.as_deref() {
+            Some(vault) => vault.reshape(&pose, t, self.travelled_at(t), rig),
+            None => pose,
+        }
+    }
+
+    /// Vaulting: its flight reshaped by `vault`.
+    pub(crate) fn set_vault(&mut self, vault: super::parkour::vault::Vaulting) {
+        self.vault = Some(Box::new(vault));
+    }
+
+    /// Vaulting, how its flight is reshaped.
+    pub fn vaulting(&self) -> Option<&super::parkour::vault::Vaulting> {
+        self.vault.as_deref()
+    }
+
+    /// The pose `t` seconds in, as its plan has it, not reshaped by a
+    /// vault.
+    pub(crate) fn pose_at_unshaped(&self, t: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
         if let Some(run) = self.run.as_ref().filter(|run| run.owns(self, t)) {
             let mut pose = run.pose_at(self, t, stood, rig);
             pose.root_translation -= rig.forward() * self.travelled_at(t);
