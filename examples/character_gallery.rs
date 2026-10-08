@@ -1427,6 +1427,12 @@ struct HangSchedule {
     /// Vaulting the ledge's block running at it (`--vault-at T`, with
     /// `--anim-speed` a run's).
     vault_at: Option<f32>,
+    /// A lazy vault rather than a speed vault (`--vault-at T,lazy`).
+    lazy: bool,
+    /// Running up the ledge's wall (`--wall-run-at T`, with `--anim-speed`
+    /// a run's).
+    wall_run_at: Option<f32>,
+    wall_run_fired: bool,
     vault_fired: bool,
 }
 
@@ -1470,7 +1476,13 @@ impl HangSchedule {
                 "--let-go-at" => schedule.let_go_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--drop-down-at" => schedule.drop_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--mantle-at" => schedule.mantle_at = args.next().and_then(|t| t.trim().parse().ok()),
-                "--vault-at" => schedule.vault_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--wall-run-at" => schedule.wall_run_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--vault-at" => {
+                    let given = args.next().unwrap_or_default();
+                    let (at, kind) = given.split_once(',').unwrap_or((given.as_str(), "speed"));
+                    schedule.vault_at = at.trim().parse().ok();
+                    schedule.lazy = kind.trim() == "lazy";
+                }
                 "--catch" => schedule.catch = true,
                 "--leap-at" => {
                     use migera::character::anim::parkour::hang::{Leap, Shimmy};
@@ -1541,9 +1553,14 @@ impl HangSchedule {
             self.mantle_fired = true;
             return Some(HangAsk::Mantle);
         }
+        if !self.wall_run_fired && self.wall_run_at.is_some_and(|at| elapsed >= at) {
+            self.wall_run_fired = true;
+            return Some(HangAsk::WallRun);
+        }
         if !self.vault_fired && self.vault_at.is_some_and(|at| elapsed >= at) {
             self.vault_fired = true;
-            return Some(HangAsk::Vault);
+            use migera::character::anim::parkour::vault::VaultKind;
+            return Some(HangAsk::Vault(if self.lazy { VaultKind::Lazy } else { VaultKind::Speed }));
         }
         if self.fired || self.at.is_none_or(|at| elapsed < at) {
             return None;

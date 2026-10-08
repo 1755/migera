@@ -1,14 +1,14 @@
 ---
 title: A low obstacle is speed-vaulted as a reshaped running leap
-description: "Step 7, second part: a speed vault is a running leap over the obstacle whose flight is reshaped (hips rolled, legs tucked out to the side, trunk leant onto a hand planted on the top), the body moved whole to keep the leap's COM; the walker adjusts its last steps to the take-off. Read before changing parkour/vault.rs."
+description: "Step 7: a speed or lazy vault is a running leap whose flight is reshaped (hips rolled, legs tucked to the side, trunk leant onto a hand on the top), moved whole to keep the leap's COM; the walker adjusts its last steps to the take-off. Read before changing parkour/vault.rs."
 type: decision
 status: current
 tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
-verified: 2026-10-08
+updated: 2026-10-09
+verified: 2026-10-09
 code:
   - src/character/anim/parkour/vault.rs
   - src/character/anim/jump.rs
@@ -26,6 +26,8 @@ aliases:
   - HangAsk::Vault
   - Vaulting
   - stride adjustment
+  - lazy vault
+  - VaultKind
 ---
 
 # A low obstacle is speed-vaulted as a reshaped running leap
@@ -97,6 +99,25 @@ obstacle), as a long jumper does on the approach:
 top on `puppet_base`), at most 0.7 m deep, met within 0.5 rad of square,
 from a run of at least 2.5 m/s.
 
+**A lazy vault** (`VaultKind::Lazy`, `HangAsk::Vault(kind)`) is the same
+reshaped leap, taken from an angle, up to 0.6 rad (34°) off square.
+`Obstacle::slant` is how far its face is turned from the run, and
+`Obstacle::inside` measures across the slanted face. It differs from the
+speed vault in four ways:
+- **the hips roll less**, 0.6 rad, so the body stays more upright;
+- **the lead leg goes over first**, nearly straight: tucked 0.5 m ahead,
+  level with its socket;
+- **the take-off leg follows 0.1 s later**, tucking over up to 0.6 of the
+  flight;
+- **the legs go toward the obstacle's far end**, so it takes off only from
+  the foot whose lead leg is on that side (`VaultKind::takeoff_leg`).
+  Running in, the walker counts its last steps to bring that foot to the
+  take-off.
+
+It plans from 0.1 m past its best take-off to 0.4-0.5 m past, narrowing to
+about +0.1 m at 34°. Nearer, the lead leg reaches ahead into the face. The
+walker aims a foot 0.1 m past the best for either kind.
+
 ## Alternatives considered
 
 - **A flight of its own**: the leap's flight already lands into the run at
@@ -147,7 +168,18 @@ by 0.5; 3 and 4 m/s; either foot; 0, 0.2 and 0.4 m past the best take-off;
   the COM; the pops were 21-61;
 - it runs on at 2.98-3.0 m/s from 3, and 3.13-3.70 m/s from 4.
 
-A 0.3 m kerb, a 1.2 m wall, a 1 m deep block and a 1.5 m/s run are refused.
+A 0.3 m kerb, a 1.2 m wall, a 1 m deep block and a 1.5 m/s run are refused,
+as are a speed vault 0.7 rad off square and a lazy one 1 rad off.
+
+**Headless, lazy** (0.75, 0.9 and 1.0 m by 0.3 m; 3 and 4 m/s; square,
+±0.3 and ±0.6 rad; either foot; 0.1 m past the best take-off; 36 vaults,
+each slanted case refused off the wrong foot):
+- nothing goes into the obstacle;
+- the hand is on its plant within 0.10 mm;
+- the COM stays within 0.25 mm of the leap's;
+- the fastest joint reaches 14.35 m/s, where the leap's own swing already is
+  after landing;
+- it runs on at 2.21-3.25 m/s.
 
 **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off; a 0.9 m block 0.3 m deep
 at 3.5 m/s): the pace stretched to 1.2 over the last steps, it took off
@@ -155,24 +187,32 @@ at 3.5 m/s): the pace stretched to 1.2 over the last steps, it took off
 crosses above the top's edge with a hand down to it, and from the top over
 the block. The side views are hard to read: the block hides the crossing.
 
-**Cost**: `anim_bench --gait vault --characters 100`, 152 µs a character
+A lazy vault of the same block turned 20° either way at 3.5 m/s: at
+-0.35 rad it took off the right foot 0.1 m past its best. At +0.35 rad it
+counted its steps so the left foot came down at the take-off (the pace
+stretched to 1.2), 0.33 m past its best. From the front, the lead leg went
+out nearly straight over the top first; from the top, it crossed the
+slanted block.
+
+**Cost**: `anim_bench --gait vault|vault-lazy --characters 100`, 152 and
+150 µs a character
 over its 0.9 s against a running leap's 71 µs. Each pose is reshaped and the
 arm solved four times. Six times over it was 211 µs; nothing reshaped
 outside the flight.
 
 ## Revisit when
 
-- **The speed lost.** From 4 m/s it runs on at as little as 3.13 m/s (the
-  leap's loss for its rise).
-- **The legs' whip** (13.6 m/s about the COM, under a by-eye 14), if it
-  shows. Skilled traceurs lose about 0.2 m/s over a monkey
+- **The speed lost.** From 4 m/s a speed vault runs on at as little as
+  3.13 m/s, and a lazy vault, rising higher to clear, at 2.77 (the leap's
+  loss for its rise). Skilled traceurs lose about 0.2 m/s over a monkey
   vault (Feletti et al. 2023).
+- **The legs' whip** (13.6 m/s about the COM, under a by-eye 14), if it
+  shows.
 - **The cost**, if crowds vault: the arm's four solves and the legs' IK
   each pose.
-- **Data**: no speed-vault kinematics are published. The LAAS parkour
-  motion database has safety and kong vaults to measure.
-- **Lazy and kong vaults**: the lazy vault (from an angle, a leg and then
-  the other) and the kong (both hands, legs between) are not built.
+- **Data**: no speed- or lazy-vault kinematics are published. The LAAS
+  parkour motion database has safety and kong vaults to measure.
+- **The kong vault** (both hands, the legs between them) is not built.
 
 ## Related
 

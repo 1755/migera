@@ -64,8 +64,10 @@ pub mod getup;
 ///
 /// Test-only: it embeds a 31 KB asset and exists so tests can measure
 /// against the rig the game ships rather than a hand-transcribed
-/// approximation of it.
-#[cfg(test)]
+/// approximation of it. Also with the `real_rig` feature, for
+/// `anim_bench` to cost a move only the real rig can plan (`--gait
+/// wall-run`: the synthetic rig's legs are shifted a joint).
+#[cfg(any(test, feature = "real_rig"))]
 pub mod gltf_rig;
 pub mod hand;
 pub mod jump;

@@ -41,6 +41,75 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 8 (first part): running up a wall and catching its lip
+
+Asked `HangAsk::WallRun` running at a wall, it adjusts its last steps to the
+best take-off, takes a braked running leap, plants its lead foot on the face
+1 m up for 0.37 s while the hips drive up on a Hermite curve (the arms
+swinging overhead, the other knee driven up), then flies on as a fall aimed
+at the lip, catching it or landing at the wall's foot (`parkour::wall`).
+Note: [a wall is run up off one foot and its lip
+caught](docs/knowledge/character-animation/parkour/a-wall-is-run-up-off-one-foot-and-its-lip-caught.md).
+
+- **Fixed on the way:** the foot dragged 19 cm off its hold, rising
+  Lawson's 0.84 m out of the leg's reach; hands 7-17 cm into the wall
+  swinging up; knees 0.5-2.7 cm into it; a knee turned round at 16 m/s, its
+  aim changed at contact; a foot already part-way to its hold at the first
+  frame (14 m/s); the hips braking at 3.5 g meeting the wall at the run's
+  speed; a missed lip's landing swinging a hand at 40 m/s, the fall's arms
+  dropped in a frame (`fall.rs` now eases them down over 0.15 s).
+- **Headless** (walls 2.3-3.4 m, 3.5 and 4.5 m/s, either foot, ±0.25 m off
+  the best take-off; 72 planned): the foot held within 0.013 mm, nothing
+  into the wall beyond 0.12 mm, no joint over 12.8 m/s about the hips, the
+  hips braked at most 2.7 g; it catches walls up to 2.6 m and lands under
+  higher, as planned. Refused: askew, too far or too near.
+- **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off): at 4 m/s at a 2.5 m
+  block, the foot on the face, the arms overhead, caught and hanging braced.
+- **Gallery:** `--wall-run-at T` with `--anim-speed`.
+- **Cost:** `anim_bench --features real_rig --gait wall-run`, 32 µs at p50
+  (the synthetic rig cannot plan it; `real_rig` builds the test rig's
+  parser into the library for the bench).
+
+1259 library tests pass; clippy is clean.
+
+### Parkour, step 7 finished: a mantle from a walk, a lazy vault from an angle
+
+**Mantle from a walk.** Walking in to its mantle spot, square to the wall,
+the first foot down within 0.5 m of the spot starts the mantle without
+stopping (`FromWalk`). That foot stays, the other steps in over the dip
+(0.6 s, braking the walk), the hips start at the walk's position and
+velocity, and the pose blends from the walk's over 0.25 s. Note: [a block
+is mantled as a climb up from the
+floor](docs/knowledge/character-animation/parkour/a-block-is-mantled-as-a-climb-up-from-the-floor.md).
+
+**Lazy vault.** `HangAsk::Vault(VaultKind::Lazy)`, from up to 34° off square
+(`Obstacle::slant`). The hips roll less (0.6 rad), the lead leg goes over
+first nearly straight, the take-off leg follows 0.1 s later, the legs go
+toward the far end. The walker counts its last steps so the right foot
+takes off. Note: [a low obstacle is speed-vaulted as a reshaped running
+leap](docs/knowledge/character-animation/parkour/a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md).
+
+- **Fixed on the way:** walking in, a swung-back hand led at 6.4-6.9 m/s
+  and, reaching from the walk's wrist, flipped its elbow at 24 m/s; a
+  planted knee began 1.8 cm off, a reach cap pulling the near-straight leg
+  in; the foot stepping in fell 3 mm out of reach at toe-off; the lazy
+  vault's late take-off leg whipped at 17.6 m/s; the lazy vault off the
+  wrong foot met the face with its lead leg.
+- **Headless, mantle from a walk** (1.0 and 1.4 m/s, every block): starts
+  within 0.04 mm of the walk's pose, hips at most 7.8 m/s², no joint over
+  4.9 m/s, everything else as from a stand.
+- **Headless, lazy vault** (0.75-1.0 m, 3 and 4 m/s, square and ±0.3/±0.6
+  rad, 36 vaults): nothing into the obstacle, the hand within 0.10 mm, the
+  COM within 0.25 mm, the fastest joint the leap's own (14.35 m/s), running
+  on at 2.21-3.25 m/s; off the wrong foot at a slant, refused.
+- **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off): mantled from a walk at
+  0.7 m/s onto a 1.1 m block; lazy-vaulted a 0.9 m block turned ±20°, the
+  walker bringing the right foot to the take-off.
+- **Gallery:** `--vault-at T,lazy`.
+- **Cost:** `anim_bench --gait vault-lazy`, 150 µs (`vault` 152).
+
+1257 library tests pass; clippy is clean.
+
 ### Parkour, step 7: mantling a block, speed vaulting a low obstacle
 
 **Mantle.** Asked `HangAsk::Mantle` at a block waist to chest high, it walks

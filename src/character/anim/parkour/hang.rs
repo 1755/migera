@@ -41,6 +41,7 @@ mod shimmy;
 mod up;
 
 pub use leap::Leap;
+pub use up::FromWalk;
 pub use shimmy::Shimmy;
 
 /// What a walker is asked to do with its ledge ([`Walker::hang`](crate::character::anim::Walker::hang)).
@@ -64,10 +65,14 @@ pub enum HangAsk {
     /// Walk to it, a block waist to chest high, put the hands on its top,
     /// and mantle up onto it ([`Hanging::mantle`]).
     Mantle,
-    /// Running at it, a low obstacle, speed vault over it and run on
-    /// (`Jump::vault`): taken from the foot that comes down nearest the best
-    /// take-off.
-    Vault,
+    /// Running at it, a low obstacle, vault over it (a speed or a lazy
+    /// vault) and run on (`Jump::vault`): taken from the foot that comes
+    /// down nearest the best take-off.
+    Vault(super::vault::VaultKind),
+    /// Running at it, a wall, run up its face and catch its lip, or fall
+    /// back and land if out of reach (`wall::WallRun`): taken from the foot
+    /// that comes down nearest the best take-off.
+    WallRun,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.

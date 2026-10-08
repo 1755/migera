@@ -80,6 +80,9 @@ const ARMS_LANDING: (f32, f32) = (0.9, 0.7);
 /// Reaching up to catch a ledge falling past, the arms up overhead (swing
 /// and elbow bend, radians, `jump::upper`).
 const ARMS_REACHING: (f32, f32) = (2.6, 0.15);
+/// Landed, the arms go from the flight's to the landing's over this long,
+/// seconds.
+const ARMS_DOWN: f32 = 0.15;
 /// The trunk and arms go from where they were as it left to the flight's
 /// over this long, seconds.
 const ARMS_FREE: f32 = 0.35;
@@ -1328,7 +1331,15 @@ impl Falling {
             // Hurt, over onto the hands; not facing a wall, whose room for
             // that pushed the hips back off it while still in the air.
             let per_depth = if self.hurt && self.wall.is_none() { HURT_LEAN_PER_DEPTH } else { LEAN_PER_DEPTH };
-            (per_depth * depth, (ARMS_LANDING.0 * arms, ARMS_LANDING.1 * arms))
+            // From the flight's arms over the landing's first moment: reaching
+            // up for a lip it missed (a run up a wall too high), the arms
+            // swung down to the landing's in a frame, a hand at 40 m/s.
+            let into = smoothstep((flight / (LEGS_REACH * flight).max(0.15)).clamp(0.0, 1.0));
+            let flying = if self.reaching { ARMS_REACHING } else { ARMS_FLYING };
+            let flying = (flying.0 * into, flying.1 * into);
+            let down = smoothstep(((self.t - flight) / ARMS_DOWN).clamp(0.0, 1.0));
+            let landing = (ARMS_LANDING.0 * arms, ARMS_LANDING.1 * arms);
+            (per_depth * depth, (flying.0 + (landing.0 - flying.0) * down, flying.1 + (landing.1 - flying.1) * down))
         } else {
             let into = smoothstep((self.t / (LEGS_REACH * flight).max(0.15)).clamp(0.0, 1.0));
             let flying = if self.reaching { ARMS_REACHING } else { ARMS_FLYING };

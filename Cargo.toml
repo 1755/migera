@@ -12,6 +12,8 @@ bevy_egui = "0.42.0"
 avian3d = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
+# Only for `real_rig` (the test rig's glTF parser outside tests).
+serde_json = { version = "1", optional = true }
 
 [features]
 default = []
@@ -25,6 +27,10 @@ default = []
 #
 # CI must build both with and without it, or the gated code rots silently.
 anim_studio = []
+# The real rig parser (`character::anim::gltf_rig`, a 31 KB embedded glTF)
+# outside tests, for `anim_bench --gait wall-run`: a move only the real
+# rig can plan (the synthetic rig's legs are shifted a joint).
+real_rig = ["dep:serde_json"]
 
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }

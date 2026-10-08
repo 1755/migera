@@ -1,14 +1,14 @@
 ---
 title: A block is mantled as a climb up from the floor
-description: "Step 7, first part: a mantle onto a block 0.85 m to chest high is the climb-up's plan with a new head (hands onto the top as the knees dip, a drive off the floor, feet onto the face), then its press, step on and stand. Read before changing Hanging::mantle or the climb-up's plan."
+description: "Step 7: a mantle onto a block 0.85 m to chest high is the climb-up's plan with a new head (hands on as the knees dip, a drive off the floor, feet onto the face), then its press, step on and stand; also straight from a walk. Read before changing Hanging::mantle or the climb-up's plan."
 type: decision
 status: current
 tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
-verified: 2026-10-08
+updated: 2026-10-09
+verified: 2026-10-09
 code:
   - src/character/anim/parkour/hang/up.rs
   - src/character/anim/parkour/hang.rs
@@ -23,6 +23,8 @@ aliases:
   - Hanging::mantle
   - HangAsk::Mantle
   - climb onto a box
+  - FromWalk
+  - mantle from a walk
 ---
 
 # A block is mantled as a climb up from the floor
@@ -53,6 +55,21 @@ under the hips instead.
 
 **The foot IK's drop** is eased out over the dip and back in standing up,
 so the hips start on the walker's and the root ends on the top's.
+
+**From a walk** (`FromWalk`), it mantles without stopping. Walking in to its
+spot, square to the wall within 0.2 rad, faster than 0.3 m/s, the first
+foot down within 0.5 m of the spot starts it:
+- that foot stays where it came down;
+- the other steps in beside it over the dip, lifted 8 cm;
+- the hips' path starts at the walk's hips and velocity;
+- the whole pose blends from the walk's over 0.25 s, the legs too, before
+  their ankles are placed;
+- the dip takes 0.6 s, not 0.45: there is the walk's speed to brake, and a
+  hand swung back is 1 m from its press.
+
+Each hand reaches from where standing has it at the spot, the arms taking
+hold over the blend. The hand swung forward (opposite the foot down) leads;
+the feet keep their own lead.
 
 **Its reach** is 0.85 m (about the hips) up to 0.1 m under the standing
 shoulders (1.30 m on `puppet_base`, chest high). Lower is a step or a vault.
@@ -91,6 +108,19 @@ with its hips 0.3 m from the face (`MANTLE_OUT`).
 - **The test's starting pose must not carry the foot IK's drop.** With a
   1 cm drop, near-straight knees swing 3 cm forward; that was the test's
   doing, not the mantle's.
+- **Walking in, the hands must not reach from the walk's own wrists.** A
+  hand swung back was held behind and then brought past the body, its
+  elbow flipping round at 24 m/s.
+- **Walking in, the swung-back hand must not lead.** It moved at 6.4-6.9
+  m/s. Leading the feet with the stepping foot as well put a knee 1.8 cm
+  into a chest-high wall, so only the hands swap.
+- **A foot's reach cap must start from the leg's own reach.** At a heel's
+  strike the leg is near straight (0.998 of it), and a 0.995 cap pulled the
+  planted foot in, the knee 1.8 cm off. Capped at the leg's present reach,
+  the rising hips asked for the whole leg and the knee fell 5 mm short. The
+  cap now eases from the reach it began with to 0.995 by take-off. The foot
+  stepping in is capped too: left behind at toe-off at 1.4 m/s, it was 3 mm
+  out of reach.
 
 ## Consequences
 
@@ -105,21 +135,30 @@ and a 1.15 m table with 0.3 m of face):
 - the hips peak at 7.7 m/s² (the drive, chest high; bound 1 g);
 - it stands on the top at its spot.
 
+Walking in at 1.0 and 1.4 m/s, onto every block, the left foot just down:
+- it starts within 0.04 mm of the walk's pose;
+- the hips peak at 7.8 m/s², counting the hand-over from the walk's speed;
+- no joint goes over 4.9 m/s;
+- everything else holds as from a stand.
+
 0.75 m, 1.4 m and a 0.3 m deep top are refused.
 
 **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off; a 1.1 m block):
 - from the left: the hands reach the lip, then the trunk is over the top,
   the feet on the face, a foot comes on, and it stands;
 - from the back: the hands on the top, a shoulder's width apart;
-- from the top: nothing inside the block.
+- from the top: nothing inside the block;
+- walking in to a 1.1 m block 4 m off, it mantled from the walk at
+  0.7 m/s (the approach slowing), 0.33 m from the spot, through the press
+  to standing on the top (from the left).
 
 **Cost**: `anim_bench --gait mantle --characters 100`, 44 µs a character,
 the same as a climb up (45-50 µs).
 
 ## Revisit when
 
-- **From a walk**: it stops first. A mantle carrying the walk's speed would
-  start the spline at the walk's velocity.
+- **From a run**: a run is not mantled from; it would need the walk's
+  hand-over at running speed and a jump's drive.
 - **Data**: no mantle has measured timings. The LAAS parkour motion
   database has muscle-ups and vaults to measure them from.
 

@@ -227,7 +227,7 @@ its API, its tests, and when it is done.
 - **Tests.** Nothing through the obstacle; the run's pace kept across.
 - **Built** 2026-10-08: [the mantle](./a-block-is-mantled-as-a-climb-up-from-the-floor.md)
   and [the speed vault](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md).
-  The lazy vault is not built.
+  The lazy vault and the mantle from a walk followed 2026-10-09.
 
 ### Step 8: walls
 
@@ -243,6 +243,9 @@ its API, its tests, and when it is done.
   tic-tac data: use one rising contact of about 0.37 s.
 - **Tests.** Feet planted on the wall during contact; the flight between
   ballistic; the body leant clear of the wall.
+- **Built** 2026-10-09: [the run up a wall and the catch of its
+  lip](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md). The run
+  along a wall, the wall jump and the slide down are not built yet.
 
 ### Step 9: bars, poles and ropes
 
@@ -333,8 +336,13 @@ its API, its tests, and when it is done.
   speed vault is a running leap reshaped over the obstacle, the walker
   adjusting its last steps to the take-off ([its
   note](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md)).
-  Not built: the lazy vault, a mantle from a walk.
-- Steps 8-10: not started.
+  A mantle from a walk and a lazy vault from an angle followed
+  2026-10-09. Not built: the kong vault.
+- **Step 8**, walls: the run up a wall, off one foot into a catch of its
+  lip, built 2026-10-09 ([its
+  note](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md)). The run
+  along a wall, the wall jump and the slide down: not built.
+- Steps 9-10: not started.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,
   perches, swinging fixtures, slides and long falls): designed in [their

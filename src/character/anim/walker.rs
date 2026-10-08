@@ -325,11 +325,23 @@ const LEDGE_LEAD_IN: f32 = 1.2;
 const LEDGE_AT_LEAD_IN: f32 = 0.3;
 
 /// Running at an obstacle to vault, it aims a foot this far beyond its best
-/// take-off, metres (a vault plans from the best to 0.4 m beyond it), and
+/// take-off, metres (a speed vault plans from the best to 0.4 m beyond it,
+/// a lazy vault 34° off square to 0.1 m), and
 /// stretches or shortens its pace for it by at most this share, adjusting
 /// its last steps as a long jumper does.
-const VAULT_AIM: f32 = 0.15;
+const VAULT_AIM: f32 = 0.1;
 const VAULT_PACE: f32 = 0.2;
+/// A run up a wall is taken off as much as this nearer than its best,
+/// metres, at most (it plans to 0.1-0.25 m either side).
+const WALL_TAKEOFF_NEAR: f32 = 0.1;
+
+/// Walking in to mantle, it mantles from a foot down within this of its
+/// spot, metres (about the reach of the planted foot to its own spot), if
+/// it walks faster than this, m/s, and faces within this of square to the
+/// wall, radians; else it stops on the spot first.
+const MANTLE_FROM_WALK: f32 = 0.5;
+const MANTLE_WALKING: f32 = 0.3;
+const MANTLE_SQUARE: f32 = 0.2;
 
 /// How long both feet stay planted after standing up, seconds: several
 /// times the legs' 0.015 s spring half-life, for the extension to settle.
@@ -430,6 +442,8 @@ pub struct WalkerState {
     /// ground found below as the root went over the edge, the fall to start.
     pub falling: Option<super::parkour::Falling>,
     pub fall_to: Option<f32>,
+    /// Running up a wall (`parkour::wall`), until it lets go into a fall.
+    pub wall_run: Option<super::parkour::wall::WallRun>,
     /// Going round a wall ([`way_round`]).
     pub detour: Option<Detour>,
     /// The ledge it walks under, the spot it jumps from, and whether it has
@@ -479,6 +493,7 @@ impl WalkerState {
             ladder_spot: None,
             hanging: None,
             falling: None,
+            wall_run: None,
             fall_to: None,
             detour: None,
             ledge_spot: None,
@@ -488,10 +503,10 @@ impl WalkerState {
     }
 
     /// Whether a move poses the body off the floor, its hands on holds or in
-    /// the air: on a ladder, grabbing or hanging from a ledge, or falling
-    /// off an edge and landing.
+    /// the air: on a ladder, grabbing or hanging from a ledge, running up a
+    /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some()
     }
 }
 
@@ -738,7 +753,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // it, facing the wall, and jumps from there once stopped.
         // A vault is taken running at it, not walked to (below).
         let hang_asked = !state.on_holds()
-            && walker.hang.is_some_and(|ask| ask != super::parkour::hang::HangAsk::Vault)
+            && walker.hang.is_some_and(|ask| !matches!(ask, super::parkour::hang::HangAsk::Vault(_) | super::parkour::hang::HangAsk::WallRun))
             && walker.ledge.is_some()
             && walker.sit.is_none()
             && !ladder_asked
@@ -1021,7 +1036,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // at an obstacle to vault it (it turned off its way round the
         // obstacle 2 m short). Running to vault, it runs at its pace for a
         // foot to come down at the best take-off.
-        let vaulting = walker.hang == Some(super::parkour::hang::HangAsk::Vault) && walker.ledge.is_some();
+        let vaulting = matches!(walker.hang, Some(super::parkour::hang::HangAsk::Vault(_) | super::parkour::hang::HangAsk::WallRun)) && walker.ledge.is_some();
         if vaulting {
             wanted_speed *= state.vault_pace;
         } else {
@@ -1502,6 +1517,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // touches.
         let asked_jump = if crouched { None } else { walker.jump.take() };
         let mut let_go = false;
+        // Run up a wall from this frame's contact (below): posed from the
+        // next.
+        let mut wall_started = false;
         if let Some(rig) = foot_ik.rig.clone() {
             let standing = weight <= 0.0
                 && state.transition.is_at_rest()
@@ -1561,7 +1579,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             // foot's contact it takes off if the next would come down no
             // nearer its best take-off; come down past that, the ask is
             // dropped.
-            if walker.hang == Some(super::parkour::hang::HangAsk::Vault)
+            if let Some(super::parkour::hang::HangAsk::Vault(kind)) = walker.hang
                 && let Some(ledge) = walker.ledge
                 && running
                 && state.jump.is_none()
@@ -1578,7 +1596,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     // Where the root is at the contact, the jump's frame there.
                     let origin = state.locomotion.position + state.facing.rotation() * (state.stride.stepped + rig.forward() * run_part);
                     let start = super::jump::RunStart { leg, speed };
-                    if let Some(obstacle) = Obstacle::ahead(&ledge, origin, state.facing.rotation() * rig.forward()) {
+                    if let Some(obstacle) = Obstacle::ahead(&ledge, origin, state.facing.rotation() * rig.forward(), kind.most_slant()) {
                         let best = super::jump::Jump::vault_takeoff(obstacle.depth, obstacle.top, start, &stood, &rig);
                         let step = speed / (2.0 * rate);
                         let aim = best + VAULT_AIM;
@@ -1586,7 +1604,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         // This foot if its vault plans and the next would be
                         // past the best or no nearer the aim.
                         let vault = (obstacle.near >= best && obstacle.near - best <= step + TAKEOFF_SLACK)
-                            .then(|| super::jump::Jump::vault(obstacle, start, &stood, &rig))
+                            .then(|| super::jump::Jump::vault(obstacle, start, kind, &stood, &rig))
                             .flatten()
                             .filter(|_| next < best || (obstacle.near - aim).abs() <= (next - aim).abs());
                         if let Some(mut jump) = vault {
@@ -1602,9 +1620,97 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                             // A whole number of steps on to the aim: the run's
                             // pace stretched or shortened to them.
                             let to_go = obstacle.near - aim;
+                            let mut steps = (to_go / step).round().max(1.0);
+                            // The foot it must take off from (a lazy vault at
+                            // a slant) there: one step more or fewer if not
+                            // (the foot `steps` on is this one if even).
+                            if let Some(wanted) = kind.takeoff_leg(obstacle.slant) {
+                                let lands = if (steps as usize).is_multiple_of(2) { leg } else { 1 - leg };
+                                if lands != wanted {
+                                    steps = if to_go / step > steps || steps <= 1.0 { steps + 1.0 } else { steps - 1.0 };
+                                }
+                            }
+                            state.vault_pace = (state.vault_pace * to_go / (steps * step)).clamp(1.0 - VAULT_PACE, 1.0 + VAULT_PACE);
+                        }
+                    }
+                }
+            }
+            // Running up a wall (`parkour::wall`): as a vault is taken, from
+            // the foot that comes down nearest its best take-off, the pace
+            // adjusted over the last steps; past it, the ask is dropped.
+            if walker.hang == Some(super::parkour::hang::HangAsk::WallRun)
+                && let Some(ledge) = walker.ledge
+                && running
+                && state.jump.is_none()
+                && state.wall_run.is_none()
+                && rate > 0.0
+            {
+                use super::parkour::wall::{WallRun, MOST_SLANT};
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down {
+                    let since = (cycle - 0.5 * leg as f32).rem_euclid(1.0) / rate;
+                    let run_part = (time.delta_secs() - since).max(0.0) * speed;
+                    let origin = state.locomotion.position + state.facing.rotation() * (state.stride.stepped + rig.forward() * run_part);
+                    let start = super::jump::RunStart { leg, speed };
+                    if let Some(face) = super::parkour::vault::Obstacle::ahead(&ledge, origin, state.facing.rotation() * rig.forward(), MOST_SLANT) {
+                        let best = WallRun::takeoff(start, &stood, &rig);
+                        let step = speed / (2.0 * rate);
+                        let next = face.near - step;
+                        let run = (face.near >= best - WALL_TAKEOFF_NEAR)
+                            .then(|| WallRun::plan(&ledge, origin, state.facing.yaw, start, foot_ik.pelvis_drop, &stood, &rig))
+                            .flatten()
+                            .filter(|_| next < best - WALL_TAKEOFF_NEAR || (face.near - best).abs() <= (next - best).abs());
+                        if let Some(mut run) = run {
+                            run.advance(since);
+                            state.stride.stepped = Vec3::ZERO;
+                            state.wall_run = Some(run);
+                            wall_started = true;
+                            let_go = true;
+                            walker.hang = None;
+                        } else if face.near < best - WALL_TAKEOFF_NEAR {
+                            walker.hang = None;
+                        } else {
+                            let to_go = face.near - best;
                             let steps = (to_go / step).round().max(1.0);
                             state.vault_pace = (state.vault_pace * to_go / (steps * step)).clamp(1.0 - VAULT_PACE, 1.0 + VAULT_PACE);
                         }
+                    }
+                }
+            }
+            // Mantling straight from a walk (`Hanging::mantle`): walking in to
+            // its spot, square to the wall, the first foot down within
+            // `MANTLE_FROM_WALK` of the spot stays, and it mantles from there
+            // without stopping, the other foot stepping in.
+            if walker.hang == Some(super::parkour::hang::HangAsk::Mantle)
+                && state.hanging.is_none()
+                && state.jump.is_none()
+                && let Some((ledge, spot, true)) = state.ledge_spot
+                && !running
+                && speed > MANTLE_WALKING
+                && rate > 0.0
+            {
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                let square = super::parkour::Hanging::square(&ledge, rig.forward());
+                let at = state.locomotion.position + state.facing.rotation() * state.stride.stepped;
+                let near = Vec3::new(spot.x - at.x, 0.0, spot.z - at.z).length() <= MANTLE_FROM_WALK;
+                let squared = super::facing::shortest_angle(state.facing.yaw - square).abs() < MANTLE_SQUARE;
+                if let Some(leg) = came_down
+                    && near
+                    && squared
+                {
+                    let from = super::parkour::hang::FromWalk { at, pose: target.pose, velocity: state.facing.rotation() * rig.forward() * speed, planted: leg };
+                    let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
+                    if let Some(hanging) = super::parkour::Hanging::mantle(&ledge, &walker.ledges, spot, square, foot_ik.pelvis_drop, grips, Some(from), &stood, &rig) {
+                        state.hanging = Some(hanging);
+                        state.approach = approach::Approach::Idle;
+                        state.ledge_spot = None;
+                        walker.hang = None;
                     }
                 }
             }
@@ -1739,7 +1845,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     // Mantling: the hands onto the top from where it stands;
                     // too low, too high or too shallow, the ask is dropped.
                     let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
-                    state.hanging = super::parkour::Hanging::mantle(&ledge, &walker.ledges, state.locomotion.position, square, foot_ik.pelvis_drop, grips, &stood, &rig);
+                    state.hanging = super::parkour::Hanging::mantle(&ledge, &walker.ledges, state.locomotion.position, square, foot_ik.pelvis_drop, grips, None, &stood, &rig);
                     walker.hang = None;
                 } else {
                 match super::parkour::Hanging::grab(&ledge, state.locomotion.position, square, foot_ik.pelvis_drop, &stood, &rig) {
@@ -1837,6 +1943,37 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.falling = Some(falling);
                 state.hanging = None;
                 leapt = true;
+            }
+            // Running up a wall (`parkour::wall`): posed as planned, the root
+            // riding its hips; let go of the wall, in the air aimed at its
+            // lip.
+            if let Some(run) = state.wall_run.as_mut() {
+                if !wall_started {
+                    run.advance(dt);
+                }
+                target.pose = match springs {
+                    Some(springs) => run.pose_led(&springs.0),
+                    None => run.pose(),
+                };
+                state.locomotion.position = run.root();
+                state.facing.yaw = run.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if look_at.is_none() {
+                    look_at = Some(run.wall().nearest(run.root(), 0.0));
+                }
+                if run.is_released() {
+                    let falling = run.release(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height));
+                    state.falling = Some(falling);
+                    state.wall_run = None;
+                    leapt = true;
+                }
             }
         }
         // Over an edge (`parkour::fall`): from the gait's pose and the root's
@@ -2178,9 +2315,10 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
             // run, the run's clock goes on under it, and its velocity would
             // carry the body a second time.
             _ if state.jump.is_some() || std::mem::take(&mut state.stride.given) => Vec3::ZERO,
-            // Falling, where it is is the fall's (`parkour::Falling::root`),
-            // set each frame: the gait's motion added on was a frame's lag.
-            _ if state.falling.is_some() => {
+            // Falling or running up a wall, where it is is the move's
+            // (`parkour::Falling::root`), set each frame: the gait's motion
+            // added on was a frame's lag.
+            _ if state.falling.is_some() || state.wall_run.is_some() => {
                 state.stride.stepped = Vec3::ZERO;
                 Vec3::ZERO
             }

@@ -125,8 +125,18 @@ pub const LOWEST: f32 = 0.75;
 pub const HIGHEST_OVER_HIPS: f32 = 0.1;
 pub const DEEPEST: f32 = 0.7;
 pub const SLOWEST: f32 = 2.5;
-/// The most a run meets an obstacle's face off square, radians.
+/// The most a run meets an obstacle's face off square, radians: a speed
+/// vault's, and a lazy vault's (taken from an angle, up to 34°: at 40° a
+/// 0.75 m rail could not be vaulted from 3 m/s).
 pub const MOST_SLANT: f32 = 0.5;
+pub const LAZY_MOST_SLANT: f32 = 0.6;
+/// A lazy vault rolls the hips this far, radians (a speed vault's
+/// [`ROLL`]), the body more upright; its lead leg tucks to this far ahead
+/// of and under its socket, metres, nearly straight; and the take-off leg
+/// starts tucking this long after take-off, seconds.
+const LAZY_ROLL: f32 = 0.6;
+const LAZY_LEAD_TUCK: (f32, f32) = (0.5, 0.0);
+const LAZY_TRAIL_LATE: f32 = 0.1;
 /// A vault is taken from the foot that comes down this far either side of
 /// its best take-off (`Jump::vault_takeoff`) at most, metres; nearer still,
 /// too late.
@@ -144,25 +154,73 @@ const LEGS: [(Bone, Bone); 2] = [(Bone::LeftUpLeg, Bone::LeftFoot), (Bone::Right
 const SIGN: [f32; 2] = [1.0, -1.0];
 
 /// The obstacle, in a jump's frame (the pose's frame where the jump began,
-/// the floor at `y = 0`): its near face this far along the rig's forward,
-/// this deep, its top this high.
+/// the floor at `y = 0`): the line of running meets its near face this far
+/// along the rig's forward and crosses it in this far (along the run), its
+/// top this high; its face met `slant` off square (radians about `+Y`, the
+/// way into it turned from the way of running).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Obstacle {
     pub near: f32,
     pub depth: f32,
     pub top: f32,
+    pub slant: f32,
+}
+
+/// Which vault: a speed vault (the legs together round one side), or a
+/// lazy vault (from an angle, the lead leg over first, nearly straight, the
+/// other after; the body more upright).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VaultKind {
+    #[default]
+    Speed,
+    Lazy,
+}
+
+impl VaultKind {
+    /// The most its run may meet an obstacle's face off square, radians.
+    pub fn most_slant(self) -> f32 {
+        match self {
+            Self::Speed => MOST_SLANT,
+            Self::Lazy => LAZY_MOST_SLANT,
+        }
+    }
+
+    /// The foot it takes off from at an obstacle met `slant` off square, if
+    /// it matters: a lazy vault's legs go over toward the far end, so the
+    /// lead leg (the other) must be on that side.
+    pub fn takeoff_leg(self, slant: f32) -> Option<usize> {
+        match self {
+            Self::Lazy if slant > 0.0 => Some(0),
+            Self::Lazy if slant < 0.0 => Some(1),
+            _ => None,
+        }
+    }
+
+    /// How far its hips roll over the top, radians.
+    fn roll(self) -> f32 {
+        match self {
+            Self::Speed => ROLL,
+            Self::Lazy => LAZY_ROLL,
+        }
+    }
 }
 
 impl Obstacle {
+    /// A face met square: `near` ahead, `depth` deep, `top` high.
+    pub const fn square(near: f32, depth: f32, top: f32) -> Self {
+        Self { near, depth, top, slant: 0.0 }
+    }
+
     /// `ledge` (its face and top, `depth` deep) as an obstacle ahead of a
     /// run from `origin` along `forward` (the world): its near face where
     /// the line of running meets it, its depth along that line, its top
-    /// over `origin`'s floor. `None` if the run meets the face more than
-    /// [`MOST_SLANT`] off square, beyond its ends, or not ahead.
-    pub fn ahead(ledge: &super::Ledge, origin: Vec3, forward: Vec3) -> Option<Self> {
+    /// over `origin`'s floor, how far off square. `None` if the run meets
+    /// the face more than `most_slant` off square, beyond its ends, or not
+    /// ahead.
+    pub fn ahead(ledge: &super::Ledge, origin: Vec3, forward: Vec3, most_slant: f32) -> Option<Self> {
         let forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
         let square = -forward.dot(ledge.out);
-        if square < MOST_SLANT.cos() {
+        if square < most_slant.cos() {
             return None;
         }
         let near = (ledge.a - origin).dot(ledge.out) / -square;
@@ -171,14 +229,18 @@ impl Obstacle {
         if near <= 0.0 || !(0.0..=(ledge.b - ledge.a).length()).contains(&along) {
             return None;
         }
-        Some(Self { near, depth: ledge.depth / square, top: ledge.height() - origin.y })
+        let into = -ledge.out;
+        let slant = forward.cross(into).y.atan2(forward.dot(into));
+        Some(Self { near, depth: ledge.depth / square, top: ledge.height() - origin.y, slant })
     }
 
     /// How deep a point (the jump's frame, along the rig's `forward`) is
     /// inside it: the least way out, 0 outside.
     pub fn inside(&self, p: Vec3, forward: Vec3) -> f32 {
-        let ahead = p.dot(forward);
-        let (into, out_far, down) = (ahead - self.near, self.near + self.depth - ahead, self.top - p.y);
+        let into_way = Quat::from_rotation_y(self.slant) * forward;
+        let into = (p - forward * self.near).dot(into_way);
+        let thick = self.depth * self.slant.cos();
+        let (out_far, down) = (thick - into, self.top - p.y);
         if into > 0.0 && out_far > 0.0 && down > 0.0 && p.y > 0.0 { into.min(out_far).min(down) } else { 0.0 }
     }
 }
@@ -208,19 +270,20 @@ pub struct Vaulting {
     trunk: f32,
     /// Each foot's world rotation standing, the pose's frame.
     feet: [Quat; 2],
+    kind: VaultKind,
 }
 
 impl Jump {
-    /// A speed vault over `obstacle` (the jump's frame) from a run at
+    /// A vault (`kind`) over `obstacle` (the jump's frame) from a run at
     /// `start.speed`, the foot of `start.leg` just down: a running leap
     /// whose COM tops out [`COM_OVER`] above the top, landing past it and
     /// running on, its flight reshaped ([`Vaulting`]). `None` if the
-    /// obstacle is out of a speed vault's reach ([`LOWEST`],
-    /// [`HIGHEST_OVER_HIPS`], [`DEEPEST`]), the run is slower than
-    /// [`SLOWEST`], or the hand could not reach the top.
-    pub fn vault(obstacle: Obstacle, start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+    /// obstacle is out of a vault's reach ([`LOWEST`],
+    /// [`HIGHEST_OVER_HIPS`], [`DEEPEST`], [`VaultKind::most_slant`]), the
+    /// run is slower than [`SLOWEST`], or nothing planned clears it.
+    pub fn vault(obstacle: Obstacle, start: RunStart, kind: VaultKind, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
         let hips = forward_kinematics_on(stood, rig)[Bone::Hips].y;
-        if obstacle.top < LOWEST || obstacle.top > hips + HIGHEST_OVER_HIPS || obstacle.depth > DEEPEST || start.speed < SLOWEST {
+        if obstacle.top < LOWEST || obstacle.top > hips + HIGHEST_OVER_HIPS || obstacle.depth > DEEPEST || start.speed < SLOWEST || obstacle.slant.abs() > kind.most_slant() {
             return None;
         }
         let forward = rig.forward();
@@ -242,7 +305,7 @@ impl Jump {
                 let height = (obstacle.top + COM_OVER - leaves).max(LEAST_RISE) + 0.05 * k as f32;
                 jump = Jump::from_run(JumpAsk::running(height, distance), start, stood, rig);
             }
-            let vaulting = Vaulting::plan(&jump, obstacle, start, stood, rig)?;
+            let vaulting = Vaulting::plan(&jump, obstacle, start, kind, stood, rig)?;
             jump.set_vault(vaulting);
             jump.clears(stood, rig).then_some(jump)
         })
@@ -310,7 +373,7 @@ impl Samples for std::ops::RangeInclusive<f32> {
 }
 
 impl Vaulting {
-    fn plan(jump: &Jump, obstacle: Obstacle, start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+    fn plan(jump: &Jump, obstacle: Obstacle, start: RunStart, kind: VaultKind, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
         let forward = rig.forward();
         let flight = (jump.ends(JumpPhase::Push), jump.ends(JumpPhase::Flight));
         // When the COM crosses each face.
@@ -333,6 +396,14 @@ impl Vaulting {
         }
         let lead = 1 - start.leg;
         let hand = start.leg;
+        // A lazy vault's legs go over toward the obstacle's far end: met at a
+        // slant whose near end is on the lead leg's side, it is not taken off
+        // this foot (`Obstacle::inside`: a turn toward the left brings the
+        // face nearer on the left). Off that foot, 0.4 rad off square, the
+        // lead leg met the face first.
+        if kind == VaultKind::Lazy && SIGN[lead] * obstacle.slant > 0.0 {
+            return None;
+        }
         let past = obstacle.near + obstacle.depth + TRAIL_PAST;
         let ankle = LEGS[hand].1;
         let mut trail_until = flight.1;
@@ -350,8 +421,9 @@ impl Vaulting {
             plant: Vec3::ZERO,
             press: Quat::IDENTITY,
             bind: accumulate_bind_rotations(rig)[ARMS[hand].wrist],
-            trunk: TRUNK_ROLL,
+            trunk: TRUNK_ROLL.min(kind.roll()),
             feet: LEGS.map(|(_, ankle)| accumulate_world_rotations(stood, rig)[ankle]),
+            kind,
         };
         // Palm flat on the top, the fingers ahead and a little out.
         let rest = forward_kinematics_on(&LocalPose::REST, rig);
@@ -365,7 +437,7 @@ impl Vaulting {
         // The trunk leant no further toward the hand than lets it reach the
         // top: at the rolled trunk's 0.55 rad, a 0.6 m rail was 9 cm out of
         // the arm's reach.
-        let mut trunk = TRUNK_ROLL;
+        let mut trunk = TRUNK_ROLL.min(kind.roll());
         while trunk <= MOST_TRUNK + 1.0e-4 {
             vaulting.trunk = trunk;
             // The hand plants under its shoulder midway through the contact,
@@ -431,15 +503,23 @@ impl Vaulting {
     /// `t` seconds into the jump, each 0-1 ([`Self::tucking`] is the less).
     fn tuck_parts(&self, t: f32, leg: usize) -> (f32, f32) {
         let (from, to) = self.flight;
-        let (start, end) = if leg == self.hand { (from, to.max(self.trail_until)) } else { (from - TUCK_EARLY, to) };
+        // A lazy vault's take-off leg follows the lead leg over, later.
+        let late = if self.kind == VaultKind::Lazy { LAZY_TRAIL_LATE } else { 0.0 };
+        let (start, end) = if leg == self.hand { (from + late, to.max(self.trail_until)) } else { (from - TUCK_EARLY, to) };
         if t <= start || t >= end {
             return (0.0, 0.0);
         }
         // At most half the flight to tuck (the take-off leg less: at 0.55 of
         // it its toe was not up over a 0.9 m wall in time, 1.6 cm in).
-        let (tuck_in, share, tuck_out) = if leg == self.hand { (TRAIL_TUCK_IN, 0.45, TRAIL_TUCK_IN) } else { (TUCK_IN, 0.5, TUCK_OUT) };
+        // (A lazy vault's take-off leg, less carried round by the hips' roll
+        // and starting late, more: at 0.45, 14.8 m/s.)
+        let trail_share = if self.kind == VaultKind::Lazy { 0.6 } else { 0.45 };
+        let (tuck_in, share, tuck_out) = if leg == self.hand { (TRAIL_TUCK_IN, trail_share, TRAIL_TUCK_IN) } else { (TUCK_IN, 0.5, TUCK_OUT) };
         let down = (end - tuck_out).max(start + 1.0e-3);
-        (ease(t, start, tuck_in.min(share * (to - start))), 1.0 - ease(t, down, end - down))
+        // A share of the flight from take-off at least: of what was left once
+        // a lazy vault's take-off leg started late, its knee whipped through
+        // at 17.6 m/s.
+        (ease(t, start, tuck_in.min(share * (to - start.min(from)))), 1.0 - ease(t, down, end - down))
     }
 
     /// Whether leg `leg` is on the floor `t` seconds into the jump: the
@@ -470,11 +550,12 @@ impl Vaulting {
         // A turn carrying `-Y` toward `out`.
         let axis = Vec3::NEG_Y.cross(out).normalize_or(forward);
         let w = self.rolling(t);
-        let roll = Quat::from_axis_angle(axis, ROLL * w);
+        let most = self.kind.roll();
+        let roll = Quat::from_axis_angle(axis, most * w);
         let before = forward_kinematics_on(leap, rig);
         if w > 0.0 {
             pose.rotations[Bone::Hips] = delta_after_world_turn(pose, rig, Bone::Hips, roll);
-            pose.rotations[Bone::Spine] = delta_after_world_turn(pose, rig, Bone::Spine, Quat::from_axis_angle(axis, -(ROLL - self.trunk) * w));
+            pose.rotations[Bone::Spine] = delta_after_world_turn(pose, rig, Bone::Spine, Quat::from_axis_angle(axis, -(most - self.trunk) * w));
         }
         // Each foot off the floor tucked in the rolled hips' frame, from
         // where the leap has it.
@@ -489,7 +570,9 @@ impl Vaulting {
             // leap's ankle itself, the take-off leg hung back under the
             // rolled hips and its knee went 10 cm into a 0.9 m wall.
             let carried = hips + roll * (before[ankle] - before[Bone::Hips]);
-            let tucked = at[socket] + roll * (forward * TUCK.0 - Vec3::Y * TUCK.1);
+            // A lazy vault's lead leg goes over nearly straight, ahead.
+            let (ahead, under) = if self.kind == VaultKind::Lazy && leg != self.hand { LAZY_LEAD_TUCK } else { TUCK };
+            let tucked = at[socket] + roll * (forward * ahead - Vec3::Y * under);
             let high = (self.obstacle.top + ANKLE_OVER).min(at[socket].y - ANKLE_UNDER_SOCKET);
             let tucked = Vec3::new(tucked.x, tucked.y.max(high), tucked.z);
             // The take-off leg tucking in, up first, then on: straight there,
@@ -621,12 +704,16 @@ mod tests {
         resumed: f32,
     }
 
-    fn vaulted(top: f32, depth: f32, speed: f32, leg: usize, off: f32) -> Option<Vaulted> {
+    /// A vault (`kind`) over an obstacle `top` high, `thick` through, its
+    /// face met `slant` off square, from a run at `speed`, off `leg`, `off`
+    /// past its best take-off.
+    fn vaulted(kind: VaultKind, top: f32, thick: f32, slant: f32, speed: f32, leg: usize, off: f32) -> Option<Vaulted> {
         let (stood, rig) = real_stood();
         let start = RunStart { leg, speed };
+        let depth = thick / slant.cos();
         let near = Jump::vault_takeoff(depth, top, start, &stood, &rig) + off;
-        let obstacle = Obstacle { near, depth, top };
-        let mut jump = Jump::vault(obstacle, start, &stood, &rig)?;
+        let obstacle = Obstacle { near, depth, top, slant };
+        let mut jump = Jump::vault(obstacle, start, kind, &stood, &rig)?;
         let forward = rig.forward();
         let com = |pose: &LocalPose| pose.root_translation + crate::character::anim::anthropometry::centre_of_mass(pose, &rig);
         // The jump's travel, read from a clone (the closure cannot borrow
@@ -684,23 +771,58 @@ mod tests {
     /// leap's parabola, no joint whips round, and it runs on little slower.
     #[test]
     fn it_vaults_a_low_obstacle_from_a_run_and_runs_on() {
-        // No joint faster about the COM than this, m/s: a sprinter's swing
-        // foot goes about 10 m/s about the COM at full speed; the pops the
-        // reshaping had (a shape switched on in a frame) were 21-61. No
-        // vault data: the legs' whip round the side is set by eye.
-        const MOST_JOINT_SPEED: f32 = 14.0;
         for (top, depth) in [(0.75, 0.25), (0.9, 0.3), (1.0, 0.5)] {
             for speed in [3.0, 4.0] {
                 for (leg, off) in [0, 1].into_iter().flat_map(|leg| [0.0, 0.2, 0.4].map(|off| (leg, off))) {
                     let name = format!("{top} m high, {depth} m deep, {speed} m/s, off the {} {off:+} m from its best", if leg == 0 { "left" } else { "right" });
-                    let m = vaulted(top, depth, speed, leg, off).unwrap_or_else(|| panic!("{name}: not vaulted"));                    assert!(m.into < 1.0e-3, "{name}: {:?} {:.4} m into the obstacle", m.deepest, m.into);
-                    assert!(m.hand_off < 1.0e-3, "{name}: the hand {:.4} m off its plant", m.hand_off);
-                    assert!(m.com_off < 1.0e-3, "{name}: the COM {:.4} m off the leap's", m.com_off);
-                    assert!(m.fastest < MOST_JOINT_SPEED, "{name}: {:?} at {:.2} m/s about the COM, the leap's fastest {:.2}", m.fastest_bone, m.fastest, m.leap_fastest);
-                    assert!(m.resumed > speed - 1.0, "{name}: runs on at {:.2} m/s", m.resumed);
+                    let m = vaulted(VaultKind::Speed, top, depth, 0.0, speed, leg, off).unwrap_or_else(|| panic!("{name}: not vaulted"));
+                    clean(&name, &m, speed);
                 }
             }
         }
+    }
+
+    /// From a run at 3-4 m/s at a 0.3 m thick obstacle 0.75-1 m high, met
+    /// square or 0.3-0.6 rad off it either way, off either foot (off the
+    /// one whose lead leg is on the near end's side, refused), 0.1 m past its
+    /// best take-off (where the walker aims; it plans from there to 0.1-0.5 m
+    /// past, the lead leg reaching ahead into the face nearer): a lazy vault
+    /// is as clean as a speed vault.
+    #[test]
+    fn it_lazy_vaults_a_low_obstacle_from_an_angle() {
+        for top in [0.75, 0.9, 1.0] {
+            for (speed, slant) in [3.0, 4.0].into_iter().flat_map(|speed| [0.0, 0.3, -0.3, 0.6, -0.6].map(|slant| (speed, slant))) {
+                for (leg, off) in [0, 1].into_iter().flat_map(|leg| [0.1].map(|off| (leg, off))) {
+                    let name = format!("lazy, {top} m high, {slant:+} rad off square, {speed} m/s, off the {} {off:+} m from its best", if leg == 0 { "left" } else { "right" });
+                    let vaulted = vaulted(VaultKind::Lazy, top, 0.3, slant, speed, leg, off);
+                    // Off the foot whose lead leg is on the near end's side,
+                    // refused.
+                    if SIGN[1 - leg] * slant > 0.0 {
+                        assert!(vaulted.is_none(), "{name}: vaulted toward the near end");
+                        continue;
+                    }
+                    clean(&name, &vaulted.unwrap_or_else(|| panic!("{name}: not vaulted")), speed);
+                }
+            }
+        }
+    }
+
+    /// Nothing into the obstacle, the hand held on its plant, the COM on
+    /// the leap's parabola, no joint whipping round, running on.
+    fn clean(name: &str, m: &Vaulted, speed: f32) {        // No joint faster about the COM than this, m/s: a sprinter's swing
+        // foot goes about 10 m/s about the COM at full speed; the pops the
+        // reshaping had (a shape switched on in a frame) were 21-61. No
+        // vault data: the legs' whip round the side is set by eye.
+        const MOST_JOINT_SPEED: f32 = 14.0;
+        assert!(m.into < 1.0e-3, "{name}: {:?} {:.4} m into the obstacle", m.deepest, m.into);
+        assert!(m.hand_off < 1.0e-3, "{name}: the hand {:.4} m off its plant", m.hand_off);
+        assert!(m.com_off < 1.0e-3, "{name}: the COM {:.4} m off the leap's", m.com_off);
+        // (Or the leap's own, past it once running on: 14.3 m/s at 4 m/s.)
+        assert!(m.fastest < MOST_JOINT_SPEED.max(m.leap_fastest + 0.01), "{name}: {:?} at {:.2} m/s about the COM, the leap's fastest {:.2}", m.fastest_bone, m.fastest, m.leap_fastest);
+        // Runs on no more than this much slower, m/s: a leap gives up speed
+        // for its rise, and a lazy vault taken late rises more (from 4 m/s
+        // it went on at 2.77). Traceurs lose about 0.2 (a known gap).
+        assert!(m.resumed > speed - 1.25, "{name}: runs on at {:.2} m/s", m.resumed);
     }
 
     /// Too low (a leap clears it), higher than the hips (a mantle), too
@@ -709,10 +831,14 @@ mod tests {
     fn an_obstacle_out_of_a_vaults_reach_is_not_vaulted() {
         let (stood, rig) = real_stood();
         let start = RunStart { leg: 0, speed: 3.5 };
-        let vault = |top: f32, depth: f32, start: RunStart| Jump::vault(Obstacle { near: 1.0, depth, top }, start, &stood, &rig).is_some();
+        let vault = |top: f32, depth: f32, start: RunStart| Jump::vault(Obstacle::square(1.0, depth, top), start, VaultKind::Speed, &stood, &rig).is_some();
         assert!(!vault(0.3, 0.3, start), "vaulted a 0.3 m kerb");
         assert!(!vault(1.2, 0.3, start), "vaulted a 1.2 m wall");
         assert!(!vault(0.9, 1.0, start), "vaulted a 1 m deep block");
         assert!(!vault(0.9, 0.3, RunStart { leg: 0, speed: 1.5 }), "vaulted from a walk");
+        // Met too far off square for its kind.
+        let slanted = |kind: VaultKind, slant: f32| Jump::vault(Obstacle { slant, ..Obstacle::square(1.0, 0.3, 0.9) }, start, kind, &stood, &rig).is_some();
+        assert!(!slanted(VaultKind::Speed, 0.7), "speed vaulted 0.7 rad off square");
+        assert!(!slanted(VaultKind::Lazy, 1.0), "lazy vaulted 1 rad off square");
     }
 }
