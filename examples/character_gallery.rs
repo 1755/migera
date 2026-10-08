@@ -1433,6 +1433,19 @@ struct HangSchedule {
     /// a run's).
     wall_run_at: Option<f32>,
     wall_run_fired: bool,
+    /// Kicking off a wall among the others toward the ledge's lip
+    /// (`--wall-kick-at T`, with `--anim-speed` a run's and the heading at
+    /// the wall kicked a slant off square).
+    wall_kick_at: Option<f32>,
+    wall_kick_fired: bool,
+    /// Running along the ledge's wall (`--run-along-at T`, with
+    /// `--anim-speed` a run's and the wall beside the run).
+    run_along_at: Option<f32>,
+    run_along_fired: bool,
+    /// Sliding down the ledge's wall from hanging braced on it
+    /// (`--slide-down-at T`, after `--hang-at`).
+    slide_down_at: Option<f32>,
+    slide_down_fired: bool,
     vault_fired: bool,
 }
 
@@ -1477,6 +1490,9 @@ impl HangSchedule {
                 "--drop-down-at" => schedule.drop_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--mantle-at" => schedule.mantle_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--wall-run-at" => schedule.wall_run_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--wall-kick-at" => schedule.wall_kick_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--run-along-at" => schedule.run_along_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--slide-down-at" => schedule.slide_down_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--vault-at" => {
                     let given = args.next().unwrap_or_default();
                     let (at, kind) = given.split_once(',').unwrap_or((given.as_str(), "speed"));
@@ -1534,6 +1550,10 @@ impl HangSchedule {
             self.let_go_fired = true;
             return Some(HangAsk::LetGo);
         }
+        if !self.slide_down_fired && self.slide_down_at.is_some_and(|at| elapsed >= at) {
+            self.slide_down_fired = true;
+            return Some(HangAsk::SlideDown);
+        }
         if !self.drop_fired && self.drop_at.is_some_and(|at| elapsed >= at) {
             self.drop_fired = true;
             return Some(HangAsk::DropDown);
@@ -1556,6 +1576,14 @@ impl HangSchedule {
         if !self.wall_run_fired && self.wall_run_at.is_some_and(|at| elapsed >= at) {
             self.wall_run_fired = true;
             return Some(HangAsk::WallRun);
+        }
+        if !self.wall_kick_fired && self.wall_kick_at.is_some_and(|at| elapsed >= at) {
+            self.wall_kick_fired = true;
+            return Some(HangAsk::WallKick);
+        }
+        if !self.run_along_fired && self.run_along_at.is_some_and(|at| elapsed >= at) {
+            self.run_along_fired = true;
+            return Some(HangAsk::RunAlong);
         }
         if !self.vault_fired && self.vault_at.is_some_and(|at| elapsed >= at) {
             self.vault_fired = true;

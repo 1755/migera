@@ -528,6 +528,10 @@ pub fn place_ankle(pose: &mut LocalPose, rig: &super::rig::RigGeometry, ankle: B
     keep_ankle(pose, rig, bones, Quat::IDENTITY, hip, ankle_at, target);
 }
 
+/// Under this sine of its bend (about 6°) a knee is bent toward its
+/// kneecap, not about its own hinge ([`keep_ankle`]).
+const STRAIGHT_KNEE: f32 = 0.1;
+
 /// Puts the ankle at `target` (hips-relative) by bending the knee just
 /// enough for the distance and turning the leg about its hip onto it, with
 /// the foot turned back so it keeps its attitude in the world.
@@ -552,15 +556,31 @@ fn keep_ankle(
     let knee_at = offset_from(pose, rig, Bone::Hips, knee);
     let (femur, shin) = ((knee_at - hip).length(), (ankle_at - knee_at).length());
     let hinge = (knee_at - hip).cross(ankle_at - knee_at);
-    // A dead-straight leg has no hinge to bend about: it is only aimed.
-    let unfold = if hinge.length_squared() < 1.0e-12 {
-        Quat::IDENTITY
+    // Interior knee angles now and for the distance wanted.
+    let interior = |reach: f32| ((femur * femur + shin * shin - reach * reach) / (2.0 * femur * shin)).clamp(-1.0, 1.0).acos();
+    // Nearly straight, its hinge is noise: bent toward its kneecap (the
+    // way the thigh turned from rest turns the rest's forward), eased into
+    // its own hinge as it bends. Kept to its own, a straight leg coasting
+    // in a fall flipped its hinge between frames and the knee swung 24 cm.
+    let straight = hinge.length() / (femur * shin).max(1.0e-9);
+    let unfold = if straight < STRAIGHT_KNEE {
+        use super::rig::accumulate_world_rotations;
+        let line = (ankle_at - hip).normalize_or_zero();
+        let thigh = accumulate_world_rotations(pose, rig)[socket] * accumulate_world_rotations(&LocalPose::REST, rig)[socket].inverse();
+        let kneecap = thigh * rig.forward();
+        let natural = (kneecap - line * kneecap.dot(line)).cross(line).normalize_or_zero();
+        if natural == Vec3::ZERO {
+            Quat::IDENTITY
+        } else {
+            // Bent now (signed: + toward the kneecap) and as wanted.
+            let side = if hinge.dot(natural) >= 0.0 { 1.0 } else { -1.0 };
+            let bent = straight.clamp(0.0, 1.0).asin() * side;
+            let wanted = std::f32::consts::PI - interior((target - hip).length());
+            let axis = natural.lerp(hinge.normalize_or(natural) * side, straight / STRAIGHT_KNEE).normalize_or(natural);
+            Quat::from_axis_angle(axis, wanted - bent)
+        }
     } else {
         let hinge = hinge.normalize();
-        // Interior knee angles now and for the distance wanted.
-        let interior = |reach: f32| {
-            ((femur * femur + shin * shin - reach * reach) / (2.0 * femur * shin)).clamp(-1.0, 1.0).acos()
-        };
         let bend = interior((ankle_at - hip).length()) - interior((target - hip).length());
         // Whichever way about the hinge opens the knee by `bend`.
         [bend, -bend]
@@ -1101,6 +1121,62 @@ mod tests {
             (5.0..=15.0).contains(&degrees),
             "the default knee flex should be a relaxed 5-15 degrees, got {degrees}",
         );
+    }
+
+    /// A leg a hair off straight, either way (its own hinge then noise),
+    /// bent to an ankle short of its reach bends its knee forward, nearly
+    /// the same both times: kept to its own hinge, a straight leg coasting
+    /// in a fall flipped it between frames and the knee swung 24 cm.
+    #[test]
+    fn a_nearly_straight_leg_bends_its_knee_forward_whichever_way_it_was_off() {
+        use crate::character::anim::gltf_rig::puppet_base_as_rendered;
+        use crate::character::anim::rig::offset_from;
+        let rig = puppet_base_as_rendered();
+        let stood = stance_on_rig(&crate::character::anim::poses::relaxed_stand(), DEFAULT_KNEE_FLEX, &rig);
+        let leg = (offset_from(&LocalPose::REST, &rig, Bone::RightUpLeg, Bone::RightFoot)).length();
+        // Which side of its socket-ankle line the knee is, ahead.
+        let ahead = |pose: &LocalPose, line: Vec3| {
+            let (socket, knee) = (offset_from(pose, &rig, Bone::Hips, Bone::RightUpLeg), offset_from(pose, &rig, Bone::Hips, Bone::RightLeg));
+            let line = line.normalize();
+            ((knee - socket) - line * (knee - socket).dot(line)).dot(rig.forward())
+        };
+        let bent = |off: f32| {
+            let mut pose = stood;
+            pose.rotations[Bone::RightLeg] = Quat::from_axis_angle(KNEE_AXIS, off);
+            let socket = offset_from(&pose, &rig, Bone::Hips, Bone::RightUpLeg);
+            (pose, socket, offset_from(&pose, &rig, Bone::Hips, Bone::RightFoot) - socket)
+        };
+        // Straight: the rig's bind knee is bent (2.5 cm ahead), about 0.11
+        // rad about `KNEE_AXIS` straightens it.
+        let (mut lo, mut hi) = (0.0f32, 0.3f32);
+        for _ in 0..30 {
+            let mid = 0.5 * (lo + hi);
+            let (pose, _, line) = bent(mid);
+            if ahead(&pose, line) > 0.0 { lo = mid } else { hi = mid }
+        }
+        let straight = 0.5 * (lo + hi);
+        let mut sides = Vec::new();
+        let knees: Vec<Vec3> = [straight + 0.02, straight - 0.02, straight]
+            .into_iter()
+            .map(|off| {
+                let (mut pose, socket, line) = bent(off);
+                assert!(((line.length() - leg) / leg).abs() < 3.0e-3, "the leg starts straight: {} of {leg}", line.length());
+                sides.push(ahead(&pose, line));
+                let straight = line;
+                let target = socket + straight.normalize() * (0.85 * leg);
+                place_ankle(&mut pose, &rig, Bone::RightFoot, target);
+                let ankle = offset_from(&pose, &rig, Bone::Hips, Bone::RightFoot);
+                assert!((ankle - target).length() < 1.0e-4, "{off}: the ankle {ankle} should reach {target}");
+                let out = ahead(&pose, target - socket);
+                assert!(out > 0.1, "{off}: the knee should bend forward, {out} ahead");
+                offset_from(&pose, &rig, Bone::Hips, Bone::RightLeg)
+            })
+            .collect();
+        // Off straight both ways to start with.
+        assert!(sides[0] * sides[1] < 0.0, "the two legs should start bent opposite ways: {sides:?}");
+        // Nearly the same knee each way (the legs start 0.04 rad apart;
+        // flipped, it went 23 cm behind).
+        assert!(knees.windows(2).all(|w| (w[0] - w[1]).length() < 0.015), "nearly the same knee each way: {knees:?}");
     }
 
     #[test]

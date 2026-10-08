@@ -7,7 +7,7 @@ tags:
   - ik
   - locomotion
   - correctness
-updated: 2026-10-05
+updated: 2026-10-09
 ---
 
 # IK and locomotion
@@ -31,6 +31,7 @@ margins are deadbands.
 | [Foot IK on uneven ground has two feedback loops](./foot-ik-feedback-loops.md) | Sample ground from the animated pose, keep corrections out of spring state, solve on the real rig, keep the toe offset | before changing foot IK or grounding in `plugin.rs`/`legik.rs` |
 | [Feet keep clear of obstacles in the foot IK, as a capsule against a probe](./feet-keep-clear-of-obstacles-in-the-foot-ik.md) | `AnimObstacles` moves each toe target and planted lock so the heel-to-tip line keeps 8 cm from obstacles; in the IK stage (not on the walker's pose, which needed 12 cm for spring lag), as a line not points, moves continuous round corners | before changing obstacles.rs, foot avoidance, or adding a physics-backed obstacle probe |
 | [A two-bone IK knee hinge must be square to the line to the target](./a-knee-hinge-must-be-square-to-the-line-to-the-target.md) | legik turned the leg about the raw knee axis; a sideways-leaning hip-to-ankle line put the ankle off target and the foot turned 9° about its planted toe. Orthogonalize the axis first; test sideways targets on the real rig | before writing or changing a two-bone IK, or when a planted foot turns about its toe |
+| [A near-straight leg is bent toward its kneecap, not about its own hinge](./a-near-straight-leg-bends-toward-its-kneecap.md) | `keep_ankle` bent the knee about thigh × shin; within ~6° of straight that hinge is noise and flipped between frames (a fall's knee swung 24 cm in one). Below sin 0.1 it bends toward the kneecap, eased into its own hinge; test both sides of a straight found by bisection | before changing `keep_ankle`/`place_ankle` or any two-bone IK fed a pose that can come straight |
 | [Two-bone IK pivots at the upper joint, not the root](./two-bone-ik-pivots-at-upper-not-root.md) | Measuring reach from the root socket lands short by the socket offset (0.14 m) | before writing an IK solver or reach test, or when a solve lands short by a constant |
 | [Replay a recorded gait by segment attitudes](./replay-a-recorded-gait-by-segment-attitudes.md) | Drive the thigh from vertical and the foot by its pitch, zeros geometric; the book's hip and ankle angles carry trunk-marker pitch and fibula-line offsets | before driving a rig from recorded joint angles, or changing `walk.rs`/`reference.rs` |
 | [A walking foot touches the ground at its heel, ball and toe](./walking-foot-rocker-contact-model.md) | Three contact points; one set of support weights for pelvis height, root motion and drift correction | before changing foot contact, pelvis height or root motion |

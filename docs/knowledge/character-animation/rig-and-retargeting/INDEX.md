@@ -8,7 +8,7 @@ tags:
   - retargeting
   - math
   - correctness
-updated: 2026-09-29
+updated: 2026-10-09
 ---
 
 # Rig and retargeting
@@ -30,6 +30,7 @@ note here is a way that gap produced a bug the test suite could not see.
 | [Synthetic-rig tests are blind to retargeting](./synthetic-rig-tests-are-blind-to-retargeting.md) | `rig::forward_kinematics` never reads bind rotations, so it cannot catch retargeting bugs | before trusting a synthetic-rig test for real-rig output |
 | [Conjugate pose deltas by the bind rotation](./conjugate-pose-deltas-by-the-bind-rotation.md) | Write `bind⁻¹·delta·bind`, or the angle lands on the wrong axis; sabotage your regression test | before writing pose rotations to a glTF rig |
 | [A pose delta names a world axis](./a-pose-delta-names-a-world-axis.md) | FK conjugates by the accumulated bind; world corrections use `P = W(parent)·bind_local·B⁻¹` (026d9e8) | before composing rotations in `rig.rs`, `legik`, `armik` or `lookat` |
+| [Rotations turned over and over in one frame need renormalizing](./rotations-turned-over-and-over-in-a-frame-need-renormalizing.md) | `delta_after_world_turn` is unnormalized; re-posed through passes, a foot's norm compounded and FK grew it 0.7 % in a frame. Normalize in the caller: at the source a <1e-6 change flips the ladder's rungs-apart climb | before re-posing a bone many times a frame, or when a held point drifts while its joint reads exact |
 | [A clip's world positions carry its rig's bind shape](./a-clips-positions-carry-its-rigs-bind-shape.md) | Converted from the straight T-pose, a clip stores its source rig's bind curvature as a bend, and the target bends its own bind by it again: `relaxed_stand`'s back was over-arched. Convert against the source's bind; stances are balanced over the feet | before importing, rebasing or judging a reference pose |
 | [A pose delta's world is the character's frame](./a-pose-deltas-world-is-the-characters-frame.md) | Deltas turn with the character; convert in the bind-rooted rig and apply the turn at the scene boundary; the rest pose can't catch it | before converting pose deltas to or from scene rotations (ragdoll targets, read-back) |
 | [Bind a rig at its own facing, not its spawn heading](./bind-a-rig-at-its-own-facing-not-its-spawn-heading.md) | Binding reads the hips' parent world rotation; spawned turned, it captured the heading and `relaxed_stand` held its hands overhead; bind with the facing correction, without the heading | before binding a rig spawned at any yaw, or adding a spawn path |

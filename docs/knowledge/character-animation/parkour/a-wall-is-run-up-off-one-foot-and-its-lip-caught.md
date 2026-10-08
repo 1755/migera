@@ -94,7 +94,9 @@ nearer the best. It does not go round the wall while running at it.
 ## Traps
 
 - **An arm swung straight up points at the wall mid-way**, 7-17 cm in; the
-  elbows bend through the swing, and the wrists are kept off the face.
+  elbows bend through the swing, and the wrists are kept off the face. An
+  elbow within 0.2 m of the face is turned along it (taken off near, a
+  kick's elbow went 2-8 cm in).
 - **A knee aimed one way before the foot meets the wall and another way
   after** turned round at 16 m/s.
 - **A foot's move to its hold must not start before the take-off itself**:
@@ -129,7 +131,13 @@ drove up with its arms overhead, and caught the lip, hanging braced.
 
 - **Higher walls**: a second wall step (a hand or a foot) goes higher
   (Lawson). This rig, its arms 17 % short, catches 2.6 m.
-- **A run along a wall, a wall jump, a slide down**: the rest of step 8.
+- **Sliding down a wall missed**: a run up too high falls back free; the
+  slide down is built from a braced hang only ([its
+  note](./a-wall-is-slid-down-as-a-braked-fall.md)). The kick off a wall
+  toward another's lip is built on this move ([its
+  note](./a-wall-is-kicked-off-toward-a-lip-round-a-corner.md)); the run
+  along a wall is a lifted leap instead ([its
+  note](./a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md)).
 
 ## Related
 
@@ -138,3 +146,4 @@ drove up with its arms overhead, and caught the lip, hanging braced.
 - [A low obstacle is speed-vaulted as a reshaped running leap](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md) — same-pattern: the walker's pace adjusted to a take-off.
 - [Parkour movement data](./parkour-movement-data.md) — deeper: Croft's and Lawson's wall-climb numbers.
 - [Synthetic rig's leg segments are shifted a joint](../rig-and-retargeting/synthetic-rig-leg-segments-are-shifted-a-joint.md) — same-trap: why its cost is measured on the real rig.
+- [A wall is kicked off toward a lip round a corner](./a-wall-is-kicked-off-toward-a-lip-round-a-corner.md) — applies: the tic-tac, this move's take-off and wall phase with a leave planned for another wall's lip.

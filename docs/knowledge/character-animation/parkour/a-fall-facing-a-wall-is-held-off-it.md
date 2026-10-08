@@ -7,7 +7,7 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-08
+updated: 2026-10-09
 verified: 2026-10-08
 code:
   - src/character/anim/parkour/fall.rs
@@ -72,7 +72,11 @@ wrists are held 0.1 m off it, eased in as the arms are let go. Each arm is
 solved toward the shifted wrist with its own elbow plane. The ankles move
 out as far as the levelling toes would go in, and in the air as far as a
 knee would come within 2 cm. A running jump's legs reach ahead for its
-landing; the hips held off, a knee went 5 cm in.
+landing; the hips held off, a knee went 5 cm in. Each ankle move brings
+the knee about half the way, so it is moved up to six times: in two, a wall
+kick's driven knee, turned to face the lip, stayed 1.5 cm in. Sliding down
+the wall instead ([its note](./a-wall-is-slid-down-as-a-braked-fall.md)),
+the hands are held on the face, not off it.
 
 **A hurt landing against a wall does not lean over onto its hands.** It
 keeps the deeper knees and the hold. The room for the lean (0.65 m) pushed

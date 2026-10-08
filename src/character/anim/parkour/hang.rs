@@ -73,6 +73,19 @@ pub enum HangAsk {
     /// back and land if out of reach (`wall::WallRun`): taken from the foot
     /// that comes down nearest the best take-off.
     WallRun,
+    /// Running at a wall among [`Walker::ledges`](crate::character::anim::Walker::ledges)
+    /// up to `wall::MOST_KICK_SLANT` off square, kick off it toward it (its
+    /// lip) and catch it (a tic-tac, `wall::WallRun::kick`): taken as a run
+    /// up is, off the foot farther from the wall kicked.
+    WallKick,
+    /// Running beside it, a wall, run along it: two steps on its face, then
+    /// land and run on (`Jump::along_wall`), taken off the foot farther
+    /// from it once beside it.
+    RunAlong,
+    /// Hanging braced from it, slide down its wall, hands and feet braking
+    /// on the face, and land ([`Hanging::slide_down`]); hanging free, or
+    /// over a step, let go instead.
+    SlideDown,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -369,6 +382,35 @@ impl Hanging {
     /// The hips' velocity hanging now (the world).
     pub fn hips_velocity(&self) -> Vec3 {
         self.hang_velocity()
+    }
+
+    /// Sliding down the wall from a braced hang (step 8): the fall letting
+    /// go makes, without the feet's push off the wall, its hands and feet
+    /// pressed to the face braking it (`Falling::slide`), landing softer.
+    /// `None` hanging free, over a step under the feet (let go onto it), or
+    /// with no wall reaching the ground it lands on.
+    pub fn slide_down(&self, ground: &dyn Fn(Vec3) -> Option<f32>, stood: &LocalPose, rig: &RigGeometry) -> Option<super::Falling> {
+        if !self.braced {
+            return None;
+        }
+        let pose = self.pose(rig);
+        let root = self.root();
+        let at = forward_kinematics_on(&pose, rig);
+        let feet = LEGS.map(|(_, _, ankle, _)| root + self.turn * at[ankle]);
+        let middle = 0.5 * (feet[0] + feet[1]);
+        let at_feet = |point: Vec3| ground(Vec3::new(point.x, middle.y, point.z));
+        let floor = at_feet(root).unwrap_or(0.0);
+        let under = feet.iter().filter_map(|&foot| at_feet(foot)).fold(floor, f32::max);
+        if under > floor + super::fall::STEP_DOWN {
+            return None;
+        }
+        let mut falling = super::Falling::off(root, self.yaw, self.hang_velocity(), &pose, floor, self.drop, stood, rig);
+        falling.against(&[self.ledge], rig);
+        if !falling.faces_wall() {
+            return None;
+        }
+        falling.slide();
+        Some(falling)
     }
 
     /// What letting go falls with: the hips' velocity, and braced, a push
@@ -1411,6 +1453,106 @@ mod tests {
             assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the wall falling");
             assert!(from_standing < 0.01 && falling.root().y.abs() < 1.0e-3, "{name}: {from_standing:.4} m from standing, the root {:.4} m up", falling.root().y);
         }
+    }
+
+    /// Hung braced from walls 3, 4.5 and 6.5 m high, it slides down: the
+    /// pose continuous as it lets go, nothing into the wall, the hands on the
+    /// face sliding down it, no joint whipping round, touching down no
+    /// faster than 0.75 of letting go's, landing and standing; from 6.5 m,
+    /// where letting go is fatal, it lands. Hanging free, it does not slide.
+    #[test]
+    fn sliding_down_a_wall_brakes_the_fall_and_lands() {
+        let (stood, rig) = real_stood();
+        let mut faults = Vec::new();
+        for height in [3.0, 4.5, 6.5] {
+            let name = format!("a {height} m wall");
+            let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, height, 1.0);
+            let mut hanging = hung_from(&ledge, &[]);
+            hanging.advance(1.0);
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let held = BoneSet::from_fn(|bone| hanging.root() + Quat::from_rotation_y(hanging.facing()) * at[bone]);
+            let Some(mut falling) = hanging.slide_down(&|_| Some(0.0), &stood, &rig) else {
+                faults.push(format!("{name}: not slid down"));
+                continue;
+            };
+            // Each touches down as fast as its hips fall the frame before.
+            let touch_speed = |falling: &mut crate::character::anim::parkour::Falling| {
+                let mut last = falling.hips().y;
+                let mut speed = 0.0;
+                while !falling.is_landed() {
+                    falling.advance(DT);
+                    speed = (last - falling.hips().y) / DT;
+                    last = falling.hips().y;
+                }
+                speed
+            };
+            let free = let_go(&hanging);
+            let free_speed = touch_speed(&mut free.clone());
+            if !free.is_fatal() == (height > 6.0) {
+                faults.push(format!("{name}: letting go fatal {}", free.is_fatal()));
+            }
+            if falling.is_fatal() {
+                faults.push(format!("{name}: sliding down fatal"));
+            }
+            let slid_speed = touch_speed(&mut falling.clone());
+            if slid_speed > 0.75 * free_speed {
+                faults.push(format!("{name}: touched down at {slid_speed:.2} m/s, letting go {free_speed:.2}"));
+            }
+            let (mut jump, mut into, mut fastest, mut hands_off) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let mut last: Option<BoneSet<Vec3>> = Some(held);
+            while !falling.is_done() {
+                falling.advance(DT);
+                let pose = falling.pose(&rig);
+                let turn = Quat::from_rotation_y(falling.facing());
+                let at = forward_kinematics_on(&pose, &rig);
+                let now = BoneSet::from_fn(|bone| falling.root() + turn * at[bone]);
+                into = into.max(into_block(&ledge, &pose, falling.root(), falling.facing(), &rig));
+                if let Some(before) = last.as_ref() {
+                    let moved = Bone::ALL.iter().map(|&bone| ((now[bone] - now[Bone::Hips]) - (before[bone] - before[Bone::Hips])).length() / DT).fold(0.0, f32::max);
+                    if jump == 0.0 {
+                        jump = Bone::ALL.iter().map(|&bone| (now[bone] - before[bone]).length()).fold(0.0, f32::max).max(1.0e-9);
+                    } else {
+                        fastest = fastest.max(moved);
+                    }
+                }
+                // The hands on the face in the air, well under its top.
+                if !falling.is_landed() {
+                    for chain in ARMS {
+                        let wrist = now[chain.wrist];
+                        if wrist.y < ledge.height() - 0.3 {
+                            hands_off = hands_off.max((ledge.out_of(wrist) - 0.04).abs());
+                        }
+                    }
+                }
+                last = Some(now);
+            }
+            let standing = forward_kinematics_on(&stood, &rig);
+            let end = forward_kinematics_on(&falling.pose(&rig), &rig);
+            let from_standing = Bone::ALL.iter().map(|&bone| (end[bone] - standing[bone]).length()).fold(0.0, f32::max);
+            eprintln!("{name}: jump {jump:.4} into {into:.4} fastest {fastest:.1} hands {hands_off:.4} touch {slid_speed:.2} (free {free_speed:.2})");
+            if jump >= 0.03 {
+                faults.push(format!("{name}: a joint moved {jump:.4} m the frame it let go"));
+            }
+            if into >= 1.0e-3 {
+                faults.push(format!("{name}: a joint {into:.4} m into the wall"));
+            }
+            if fastest >= 14.0 {
+                faults.push(format!("{name}: a joint {fastest:.1} m/s about the hips"));
+            }
+            if hands_off >= 0.01 {
+                faults.push(format!("{name}: a hand {hands_off:.4} m off the face"));
+            }
+            if from_standing >= 0.01 || falling.root().y.abs() >= 1.0e-3 {
+                faults.push(format!("{name}: {from_standing:.4} m from standing, the root {:.4} m up", falling.root().y));
+            }
+        }
+        let free = Ledge { wall_below: 0.15, ..Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 4.0, 3.0, 1.0) };
+        let mut hanging = hung_from(&free, &[]);
+        hanging.advance(1.0);
+        if hanging.slide_down(&|_| Some(0.0), &stood, &rig).is_some() {
+            faults.push("hanging free: slid down".into());
+        }
+        assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults.join("\n"));
     }
 
     /// Hung braced from a 3.6 m wall over a 1.4 m step out from it, it lets

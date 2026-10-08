@@ -82,6 +82,14 @@ enum Gait {
     /// Running up a 2.5 m wall at 4 m/s and catching its lip: the run up
     /// and the flight to the catch, the catch tested each frame of it.
     WallRun,
+    /// Kicking off a wall met 0.75 rad off square at 4 m/s toward a 2.5 m
+    /// lip at right angles to it (a tic-tac) and catching it.
+    WallKick,
+    /// Running along a wall 0.55 m off at 4 m/s: two steps on its face,
+    /// landing and running on.
+    RunAlong,
+    /// Sliding down a 4.5 m wall from a braced hang, to standing.
+    Slide,
 }
 
 fn main() {
@@ -119,16 +127,16 @@ fn main() {
     // that.
     let rig = match gait {
         #[cfg(feature = "real_rig")]
-        Gait::WallRun => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
         #[cfg(not(feature = "real_rig"))]
-        Gait::WallRun => panic!("--gait wall-run needs --features real_rig: only the real rig can plan it"),
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong => panic!("--gait wall-run, wall-kick and run-along need --features real_rig: only the real rig can plan them"),
         _ => migera::character::anim::rig::RigGeometry::default(),
     };
     let stood = migera::character::anim::stance::stance_on_rig(&poses::relaxed_stand(), migera::character::anim::stance::DEFAULT_KNEE_FLEX, &rig);
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -212,6 +220,16 @@ fn main() {
                 falling.ends()[2]
             };
             Some((falling, seconds, catch.then_some(lower)))
+        }
+        // Sliding down a 4.5 m wall from hanging braced on it, to standing.
+        Gait::Slide => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 4.5, 1.0);
+            let mut hanging = Hanging::hung(&ledge, &[], Vec3::ZERO, 0.0, [None; 2], &stood, &rig);
+            hanging.advance(1.0);
+            let falling = hanging.slide_down(&|_| Some(0.0), &stood, &rig).expect("a slide down a braced hang's wall");
+            let seconds = falling.ends()[2];
+            Some((falling, seconds, None))
         }
         // A standing jump off a 3 m top falling short of a wall as high
         // 1.7 m off: from leaving the top to the catch.
@@ -316,6 +334,15 @@ fn main() {
             let near = Jump::vault_takeoff(0.3, 0.9, start, &stood, &rig);
             Some(Jump::vault(Obstacle::square(near, 0.3, 0.9), start, kind, &stood, &rig).expect("a 0.9 m wall vaulted"))
         }
+        Gait::RunAlong => {
+            use migera::character::anim::jump::{Jump, RunStart};
+            use migera::character::anim::parkour::{along::AlongWall, Ledge};
+            // A 3 m wall 0.55 m to the left, along the run.
+            let (forward, left) = (rig.forward(), rig.left());
+            let wall = Ledge::wall(left * 0.55 + forward * 2.0, -left, 8.0, 3.0, 1.0);
+            let start = RunStart { leg: AlongWall::takeoff_leg(&wall, 0.0, &rig), speed: 4.0 };
+            Some(Jump::along_wall(&wall, Vec3::ZERO, 0.0, start, &stood, &rig).expect("a run along a wall"))
+        }
         _ => None,
     };
     // A sneak's walk, as the walker sets it once a frame (the crouch posed
@@ -347,14 +374,30 @@ fn main() {
     // A run up a wall: the clock covers the run up and the flight to the
     // catch.
     let wall_running = match gait {
-        Gait::WallRun => {
+        Gait::WallRun | Gait::WallKick => {
             use migera::character::anim::jump::RunStart;
             use migera::character::anim::parkour::{wall::WallRun, Hanging, Ledge};
-            let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 4.0, 2.5, 1.0);
-            let yaw = Hanging::square(&wall, rig.forward());
-            let start = RunStart { leg: 0, speed: 4.0 };
-            let origin = Vec3::new(0.0, 0.0, wall.a.z + WallRun::takeoff(start, &stood, &rig));
-            let run = WallRun::plan(&wall, origin, yaw, start, 0.0, &stood, &rig).expect("a 2.5 m wall run up");
+            let run = if matches!(gait, Gait::WallRun) {
+                let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 4.0, 2.5, 1.0);
+                let yaw = Hanging::square(&wall, rig.forward());
+                let start = RunStart { leg: 0, speed: 4.0 };
+                let origin = Vec3::new(0.0, 0.0, wall.a.z + WallRun::takeoff(start, 0.0, &stood, &rig));
+                WallRun::plan(&wall, origin, yaw, start, 0.0, &stood, &rig).expect("a 2.5 m wall run up")
+            } else {
+                // A tall wall met 0.75 rad off square, kicked off toward a
+                // 2.5 m lip at right angles to it (as `wall`'s tests do).
+                let slant = 0.75f32;
+                let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 8.0, 4.0, 1.0);
+                let target = Ledge::wall(Vec3::new(-2.2, 0.0, 0.5), Vec3::X, 3.0, 2.5, 1.0);
+                let yaw = Hanging::square(&wall, rig.forward()) + slant;
+                let forward = bevy::math::Quat::from_rotation_y(yaw) * rig.forward();
+                let leg = WallRun::kick_leg(&wall, yaw, &stood, &rig);
+                let start = RunStart { leg, speed: 4.0 };
+                let hit = Vec3::new(-2.2 + 1.8 - 0.6 * slant.tan(), 0.0, -1.0);
+                let origin = hit - forward * WallRun::kick_takeoff(start, slant, &stood, &rig);
+                WallRun::kick(&wall, &target, origin, yaw, start, 0.0, &stood, &rig).expect("a kick toward a 2.5 m lip")
+            };
+            let wall = run.lip();
             let mut probe = run.clone();
             while !probe.is_released() {
                 probe.advance(DT);
@@ -497,6 +540,9 @@ fn main() {
         Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
         Gait::Mantle => "   mantling onto a 1.1 m wall from standing".to_string(),
         Gait::WallRun => "   running up a 2.5 m wall at 4 m/s and catching its lip".to_string(),
+        Gait::WallKick => "   kicking off a wall at 4 m/s, 0.75 rad off square, and catching a 2.5 m lip round the corner".to_string(),
+        Gait::RunAlong => "   running along a wall 0.55 m off at 4 m/s and running on".to_string(),
+        Gait::Slide => "   sliding down a 4.5 m wall from a braced hang".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
@@ -625,6 +671,9 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("mantle") => Gait::Mantle,
         Some("vault") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Speed),
         Some("wall-run") => Gait::WallRun,
+        Some("wall-kick") => Gait::WallKick,
+        Some("run-along") => Gait::RunAlong,
+        Some("wall-slide") => Gait::Slide,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),

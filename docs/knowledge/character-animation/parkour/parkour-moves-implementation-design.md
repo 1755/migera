@@ -8,7 +8,7 @@ tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
+updated: 2026-10-09
 code:
   - src/character/anim/ladder.rs
   - src/character/anim/jump.rs
@@ -244,8 +244,14 @@ its API, its tests, and when it is done.
 - **Tests.** Feet planted on the wall during contact; the flight between
   ballistic; the body leant clear of the wall.
 - **Built** 2026-10-09: [the run up a wall and the catch of its
-  lip](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md). The run
-  along a wall, the wall jump and the slide down are not built yet.
+  lip](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md), and [the
+  kick off a wall toward another's
+  lip](./a-wall-is-kicked-off-toward-a-lip-round-a-corner.md) (a tic-tac,
+  the wall jump's first form), and [the run along a
+  wall](./a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md) (two steps,
+  then on), and [the slide down a wall from a braced
+  hang](./a-wall-is-slid-down-as-a-braked-fall.md). Kicks chained wall to
+  wall are not built yet.
 
 ### Step 9: bars, poles and ropes
 
@@ -340,8 +346,14 @@ its API, its tests, and when it is done.
   2026-10-09. Not built: the kong vault.
 - **Step 8**, walls: the run up a wall, off one foot into a catch of its
   lip, built 2026-10-09 ([its
-  note](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md)). The run
-  along a wall, the wall jump and the slide down: not built.
+  note](./a-wall-is-run-up-off-one-foot-and-its-lip-caught.md)); the kick
+  off a wall toward another's lip, the same day ([its
+  note](./a-wall-is-kicked-off-toward-a-lip-round-a-corner.md)); the run
+  along a wall, the same day ([its
+  note](./a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md)); the slide
+  down a wall, the same day ([its
+  note](./a-wall-is-slid-down-as-a-braked-fall.md)). Chained kicks: not
+  built.
 - Steps 9-10: not started.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,

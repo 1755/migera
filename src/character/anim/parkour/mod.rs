@@ -2,6 +2,7 @@
 //! (`docs/knowledge/character-animation/parkour/`): so far, grabbing a
 //! ledge, hanging from it and climbing up onto it ([`hang`]).
 
+pub mod along;
 pub mod fall;
 pub mod geometry;
 pub mod hang;

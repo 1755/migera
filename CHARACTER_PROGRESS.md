@@ -41,6 +41,147 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 8 (fourth part): sliding down a wall
+
+Asked `HangAsk::SlideDown` hanging braced from a wall that reaches the
+ground, it slides down the face (`Hanging::slide_down`). That is the let-go
+fall without the feet's push off the wall, with half its gravity braked off
+(`Falling::slide`): the palms held on the face above the shoulders, the feet
+braced on it for 60 % of the flight. It lands as from the drop that speed
+comes from, so from 6.5 m, where letting go is fatal, it lands. Hanging free
+or over a step, it lets go instead. Note: [a wall is slid down as a braked
+fall](docs/knowledge/character-animation/parkour/a-wall-is-slid-down-as-a-braked-fall.md).
+
+- **Fixed on the way:**
+  - the palms at the reaching arms' height stayed 7-10 cm off the face;
+    they are now no higher than 0.25 m over their shoulders;
+  - pulled down as they came under the top, the forearms went 21 m/s; they
+    now come down over 0.35 s from letting go;
+  - let go of the face at touchdown, a hand went 17.7 m/s; it now lets go
+    over 0.25 s;
+  - an arm passing straight turned its elbow round at 16-19 m/s; the elbows
+    now get a fixed pole, down and out, eased in over 0.1 s;
+  - the walker's fall loop reset the arms each frame; it skips that while
+    sliding.
+- **Headless** (braced hangs 3, 4.5 and 6.5 m up):
+  - the let-go's first frame under 1.9 cm;
+  - nothing into the wall beyond 0.1 mm;
+  - no joint over 13.1 m/s;
+  - the palms within 6 mm of the face;
+  - touchdown at 0.71 of letting go's speed (3.21 against 4.53 m/s from
+    3 m);
+  - all land standing.
+- **Live** (Xvfb, 1/30 s steps, gizmos on and mesh off, then mesh on): from
+  a 4.5 m block's top, dropped into a hang, slid down palms flat and toes
+  braced, landed.
+- **Gallery:** `--slide-down-at T` (after `--drop-down-at`).
+- **Cost:** `anim_bench --gait wall-slide`, 38 µs at p50 (letting go 26).
+
+Step 8 is built but for chained kicks wall to wall. 1265 library tests
+pass; clippy is clean with and without `real_rig`.
+
+### Parkour, step 8 (third part): running along a wall
+
+Asked `HangAsk::RunAlong` with `Walker::ledge` a wall beside the run (0.4-
+0.75 m off, within 0.3 rad of parallel), it takes off at the next contact of
+the foot farther from the wall. The move is a running leap that lands on the
+near foot and runs on, held up by two pushes off the face (`jump::Lift`, a
+new `JumpAsk` field: sin² pulses of 0.7 and 0.6 m/s, the flight's time and
+landing fall solved with them). Its flight is reshaped onto the wall
+(`parkour::along::AlongWall`): the hips leant 0.45 rad off, the near then the
+far foot each held on a hold, sole to the face, as the body passes. Notes: [a
+wall is run along on two steps of a lifted
+leap](docs/knowledge/character-animation/parkour/a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md),
+[rotations turned over and over in a frame need
+renormalizing](docs/knowledge/character-animation/rig-and-retargeting/rotations-turned-over-and-over-in-a-frame-need-renormalizing.md).
+
+- **Fixed on the way:**
+  - the ball centred under the hips put the ankle 0.13 m behind, and the far
+    foot fell off its hold at 4 m/s; the ankle is centred;
+  - the far foot brought on in 0.12 s went 18-22 m/s; it now has all the
+    time from take-off;
+  - the near foot eased toward a hold running back past the body went
+    18 m/s; it eases toward where the hold will be at contact;
+  - a stepping knee aimed up leant into the face, and aimed up and out it
+    swung round at 35 m/s; it aims ahead and a little up, and the ankle
+    moves out to keep the knee and ball off the face;
+  - a foot re-posed through passes compounded its rotation's norm until FK
+    grew it 0.7 % in a frame; the leg is normalized after each pass.
+    Normalizing in `delta_after_world_turn` instead (a <1e-6 change) failed
+    five ladder tests on its rungs-apart ladder: a hair-trigger in its
+    climbing pattern, recorded, not fixed.
+- **Headless** (a wall on either side, 0.45-0.65 m off, 3.5-4.5 m/s; 18 of
+  18):
+  - each foot held within 0.0005 mm;
+  - nothing into the wall;
+  - no joint over 13.9 m/s about the hips;
+  - holds 0.73-0.75 m up;
+  - the COM's acceleration stepping at most 2.7 m/s² a frame;
+  - every one runs on.
+
+  Refused: off the near foot, 1.2 or 0.1 m off, 0.4 rad askew, a 1 m wall.
+- **Live** (Xvfb, 1/30 s steps, gizmos on and mesh off, then mesh on): at
+  4 m/s beside a 3 m wall 0.55 m off, the near foot then the far one on the
+  face, leant off it, landed and ran on.
+- **Gallery:** `--run-along-at T` with `--anim-speed`, the wall as
+  `--ledge`.
+- **Cost:** `anim_bench --features real_rig --gait run-along`, 143 µs at p50
+  (a vault's 147).
+
+1264 library tests pass; clippy is clean with and without `real_rig`.
+
+### Parkour, step 8 (second part): kicking off a wall toward another's lip
+
+Asked `HangAsk::WallKick` with `Walker::ledge` a lip out of a standing
+jump's reach, running at a wall among `Walker::ledges` 0.6-1.1 rad off
+square, it sets its last steps for the foot farther from the wall to come
+down in the kick's window. Then it takes the run up's braked leap and plants
+the near foot on the face 1.2 m up. The hips leave where a steady push
+brings them, as long on the wall (0.15-0.35 s) as the leg reaches through.
+It flies a fall turned to face the lip and catches it (`WallRun::kick`).
+Notes: [a wall is kicked off toward a lip round a
+corner](docs/knowledge/character-animation/parkour/a-wall-is-kicked-off-toward-a-lip-round-a-corner.md),
+[a near-straight leg is bent toward its
+kneecap](docs/knowledge/character-animation/ik-and-locomotion/a-near-straight-leg-bends-toward-its-kneecap.md).
+
+- **Fixed on the way:**
+  - the run up's leave point braked a kick at 6.4 g; the leave is now the
+    steady push's point, found by fixed point;
+  - a 1.0 m hold let the leg lift the hips 0.24 m of the 0.39 wanted; the
+    hold is now 1.2 m;
+  - an arm swing squeezed into 0.16 s threw the hands at 15 m/s; the swing
+    keeps the run up's span;
+  - a fall's knee keep-off stayed 1.5 cm in; `fall.rs` now takes six passes;
+  - `stance::keep_ankle` bent a dead-straight leg about a noise hinge that
+    flipped between frames (a knee 24 cm in a frame); below sin 0.1 it now
+    bends toward the kneecap, for every caller;
+  - elbows went 2-8 cm into the wall taken off near; they are now turned
+    along the face, run ups too;
+  - kicks met 0.75 m out failed taken off farther, and one planned 0.4 m
+    near missed its lip; the meeting is now 0.6 ± 0.2 m;
+  - the walker's 0.1 m window dropped a plannable kick; it now takes off
+    within 0.2 m near to 0.1 m far.
+- **Headless** (lips 2.3-2.7 m, 0.6-0.9 rad off square, 3.5 and 4.5 m/s,
+  take-offs ±0.2 m off the best; 89 of 90 planned):
+  - the foot held within 0.011 mm;
+  - nothing into either wall beyond 0.11 mm;
+  - no joint over 13.4 m/s about the hips;
+  - the hips braked at 1.6-2.9 g;
+  - every lip caught.
+
+  Refused: off the near foot, 1.2 rad off square, a 3.2 m lip.
+- **Live** (Xvfb, 1/30 s steps, gizmos on and mesh off, then mesh on): at
+  4 m/s, 0.75 rad off square, at a 4 m wall, toward a 2.5 m lip at right
+  angles to it. The near foot went on the face at hip height, it kicked
+  off, turned and caught the lip, hanging braced.
+- **Gallery:** `--wall-kick-at T` with `--anim-speed`, the lip as
+  `--ledge`, the wall kicked as `--side-ledge`.
+- **Cost:** `anim_bench --features real_rig --gait wall-kick`, 50 µs at p50
+  (the run up 31.5, unchanged; the vault 147 and the mantle 42, unchanged
+  by the IK fix).
+
+1262 library tests pass; clippy is clean with and without `real_rig`.
+
 ### Parkour, step 8 (first part): running up a wall and catching its lip
 
 Asked `HangAsk::WallRun` running at a wall, it adjusts its last steps to the

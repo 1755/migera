@@ -7,7 +7,7 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-07
+updated: 2026-10-09
 verified: 2026-10-07
 code:
   - src/character/anim/ladder.rs
@@ -254,6 +254,7 @@ bows' cache, every copy `pose_led` ran ahead re-searched its step: 744 µs.
 ## Related
 
 - [An antipodal guard must still land on the target](./an-antipodal-guard-must-still-land-on-the-target.md) — deeper: the `look_rotation` miss the shoulder lift exposed.
+- [Rotations turned over and over in one frame need renormalizing](../rig-and-retargeting/rotations-turned-over-and-over-in-a-frame-need-renormalizing.md) — trap: the rungs-apart climb's pattern sits on a tie a <1e-6 change to `delta_after_world_turn` flips (five tests fail); cause not found.
 - [A sneak carries its hands, placed by arm IK](./a-sneak-carries-its-hands-placed-by-arm-ik.md) — prerequisite: `armik::solve_arm_toward`, the elbow-pole arm solve every grip uses.
 - [A jump is planned as its centre of mass's path](./a-jump-is-planned-as-its-centre-of-mass-path.md) — context: `jump::upper` and leading each bone ahead of its spring.
 - [A walking arm swings back and its hand hangs relaxed](./a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md) — contrast: the relaxed finger curl `RelaxedHands` holds when not gripping.

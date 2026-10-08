@@ -194,10 +194,36 @@ impl Stance {
     }
 }
 
+/// Pushes off a wall holding a running leap up (running along a wall): each
+/// one `start` seconds after take-off, `span` long, adding `gain` m/s up.
+/// Each push's force rises and falls as sin² over its span, from none to
+/// none, so the flight's acceleration has no step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lift {
+    pub pushes: [(f32, f32, f32); 2],
+}
+
+impl Lift {
+    /// How much higher the pushes have put the COM `s` seconds after
+    /// take-off than the flight alone would, metres, and how much faster
+    /// up, m/s.
+    pub fn at(&self, s: f32) -> (f32, f32) {
+        let tau = std::f32::consts::TAU;
+        self.pushes.iter().filter(|&&(start, span, _)| s > start && span > 0.0).fold((0.0, 0.0), |(height, rate), &(start, span, gain)| {
+            // Peak acceleration 2·gain/span: the pulse's mean is half.
+            let most = 2.0 * gain / span;
+            let u = ((s - start) / span).min(1.0);
+            let v = most * span * (0.5 * u - (tau * u).sin() / (2.0 * tau));
+            let p = most * span * span * (0.25 * u * u + ((tau * u).cos() - 1.0) / (2.0 * tau * tau));
+            (height + p + v * (s - start - span).max(0.0), rate + v)
+        })
+    }
+}
+
 /// The flight: the COM thrown from `from` at `speed` forward and `up`, the
 /// body turning from `takeoff`'s shape into `landing`'s (both placed in the
 /// jump's frame), each landing leg's ankle (`lands`) brought from where it
-/// left to its spot.
+/// left to its spot; held up by `lift`, if any.
 #[derive(Debug, Clone, Copy)]
 struct Flight {
     seconds: f32,
@@ -207,6 +233,7 @@ struct Flight {
     takeoff: LocalPose,
     landing: LocalPose,
     lands: [bool; 2],
+    lift: Option<Lift>,
 }
 
 impl Flight {
@@ -227,7 +254,31 @@ impl Flight {
 
     fn com_at(&self, s: f32) -> (f32, f32) {
         let s = s.clamp(0.0, self.seconds);
-        (self.from.0 + self.speed * s, self.from.1 + self.up * s - 0.5 * GRAVITY * s * s)
+        let lifted = self.lift.map_or(0.0, |lift| lift.at(s).0);
+        (self.from.0 + self.speed * s, self.from.1 + self.up * s - 0.5 * GRAVITY * s * s + lifted)
+    }
+
+    /// How long a flight from `from` thrown `up`, held up by `lift`, takes
+    /// to come down `drop` below where it left, seconds; and how fast it
+    /// comes down then, m/s.
+    fn falls(up: f32, drop: f32, lift: Option<Lift>) -> (f32, f32) {
+        let ballistic = (up + (up * up + 2.0 * GRAVITY * drop).max(0.0).sqrt()) / GRAVITY;
+        let Some(lift) = lift else {
+            return (ballistic, GRAVITY * ballistic - up);
+        };
+        // Held up, it comes down later: past the ballistic time it is still
+        // above, and it falls below eventually.
+        let below = |s: f32| up * s - 0.5 * GRAVITY * s * s + lift.at(s).0 + drop;
+        let (mut early, mut late) = (ballistic, ballistic + 0.5);
+        while below(late) > 0.0 {
+            late += 0.5;
+        }
+        for _ in 0..40 {
+            let mid = 0.5 * (early + late);
+            if below(mid) > 0.0 { early = mid } else { late = mid }
+        }
+        let seconds = 0.5 * (early + late);
+        (seconds, GRAVITY * seconds - up - lift.at(seconds).1)
     }
 
     fn pose_at(&self, jump: &Jump, s: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
@@ -469,10 +520,10 @@ impl Jump {
             let mut landing = walk_pose_on(lands_at, &after, stood, rig);
             let touch = com(&landing);
             let drop = left.1 - touch.1;
-            let seconds = (up + (up * up + 2.0 * GRAVITY * drop).max(0.0).sqrt()) / GRAVITY;
+            let (seconds, falling) = Flight::falls(up, drop, ask.lift);
             let ahead = left.0 + speed * seconds;
             landing.root_translation += forward * (ahead - touch.0);
-            let landed = Flight { seconds, from: left, speed, up, takeoff: thrown, landing, lands: [0, 1].map(|i| i == lead) };
+            let landed = Flight { seconds, from: left, speed, up, takeoff: thrown, landing, lands: [0, 1].map(|i| i == lead), lift: ask.lift };
             leaving_rate = landed.hips_rate(&jump, false, stood, rig);
 
             // The landing stance: the run's on the landing leg, its COM
@@ -491,7 +542,7 @@ impl Jump {
                 // flight's speed down.
                 from: (hips(&landing), touch.1),
                 to: (0.0, 0.0),
-                from_rate: (landed.hips_rate(&jump, true, stood, rig), up - GRAVITY * seconds),
+                from_rate: (landed.hips_rate(&jump, true, stood, rig), -falling),
                 // Leaving as the run does from its toe-off, where it picks
                 // up: the hips with the root, at its speed.
                 to_rate: (speed, rate_at(&after, speed, after_cycle, lands_at + duty - 0.002).1),
@@ -607,7 +658,7 @@ impl Jump {
                 end += span;
                 self.ends[slot] = end;
             }
-            let flight = Flight { seconds, from: left, speed, up, takeoff: thrown, landing: meeting, lands: [true; 2] };
+            let flight = Flight { seconds, from: left, speed, up, takeoff: thrown, landing: meeting, lands: [true; 2], lift: None };
             // The hips leave as fast as they go on through the air.
             leaving_rate = Some(flight.hips_rate(&self, false, stood, rig));
             planned = Some(flight);

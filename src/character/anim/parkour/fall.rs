@@ -92,6 +92,27 @@ const HANDS_OFF_WALL: f32 = 0.1;
 /// ... over this far under its top, metres; and the knees in the air.
 const WALL_EASED: f32 = 0.2;
 const KNEE_OFF_WALL: f32 = 0.02;
+/// The ankle moved out this many times to bring its knee off a wall: each
+/// brings the knee about half the way (twice, a knee driven up on a wall
+/// kicked off, spun to face the lip, stayed 1.5 cm in; six, 0.1 mm).
+const KNEE_PASSES: usize = 6;
+/// Sliding down a wall: the share of gravity the hands and feet brake off
+/// (no measured data: landing 0.71 of free fall's speed); the wrists held
+/// this far off the face, metres (the palm on it); the feet braced on the
+/// face for this share of the flight.
+const SLIDE_BRAKE: f32 = 0.5;
+const SLIDE_HANDS: f32 = 0.04;
+/// Sliding, the hands on the face at most this far above their shoulders,
+/// metres, brought down to that over this long from letting go, seconds,
+/// and let go of the face over this long once landed, seconds.
+const SLIDE_ABOVE: f32 = 0.25;
+const SLIDE_HANDS_IN: f32 = 0.35;
+const SLIDE_LET_GO: f32 = 0.25;
+/// Sliding, the elbows point down, this much out from the face and this
+/// much out to their own sides for each unit down.
+const SLIDE_ELBOW: (f32, f32) = (0.4, 0.6);
+const SLIDE_POLE_IN: f32 = 0.1;
+const SLIDE_FEET: f32 = 0.6;
 /// Falling into a wall it faces, the hips stop this far out from it,
 /// metres (standing facing it, the hips are about this far off it),
 /// slowing from this much and as far again further out: the arms taking
@@ -350,6 +371,9 @@ pub struct Falling {
     roll: Option<Roll>,
     hurt: bool,
     rig: std::sync::Arc<RigGeometry>,
+    /// Sliding down a wall ([`Self::slide`]): the share of gravity its hands
+    /// and feet brake off; 0 falling free.
+    slide: f32,
 }
 
 impl Falling {
@@ -407,9 +431,58 @@ impl Falling {
             roll: None,
             hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
+            slide: 0.0,
         };
         falling.replan(rig);
         falling
+    }
+
+    /// How fast it falls in the air, m/s²: gravity, less what sliding down
+    /// a wall brakes off.
+    fn gravity(&self) -> f32 {
+        GRAVITY * (1.0 - self.slide)
+    }
+
+    /// Sliding down the wall it faces ([`Self::against`] first) instead of
+    /// falling free: its hands and feet pressed to the face brake
+    /// [`SLIDE_BRAKE`] of gravity off, the arms up, the hands on the face,
+    /// the feet braced on it until late; landed as from the drop that
+    /// speed comes from.
+    pub fn slide(&mut self) {
+        self.slide = SLIDE_BRAKE;
+        self.reaching = true;
+        let rig = self.rig.clone();
+        self.replan(&rig);
+    }
+
+    /// Whether it slides down a wall ([`Self::slide`]).
+    pub fn is_sliding(&self) -> bool {
+        self.slide > 0.0
+    }
+
+    /// Whether it faces a wall it is held off ([`Self::against`]).
+    pub fn faces_wall(&self) -> bool {
+        self.wall.is_some()
+    }
+
+    /// Sliding, how much the hands are held on the face, 0-1: all of it in
+    /// the air, let go over [`SLIDE_LET_GO`] once landed.
+    fn slide_hold(&self, flight: f32, landed: bool) -> f32 {
+        if !self.is_sliding() {
+            0.0
+        } else if !landed {
+            1.0
+        } else {
+            1.0 - smoothstep(((self.t - flight) / SLIDE_LET_GO).clamp(0.0, 1.0))
+        }
+    }
+
+    /// How far the legs have come from where they left to the landing's
+    /// shape, 0-1, through a flight `flight` long: over all of it; sliding,
+    /// over its last part only, the feet braced on the face till then.
+    fn legs_down(&self, flight: f32) -> f32 {
+        let u = (self.t / flight).clamp(0.0, 1.0);
+        if self.is_sliding() { ((u - SLIDE_FEET) / (1.0 - SLIDE_FEET)).clamp(0.0, 1.0) } else { u }
     }
 
     /// A jump in the air (`jump::Jump`) gone over an edge, falling on to
@@ -470,7 +543,7 @@ impl Falling {
         let ahead = self.feet.map(|foot| flat_of(foot - touch) + self.turn * rig.forward() * FOOT_BALL);
         for i in 1..=(flight / LAND_STEP).ceil() as usize {
             let t = (LAND_STEP * i as f32).min(flight);
-            let hips = self.from_hips + self.velocity * t - Vec3::Y * (0.5 * GRAVITY * t * t) + self.drift(t);
+            let hips = self.from_hips + self.velocity * t - Vec3::Y * (0.5 * self.gravity() * t * t) + self.drift(t);
             let feet = hips - Vec3::Y * self.touch_height;
             let top = ahead.iter().filter_map(|&ahead| ground(feet + ahead)).filter(|&top| top > self.ground + STEP_DOWN).reduce(f32::max);
             if let Some(top) = top.filter(|&top| feet.y <= top && over == Some(top)) {
@@ -837,7 +910,8 @@ impl Falling {
 
     /// How far it drops, standing height to standing height, metres.
     pub fn dropped(&self) -> f32 {
-        self.from_hips.y - self.drop_hips() - self.ground
+        // Sliding, the drop free fall would meet the ground as fast from.
+        (self.from_hips.y - self.drop_hips() - self.ground) * (1.0 - self.slide)
     }
 
     /// Whether it drops too far to land: the body goes to the ragdoll as it
@@ -921,7 +995,7 @@ impl Falling {
         self.stand_height = self.body.hips.y - self.drop;
         // The landing's time and the knees' deepest, from how far it drops,
         // standing height to standing height.
-        let drop = self.from_hips.y - self.drop_hips() - self.ground;
+        let drop = self.dropped();
         self.hurt = drop > HURT_DROP && drop <= FATAL_DROP;
         let (land, flexion) = landing_for(drop);
         let flexion = if self.hurt { HURT_KNEE } else { flexion };
@@ -933,8 +1007,9 @@ impl Falling {
         // Flight: down from where it left to the hips at touchdown.
         let fall = self.from_hips.y - (self.ground + self.touch_height);
         let up = self.velocity.y;
-        let flight = ((up + (up * up + 2.0 * GRAVITY * fall.max(0.0)).sqrt()) / GRAVITY).max(1.0e-3);
-        self.touch_speed = GRAVITY * flight - up;
+        let g = self.gravity();
+        let flight = ((up + (up * up + 2.0 * g * fall.max(0.0)).sqrt()) / g).max(1.0e-3);
+        self.touch_speed = g * flight - up;
         // The legs upright, the hips go down as far as the legs shorten.
         let deepest = contact - self.leg_at(flexion.to_radians());
         // As deep as the knees go: the velocity falls as `(1-s)^n (1+n·s)`
@@ -1246,7 +1321,7 @@ impl Falling {
         let flat = Vec3::new(self.velocity.x, 0.0, self.velocity.z);
         let t = self.t;
         if t < flight {
-            return self.from_hips + self.velocity * t - Vec3::Y * (0.5 * GRAVITY * t * t) + self.drift(t);
+            return self.from_hips + self.velocity * t - Vec3::Y * (0.5 * self.gravity() * t * t) + self.drift(t);
         }
         let touch = self.from_hips + flat * flight + self.drift(flight);
         let touch = Vec3::new(touch.x, self.ground + self.touch_height, touch.z);
@@ -1379,14 +1454,14 @@ impl Falling {
                 let coast = self.t.min(LEGS_COAST);
                 let from = self.from_ankles[side] - self.from_hips + self.ankle_velocities[side] * (coast - 0.5 * coast * coast / LEGS_COAST);
                 let to = self.feet[side] - touch_hips;
-                hips + from.lerp(to, smoothstep((self.t / flight).clamp(0.0, 1.0)))
+                hips + from.lerp(to, smoothstep(self.legs_down(flight)))
             };
             place_ankle(&mut pose, rig, bone, back * (ankle - root) - pose_hips);
             // In the air facing a wall, the foot out as far as its knee
             // would go into it (a running jump's legs reaching ahead for
             // its landing put a knee 5 cm in, the hips held off).
             if let Some((top, out)) = self.wall.filter(|_| !landed) {
-                for _ in 0..2 {
+                for _ in 0..KNEE_PASSES {
                     let knee = root + turn * forward_kinematics_on(&pose, rig)[LEGS[side].1];
                     let short = KNEE_OFF_WALL - (knee - top).dot(out);
                     if short <= 0.0 || knee.y >= top.y {
@@ -1401,7 +1476,9 @@ impl Falling {
             // wall, jumped 17 cm the frame it let go).
             let level = accumulate_world_rotations(&self.body.stood, rig)[bone];
             let left = accumulate_world_rotations(&self.from_pose, rig)[bone];
-            let wanted = left.slerp(level, smoothstep((self.t / ARMS_FREE).clamp(0.0, 1.0)));
+            // Sliding, braced on the face until the legs come down.
+            let levelling = if self.is_sliding() { self.legs_down(flight) } else { (self.t / ARMS_FREE).clamp(0.0, 1.0) };
+            let wanted = left.slerp(level, smoothstep(levelling));
             let now = accumulate_world_rotations(&pose, rig)[bone];
             pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, wanted * now.inverse());
             // Facing a wall, the ankle out as far as its toes would go into
@@ -1429,15 +1506,42 @@ impl Falling {
             for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
                 let wrist = root + turn * at[chain.wrist];
                 let under = smoothstep(((top.y - wrist.y) / WALL_EASED).clamp(0.0, 1.0));
-                let short = HANDS_OFF_WALL * under * freed - (wrist - top).dot(out);
+                let off = (wrist - top).dot(out);
+                let short = HANDS_OFF_WALL * under * freed - off;
+                let kept = wrist + out * short.max(0.0);
+                // Sliding down its own wall, the hands held on the face,
+                // eased onto it as they come under its top, no higher than
+                // the arm reaches it from its shoulder (from overhead, the
+                // shoulders 0.35-0.41 m out, the hands stayed 7-10 cm off),
+                // brought down to that over `SLIDE_HANDS_IN` (pulled down as
+                // they came under the top, the forearms went 21 m/s); let go
+                // over `SLIDE_LET_GO` landed (at once, a hand went 17.7 m/s).
+                let hold = if Some((top, out)) == self.wall { self.slide_hold(flight, landed) } else { 0.0 };
+                let wanted = if hold > 0.0 {
+                    let shoulder = root + turn * at[chain.shoulder];
+                    let down = (wrist.y - (shoulder.y + SLIDE_ABOVE)).max(0.0) * smoothstep((self.t / SLIDE_HANDS_IN).clamp(0.0, 1.0));
+                    kept.lerp(wrist + out * ((SLIDE_HANDS - off) * under) - Vec3::Y * down, hold)
+                } else {
+                    kept
+                };
                 // Only under the top: above it (a hand let go from over the
                 // lip), there is no wall, and pushed out onto the face's
                 // plane the hands jumped 6 cm the frame it leapt.
-                if short > 0.0 && wrist.y < top.y {
+                if (wanted - wrist).length() > 1.0e-4 && wrist.y < top.y {
                     // The elbow's own way: turned to another, it jumped
-                    // 12 cm as the hands began to be kept off.
-                    let pole = (at[chain.elbow] - 0.5 * (at[chain.shoulder] + at[chain.wrist])).normalize_or(back * out);
-                    solve_arm_toward_from(&mut pose, &at, chain, back * (wrist + out * short - root), pole, rig);
+                    // 12 cm as the hands began to be kept off. Sliding, down
+                    // and out to its side: its own way, the arm passing
+                    // straight on the way from overhead to the face, the
+                    // elbow turned round at 16-19 m/s.
+                    let own = (at[chain.elbow] - 0.5 * (at[chain.shoulder] + at[chain.wrist])).normalize_or(back * out);
+                    let side = if chain.wrist == ArmChain::LEFT.wrist { 1.0 } else { -1.0 };
+                    let sliding = (back * (out * SLIDE_ELBOW.0 - Vec3::Y) + rig.left() * (side * SLIDE_ELBOW.1)).normalize_or(own);
+                    // Eased in from letting go over `SLIDE_POLE_IN`: at
+                    // once, an elbow jumped 4.9 cm the frame it let go; over
+                    // 0.35 s, still part its own way, it turned round at
+                    // 14.8 m/s.
+                    let pole = own.lerp(sliding, hold * smoothstep((self.t / SLIDE_POLE_IN).clamp(0.0, 1.0))).normalize_or(own);
+                    solve_arm_toward_from(&mut pose, &at, chain, back * (wanted - root), pole, rig);
                 }
             }
         }

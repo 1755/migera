@@ -7,7 +7,7 @@ tags:
   - ik
   - correctness
   - testing
-updated: 2026-10-03
+updated: 2026-10-09
 verified: 2026-10-03
 code:
   - src/character/anim/legik.rs
@@ -64,5 +64,6 @@ The axis's part along the line is taken off before it is used:
 ## Related
 
 - [Two-bone IK pivots at the upper joint, not the root](./two-bone-ik-pivots-at-upper-not-root.md) — same-class: another two-bone IK geometry error that a loose reach test let through.
+- [A near-straight leg is bent toward its kneecap](./a-near-straight-leg-bends-toward-its-kneecap.md) — same-class: `stance::keep_ankle`'s raw hinge, noise on a straight leg.
 - [Synthetic rig's leg segments are shifted a joint](../rig-and-retargeting/synthetic-rig-leg-segments-are-shifted-a-joint.md) — why the test runs on the real rig.
 - [Walking to a chair turns on a circle and paces its stop](./walking-to-a-chair-turns-on-a-circle-and-paces-its-stop.md) — context: the sideways seat shift that exposed it.

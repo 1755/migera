@@ -7,7 +7,7 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-06
+updated: 2026-10-09
 verified: 2026-10-06
 code:
   - src/character/anim/jump/leap.rs
@@ -197,3 +197,4 @@ The free thigh drives near level for a leap, hardly for a hop.
 - [A jump forward leans out over its toes, and its travel is the root's](./a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md) — prerequisite: travel as root motion, and the two-foot landing a stopping jump reuses.
 - [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — context: the run whose stance is replayed, and its root velocity.
 - [A low obstacle is speed-vaulted as a reshaped running leap](../parkour/a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md) — applies: a speed vault is this leap with its flight reshaped over the obstacle.
+- [A wall is run along on two steps of a lifted leap](../parkour/a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md) — applies: this leap's flight held up by pushes off a wall (`JumpAsk::lift`), its time to touchdown and landing fall solved with them.

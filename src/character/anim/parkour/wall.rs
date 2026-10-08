@@ -101,6 +101,10 @@ const DRIVE_BY: f32 = 0.7;
 /// the wrists under the lip (a fall's `HANDS_OFF_WALL`).
 const DRIVE_OFF: f32 = 0.25;
 const HANDS_OFF: f32 = 0.1;
+/// An elbow nearer the face than this plus the ease, metres, is turned
+/// along it, wholly by this near.
+const ELBOW_OFF: f32 = 0.05;
+const ELBOW_EASE: f32 = 0.15;
 /// Leaving, the foot on the wall peels off it this fast, m/s.
 const PEEL_OFF: f32 = 1.0;
 /// The most the run meets the wall off square, radians.
@@ -108,6 +112,58 @@ pub const MOST_SLANT: f32 = 0.3;
 /// The hips brake on the wall at most this hard, m/s² (3 g: a foot planted
 /// on a wall at a run).
 const MOST_BRAKE: f32 = 3.0 * GRAVITY;
+
+/// A kick off a wall toward a lip (a tic-tac, [`WallRun::kick`]): met up to
+/// this far off square, radians; the foot on the wall at least and at most
+/// this long, seconds (no tic-tac data: a running jump's take-off contact
+/// to a run up's 0.37 s), tried in steps this long; where it leaves found
+/// in this many passes.
+pub const MOST_KICK_SLANT: f32 = 1.1;
+const KICK_ON_WALL: (f32, f32) = (0.15, 0.35);
+const KICK_STEP: f32 = 0.01;
+/// A kick's foot higher on the face than a run up's, its ball this high,
+/// metres (about the hips' height: at a run up's 1.0 m the leg, nearly
+/// level, lifted the hips 0.24 m while the flight wanted 0.39, braking
+/// them at 5.8 g).
+const KICK_FOOT_UP: f32 = 1.2;
+/// A wall to kick off reaches the floor within this, metres, and stands
+/// this far over the foot's hold at least, metres.
+const FLOOR_SLACK: f32 = 0.05;
+const ABOVE_HOLD: f32 = 0.3;
+/// A kick's hips meet the wall this far out from it, metres: nearer than a
+/// run up's, its foot's hold higher (met 0.75 m out, taken off 0.2 m
+/// farther, the leg on the wall could not lift the hips; 0.4 m, could not
+/// reach the hold).
+const KICK_MEETING: f32 = 0.6;
+/// A kick's hips met at most this far from [`KICK_MEETING`] out, metres
+/// (0.4 m along a run 0.6 rad off square nearer, 0.33 m nearer it, a kick
+/// planned to a 2.5 m lip missed it).
+const KICK_MEETING_SLACK: f32 = 0.2;
+/// A kick is taken off up to this much nearer and farther than its best
+/// ([`WallRun::kick_takeoff`]), metres, along the run: within it, measured,
+/// every kick plans and catches its lip (0.2 m farther at 4.5 m/s, the hips
+/// braked on the wall at 3.1 g).
+pub const KICK_TAKEOFF: (f32, f32) = (0.2, 0.1);
+const KICK_PASSES: usize = 4;
+/// The kick's flight to the lip goes across at most this fast, m/s, up at
+/// most this fast, m/s, out from the wall kicked at least this fast, m/s,
+/// and rises at least this much, metres (as a leap's from a hang plans its
+/// catch, `hang::leap`).
+const KICK_FASTEST: f32 = 4.0;
+const KICK_MOST_UP: f32 = 3.5;
+const KICK_LEAST_OUT: f32 = 0.5;
+const KICK_LEAST_RISE: f32 = 0.1;
+/// The catch planned with the hips this far out from the lip's face,
+/// metres (a braced hang's, `hang::leap`).
+const CATCH_OUT: f32 = 0.42;
+/// Kicked off toward a lip, it turns to face it over this long in the air,
+/// seconds; caught this far from its ends at least, metres (a leap's).
+const KICK_SPIN: f32 = 0.4;
+const END_MARGIN: f32 = 0.35;
+/// The catch planned on the lip nearest a point this far out from where
+/// the hips leave the wall kicked, metres: nearest where they leave, in a
+/// corner the flight went along the wall, not off it.
+const KICK_AWAY: f32 = 0.5;
 
 const LEGS: [(Bone, Bone, Bone); 2] = [(Bone::LeftUpLeg, Bone::LeftLeg, Bone::LeftFoot), (Bone::RightUpLeg, Bone::RightLeg, Bone::RightFoot)];
 
@@ -164,6 +220,12 @@ pub struct WallRun {
     hold: (Vec3, Quat),
     /// The standing hips (the pose's frame).
     body_hips: Vec3,
+    /// How long the foot is on the wall, seconds.
+    on_wall: f32,
+    /// Kicking off toward a lip ([`Self::kick`]): the lip, and how far it
+    /// turns in the air to face it, radians.
+    target: Option<Ledge>,
+    spin: f32,
 }
 
 impl WallRun {
@@ -175,9 +237,26 @@ impl WallRun {
     /// hips would not meet it right.
     #[allow(clippy::too_many_arguments)]
     pub fn plan(wall: &Ledge, origin: Vec3, yaw: f32, start: RunStart, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        Self::plan_on(wall, None, origin, yaw, start, drop, stood, rig)
+    }
+
+    /// A kick off `wall` toward `target`'s lip (a tic-tac): run at the wall
+    /// up to [`MOST_KICK_SLANT`] off square, plant a foot on it as a run up
+    /// does, and push off up and across, turning in the air to catch the
+    /// lip as a leap from a hang does. `None` as [`Self::plan`], or if the
+    /// lip would need the push into the wall, or more than
+    /// [`KICK_MOST_UP`] up.
+    #[allow(clippy::too_many_arguments)]
+    pub fn kick(wall: &Ledge, target: &Ledge, origin: Vec3, yaw: f32, start: RunStart, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        Self::plan_on(wall, Some(*target), origin, yaw, start, drop, stood, rig)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_on(wall: &Ledge, target: Option<Ledge>, origin: Vec3, yaw: f32, start: RunStart, drop: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
         let turn = Quat::from_rotation_y(yaw);
         let forward = turn * rig.forward();
-        if -forward.dot(wall.out) < MOST_SLANT.cos() {
+        let most_slant = if target.is_some() { MOST_KICK_SLANT } else { MOST_SLANT };
+        if -forward.dot(wall.out) < most_slant.cos() {
             return None;
         }
         let jump = take_off(start, stood, rig);
@@ -193,10 +272,17 @@ impl WallRun {
         let velocity = (hips_at(contact + 1.0e-3) - hips_at(contact - 1.0e-3)) / 2.0e-3;
         // Met where the hips are near enough the wall, not into it.
         let out = wall.out_of(hips);
-        if (out - HIPS_MEETING).abs() > MEETING_SLACK {
+        let (meeting_out, slack) = if target.is_some() { (KICK_MEETING, KICK_MEETING_SLACK) } else { (HIPS_MEETING, MEETING_SLACK) };
+        if (out - meeting_out).abs() > slack {
             return None;
         }
         let lead = 1 - start.leg;
+        // Kicking, the foot nearer the wall goes on it (off the other, it
+        // crossed in front: off the right foot at 0.6 rad, a lip 2.5 m
+        // high wanted 3.57 m/s up).
+        if target.is_some() && start.leg != Self::kick_leg(wall, yaw, stood, rig) {
+            return None;
+        }
         let stood_at = forward_kinematics_on(stood, rig);
         let stood_world = accumulate_world_rotations(stood, rig);
         // The foot's hold: its ball on the face under the lead socket, toes
@@ -205,7 +291,8 @@ impl WallRun {
         let toe = crate::character::anim::foot::foot_bones(ankle).1;
         let along = wall.along();
         let lateral = (meets_world(socket) - wall.a).dot(along);
-        let ball = wall.a + along * lateral + Vec3::Y * (origin.y + FOOT_UP - wall.a.y);
+        let foot_up = if target.is_some() { KICK_FOOT_UP } else { FOOT_UP };
+        let ball = wall.a + along * lateral + Vec3::Y * (origin.y + foot_up - wall.a.y);
         let standing = turn * stood_world[ankle];
         let attitude = Quat::from_axis_angle((-wall.out).cross(Vec3::Y).normalize_or(along), TOES_UP) * standing;
         let ankle_at = ball + attitude * standing.inverse() * (turn * (stood_at[ankle] - stood_at[toe]));
@@ -228,23 +315,80 @@ impl WallRun {
         // was dragged off the face, the leg out of reach (the COM's rise is
         // helped by the ankle's push off the toes, which this pose has not).
         let socket_below = (stood_at[Bone::Hips] - stood_at[socket]).y;
-        let socket_out = HIPS_LEAVING;
         let reach = LEAVE_LEG * leg;
-        let reach_up = (reach * reach - socket_out * socket_out).max(0.0).sqrt();
-        let rise = (ankle_at.y + reach_up + socket_below - hips.y).min(RISE);
-        let leave_at = hips + wall.out * (HIPS_LEAVING - out) + Vec3::Y * rise;
-        // The shoulders topping out just under the lip, as a leap's catch
-        // plans (`hang::leap`): planned an arm's reach under it, the hands
-        // never came within reach of it on the way down.
-        let apex = wall.height() - UNDER_LIP - shoulders.y;
-        let up = (2.0 * GRAVITY * (apex - leave_at.y).max(0.0)).sqrt().clamp(LEAST_UP, MOST_UP);
-        let leaving = (leave_at, wall.out * PUSH_OUT + Vec3::Y * up);
+        // The highest the hips go, the socket `across` from the ankle on its
+        // hold seen from above; or seen from above where `at` is.
+        let highest = |across: f32| ankle_at.y + (reach * reach - across * across).max(0.0).sqrt() + socket_below;
+        let socket_off = turn * (stood_at[socket] - stood_at[Bone::Hips]);
+        let highest_at = |at: Vec3| highest((at + socket_off - ankle_at).with_y(0.0).length());
+        // A run up's taken as its hips' way out from the face, not the
+        // socket's from the ankle (its catch measured so).
+        let leave_at = hips + wall.out * (HIPS_LEAVING - out) + Vec3::Y * (highest(HIPS_LEAVING) - hips.y).min(RISE);
+        let (leaving, spin, on_wall) = match target {
+            // The shoulders topping out just under the lip, as a leap's
+            // catch plans (`hang::leap`): planned an arm's reach under it,
+            // the hands never came within reach of it on the way down.
+            None => {
+                let apex = wall.height() - UNDER_LIP - shoulders.y;
+                let up = (2.0 * GRAVITY * (apex - leave_at.y).max(0.0)).sqrt().clamp(LEAST_UP, MOST_UP);
+                ((leave_at, wall.out * PUSH_OUT + Vec3::Y * up), 0.0, ON_WALL)
+            }
+            // Kicking: caught as a leap from a hang catches, the shoulders
+            // just under the lip, the hips out from its face; at the top of
+            // the flight, or falling past it if crossing takes longer.
+            Some(target) => {
+                let flight = |leave_at: Vec3| {
+                    let lip = target.nearest(leave_at + wall.out * KICK_AWAY, END_MARGIN);
+                    let catch_height = lip.y - UNDER_LIP - shoulders.y;
+                    let catch = (lip + target.out * CATCH_OUT).with_y(catch_height);
+                    let rise = (catch_height - leave_at.y).max(KICK_LEAST_RISE);
+                    let to_top = (2.0 * rise / GRAVITY).sqrt();
+                    let seconds = to_top.max((catch - leave_at).with_y(0.0).length() / KICK_FASTEST);
+                    let up = (catch_height - leave_at.y) / seconds + 0.5 * GRAVITY * seconds;
+                    (catch - leave_at).with_y(0.0) / seconds + Vec3::Y * up
+                };
+                // Leaving where a steady push from how the hips met the
+                // wall to how they leave it brings them (left 0.3 m up
+                // and carried half the way along, ends disagreeing with
+                // their velocities, the hips braked at 6.4 g): on the wall
+                // as long as that takes to bring them as high as the leg
+                // reaches, no nearer the face than a run up leaves it; the
+                // flight planned again from each.
+                let leave_after = |on_wall: f32| {
+                    let mut leave_at = leave_at;
+                    for _ in 0..KICK_PASSES {
+                        leave_at = hips + (velocity + flight(leave_at)) * (0.5 * on_wall);
+                        leave_at += wall.out * (wall.out_of(leave_at).max(HIPS_LEAVING) - wall.out_of(leave_at));
+                    }
+                    leave_at
+                };
+                // The longest on the wall the leg reaches through.
+                let steps = ((KICK_ON_WALL.1 - KICK_ON_WALL.0) / KICK_STEP).round() as usize;
+                let (on_wall, leave_at) = (0..=steps)
+                    .map(|k| KICK_ON_WALL.1 - KICK_STEP * k as f32)
+                    .map(|on_wall| (on_wall, leave_after(on_wall)))
+                    .find(|(_, at)| at.y <= highest_at(*at))
+                    .unwrap_or_else(|| {
+                        let at = leave_after(KICK_ON_WALL.0);
+                        (KICK_ON_WALL.0, at.with_y(at.y.min(highest_at(at))))
+                    });
+                let leaving = flight(leave_at);
+                // Off the wall kicked, not into it; not more than a kick's
+                // push up.
+                if leaving.y > KICK_MOST_UP || leaving.dot(wall.out) < KICK_LEAST_OUT {
+                    return None;
+                }
+                let heading = |d: Vec3| d.x.atan2(d.z);
+                let spin = (heading(-target.out) - heading(forward) + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                ((leave_at, leaving), spin, on_wall)
+            }
+        };
         // Room on the wall to brake the run within `MOST_BRAKE`: taken off
         // 0.25 m nearer at 4.5 m/s, the hips braked at 3.5 g.
         let braking = (0..=40).map(|k| {
-            let t = ON_WALL * k as f32 / 40.0;
-            let (_, a) = hermite(hips, velocity, leaving.0, leaving.1, ON_WALL, t);
-            let (_, b) = hermite(hips, velocity, leaving.0, leaving.1, ON_WALL, (t + 1.0e-3).min(ON_WALL));
+            let t = on_wall * k as f32 / 40.0;
+            let (_, a) = hermite(hips, velocity, leaving.0, leaving.1, on_wall, t);
+            let (_, b) = hermite(hips, velocity, leaving.0, leaving.1, on_wall, (t + 1.0e-3).min(on_wall));
             ((b - a) / 1.0e-3).length()
         });
         let most = braking.fold(0.0, f32::max);
@@ -262,24 +406,56 @@ impl WallRun {
             rig: std::sync::Arc::new(rig.clone()),
             lead,
             contact,
-            leave: contact + ON_WALL,
+            leave: contact + on_wall,
             t: 0.0,
             meeting,
             hips: (hips, velocity),
             leaving,
             hold: (ankle_at, attitude),
             body_hips: stood_at[Bone::Hips],
+            on_wall,
+            target,
+            spin,
         })
     }
 
     /// How far before a wall's face (along the way of running) a run's
     /// foot best comes down to run up it from: its hips [`HIPS_MEETING`]
-    /// out as the other foot meets the face.
-    pub fn takeoff(start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> f32 {
+    /// out as the other foot meets the face, run at `slant` off square.
+    pub fn takeoff(start: RunStart, slant: f32, stood: &LocalPose, rig: &RigGeometry) -> f32 {
+        Self::takeoff_meeting(start, slant, HIPS_MEETING, stood, rig)
+    }
+
+    /// As [`Self::takeoff`], to kick off it: the hips [`KICK_MEETING`] out.
+    pub fn kick_takeoff(start: RunStart, slant: f32, stood: &LocalPose, rig: &RigGeometry) -> f32 {
+        Self::takeoff_meeting(start, slant, KICK_MEETING, stood, rig)
+    }
+
+    fn takeoff_meeting(start: RunStart, slant: f32, meeting: f32, stood: &LocalPose, rig: &RigGeometry) -> f32 {
         let jump = take_off(start, stood, rig);
         let contact = jump.ends(JumpPhase::Push) + TO_WALL;
         let hips = forward_kinematics_on(&jump.pose_at(contact, stood, rig), rig)[Bone::Hips];
-        hips.dot(rig.forward()) + jump.travelled_at(contact) + HIPS_MEETING
+        hips.dot(rig.forward()) + jump.travelled_at(contact) + meeting / slant.cos().max(0.2)
+    }
+
+    /// The wall among `ledges` a run from `origin` along `forward` (the
+    /// world) would kick off toward `target`: the nearest ahead met within
+    /// [`MOST_KICK_SLANT`] of square, its face reaching the floor and above
+    /// the foot's hold; and how the run meets it.
+    pub fn kick_off(ledges: &[Ledge], target: &Ledge, origin: Vec3, forward: Vec3) -> Option<(Ledge, super::vault::Obstacle)> {
+        ledges
+            .iter()
+            .filter(|ledge| *ledge != target && ledge.height() - ledge.wall_below <= origin.y + FLOOR_SLACK && ledge.height() > origin.y + KICK_FOOT_UP + ABOVE_HOLD)
+            .filter_map(|ledge| super::vault::Obstacle::ahead(ledge, origin, forward, MOST_KICK_SLANT).map(|face| (*ledge, face)))
+            .min_by(|(_, a), (_, b)| a.near.total_cmp(&b.near))
+    }
+
+    /// The leg a kick off `wall` takes off from, turned `yaw`: the one
+    /// farther from it, the nearer foot going on the wall.
+    pub fn kick_leg(wall: &Ledge, yaw: f32, stood: &LocalPose, rig: &RigGeometry) -> usize {
+        let at = forward_kinematics_on(stood, rig);
+        let out = |leg: usize| (Quat::from_rotation_y(yaw) * at[LEGS[leg].0]).dot(wall.out);
+        if out(0) > out(1) { 0 } else { 1 }
     }
 
     /// Moves it on `dt` seconds.
@@ -319,7 +495,7 @@ impl WallRun {
     /// The hips (the world) and their velocity on the wall at `t`.
     fn hips_on_wall(&self, t: f32) -> (Vec3, Vec3) {
         let ((a, va), (b, vb)) = (self.hips, self.leaving);
-        hermite(a, va, b, vb, ON_WALL, t - self.contact)
+        hermite(a, va, b, vb, self.on_wall, t - self.contact)
     }
 
     /// The root now (the world).
@@ -363,7 +539,10 @@ impl WallRun {
             }
             return pose;
         }
-        let s = (t - self.contact) / ON_WALL;
+        // Swung as long as a run up's time on the wall: a kick's own 0.16 s
+        // swung the hands at 15 m/s; leaving, the fall coasts it on.
+        let span = self.on_wall.max(ON_WALL);
+        let s = (t - self.contact) / span;
         // The trunk upright from leaning in, the arms swung up, from the
         // leap's pose as the foot met the wall.
         // The elbows bent through the swing's middle, the hands coming up by
@@ -396,20 +575,25 @@ impl WallRun {
         // Kept out from the face: taken off nearer, the hips came nearer it
         // and the driven knee went 2.7 cm in.
         let driven = driven + self.wall.out * (DRIVE_OFF - self.wall.out_of(driven)).max(0.0);
-        let d = ease(t, self.contact, DRIVE_BY * ON_WALL);
+        let d = ease(t, self.contact, DRIVE_BY * span);
         place_ankle(&mut pose, rig, ankle, back * (met.lerp(driven, d) - root) - hips);
         // Up and out to its side: ahead, it went 5 mm into the wall.
         let aside = rig.left() * if trail == 0 { 1.0 } else { -1.0 };
         knee_toward(&mut pose, rig, [socket, knee, ankle], Vec3::Y + aside * KNEE_ASIDE, d);
         // The hands kept off the face under the lip, as a fall keeps them
-        // (taken off near, a hand swinging up went 2 cm in).
+        // (taken off near, a hand swinging up went 2 cm in); and the elbows,
+        // turned along the face as they come near it (kicking, taken off
+        // near, the arm on the wall's side swung its elbow 2-8 cm in).
         let at = forward_kinematics_on(&pose, rig);
+        let out = back * self.wall.out;
         for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
-            let wrist = root + self.turn * at[chain.wrist];
+            let (wrist, elbow) = (root + self.turn * at[chain.wrist], root + self.turn * at[chain.elbow]);
             let short = HANDS_OFF - self.wall.out_of(wrist);
-            if short > 0.0 && wrist.y < self.wall.height() {
+            let turned = smoothstep(((ELBOW_OFF + ELBOW_EASE - self.wall.out_of(elbow)) / ELBOW_EASE).clamp(0.0, 1.0));
+            if (short > 0.0 || turned > 0.0) && wrist.y < self.wall.height() {
                 let pole = (at[chain.elbow] - 0.5 * (at[chain.shoulder] + at[chain.wrist])).normalize_or(-rig.forward());
-                solve_arm_toward_from(&mut pose, &at, chain, back * (wrist + self.wall.out * short - root), pole, rig);
+                let pole = (pole - out * pole.dot(out).min(0.0) * turned).normalize_or(pole);
+                solve_arm_toward_from(&mut pose, &at, chain, back * (wrist + self.wall.out * short.max(0.0) - root), pole, rig);
             }
         }
         pose
@@ -468,10 +652,20 @@ impl WallRun {
         let rig = &*self.rig;
         let at = forward_kinematics_on(&self.stood, rig);
         let shoulders = 0.5 * (at[Bone::LeftArm] + at[Bone::RightArm]) - at[Bone::Hips];
+        // A kick is planned to reach its lip, or not taken.
+        if self.target.is_some() {
+            return true;
+        }
         let (at, velocity) = self.leaving;
         let apex = at.y + velocity.y * velocity.y / (2.0 * GRAVITY);
         // The shoulders up to just under the lip, as planned.
         apex + shoulders.y >= self.wall.height() - UNDER_LIP - REACH_SLACK
+    }
+
+    /// The lip it reaches for: the wall's own, or kicking, the one kicked
+    /// toward.
+    pub fn lip(&self) -> Ledge {
+        self.target.unwrap_or(self.wall)
     }
 
     /// Let go of the wall: the fall from here at the hips' velocity, aimed
@@ -500,9 +694,13 @@ impl WallRun {
             ahead.rotations[bone] = before.rotations[bone].slerp(pose.rotations[bone], on);
         }
         falling.coast_upper(ahead);
+        // Kicking, turned in the air to face the lip kicked toward.
+        if self.spin.abs() > 1.0e-3 {
+            falling.spin_round(self.spin, KICK_SPIN, rig);
+        }
         falling.land_on(ground);
-        falling.aim_at(self.wall);
-        falling.against(&[self.wall], rig);
+        falling.aim_at(self.lip());
+        falling.against(&[self.lip()], rig);
         falling
     }
 }
@@ -554,7 +752,7 @@ mod tests {
         let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 4.0, height, 1.0);
         let yaw = super::super::Hanging::square(&wall, rig.forward());
         let forward = Quat::from_rotation_y(yaw) * rig.forward();
-        let origin = wall.a.with_y(0.0) - forward * (WallRun::takeoff(start, &stood, &rig) + off);
+        let origin = wall.a.with_y(0.0) - forward * (WallRun::takeoff(start, 0.0, &stood, &rig) + off);
         let origin = Vec3::new(0.0, 0.0, origin.z);
         let mut run = WallRun::plan(&wall, origin, yaw, start, 0.0, &stood, &rig)?;
         let mut m = RanUp { reaches: run.reaches_lip(), ..Default::default() };
@@ -656,6 +854,163 @@ mod tests {
         }
     }
 
+    /// How deep `p` is inside a wall's block (its face's extent along, up
+    /// to its top, in from its face as deep as its top): 0 outside.
+    fn inside_wall(wall: &Ledge, p: Vec3) -> f32 {
+        let (into, along) = (-wall.out_of(p), (p - wall.a).dot(wall.along()));
+        if into > 0.0 && into < wall.depth && p.y < wall.height() && (0.0..=(wall.b - wall.a).length()).contains(&along) { into.min(wall.height() - p.y) } else { 0.0 }
+    }
+
+    /// What a kick measured.
+    #[derive(Debug, Default)]
+    struct Kicked {
+        hold_off: f32,
+        into: f32,
+        deepest: Option<(Bone, f32)>,
+        fastest: f32,
+        fastest_bone: Option<(Bone, f32)>,
+        leap_fastest: f32,
+        on_wall: f32,
+        caught: bool,
+    }
+
+    /// Running at `slant` off square at a tall wall, kicking off it toward
+    /// a lip `height` high on a wall at right angles to it, off `leg` (or
+    /// the one a kick takes off from), taken off at its best.
+    fn kicked(height: f32, slant: f32, speed: f32, leg: Option<usize>) -> Option<Kicked> {
+        kicked_from(height, slant, speed, leg, 0.0)
+    }
+
+    /// [`kicked`], taken off `off` metres farther along the run than its
+    /// best.
+    fn kicked_from(height: f32, slant: f32, speed: f32, leg: Option<usize>, off: f32) -> Option<Kicked> {
+        let (stood, rig) = real_stood();
+        let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 8.0, 4.0, 1.0);
+        let target = Ledge::wall(Vec3::new(-2.2, 0.0, 0.5), Vec3::X, 3.0, height, 1.0);
+        let yaw = super::super::Hanging::square(&wall, rig.forward()) + slant;
+        let start = RunStart { leg: leg.unwrap_or_else(|| WallRun::kick_leg(&wall, yaw, &stood, &rig)), speed };
+        let forward = Quat::from_rotation_y(yaw) * rig.forward();
+        // Where the run meets the face: the hips meeting it 1.8 m from the
+        // other wall's face (a kick from farther out flies too long to
+        // rise to its lip within a kick's push up).
+        let hit = Vec3::new(-2.2 + 1.8 - KICK_MEETING * slant.tan(), 0.0, -1.0);
+        let origin = hit - forward * (WallRun::kick_takeoff(start, slant, &stood, &rig) + off);
+        let mut run = WallRun::kick(&wall, &target, origin, yaw, start, 0.0, &stood, &rig)?;
+        let mut m = Kicked::default();
+        let world = |pose: &LocalPose, root: Vec3, yaw: f32| {
+            let at = forward_kinematics_on(pose, &rig);
+            BoneSet::from_fn(|bone| root + Quat::from_rotation_y(yaw) * at[bone])
+        };
+        let (mut last, mut leap_last): (Option<BoneSet<Vec3>>, Option<BoneSet<Vec3>>) = (None, None);
+        let mut hips = Vec::new();
+        let mut t = 0.0;
+        let measure = |now: BoneSet<Vec3>, t: f32, m: &mut Kicked, last: &mut Option<BoneSet<Vec3>>| {
+            for bone in Bone::ALL {
+                let into = inside_wall(&wall, now[bone]).max(inside_wall(&target, now[bone]));
+                if into > m.into {
+                    (m.into, m.deepest) = (into, Some((bone, t)));
+                }
+                if let Some(before) = last.as_ref() {
+                    let speed = ((now[bone] - now[Bone::Hips]) - (before[bone] - before[Bone::Hips])).length() / DT;
+                    if speed > m.fastest {
+                        (m.fastest, m.fastest_bone) = (speed, Some((bone, t)));
+                    }
+                }
+            }
+            *last = Some(now);
+        };
+        while !run.is_released() {
+            run.advance(DT);
+            t += DT;
+            let now = world(&run.pose(), run.root(), run.facing());
+            if run.elapsed() >= run.contact && !run.is_released() {
+                m.hold_off = m.hold_off.max((now[LEGS[run.lead].2] - run.hold.0).length());
+                hips.push(now[Bone::Hips]);
+            }
+            if run.elapsed() < run.contact {
+                let leap = world(&run.jump.pose_at(run.elapsed(), &stood, &rig), run.root(), run.facing());
+                if let Some(before) = leap_last.as_ref() {
+                    for bone in Bone::ALL {
+                        m.leap_fastest = m.leap_fastest.max(((leap[bone] - leap[Bone::Hips]) - (before[bone] - before[Bone::Hips])).length() / DT);
+                    }
+                }
+                leap_last = Some(leap);
+            }
+            measure(now, t, &mut m, &mut last);
+        }
+        let mut falling = run.release(&|_| Some(0.0));
+        loop {
+            if falling.airborne() && falling.catches(&[target], &rig).is_some() {
+                m.caught = true;
+                break;
+            }
+            if falling.is_done() {
+                break;
+            }
+            falling.advance(DT);
+            t += DT;
+            let now = world(&falling.pose(&rig), falling.root(), falling.facing());
+            measure(now, t, &mut m, &mut last);
+        }
+        m.on_wall = hips.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (DT * DT)).length()).fold(0.0, f32::max);
+        Some(m)
+    }
+
+    /// Running at 3.5 and 4.5 m/s at a tall wall 0.6-0.9 rad off square,
+    /// taken off within [`KICK_TAKEOFF`] of its best, it kicks off it and
+    /// catches a lip 2.3-2.7 m high on a wall at right angles (out of a
+    /// standing jump's reach): the foot held on the wall, nothing into
+    /// either wall, no joint whipping round, the hips braked on the wall
+    /// within 3 g. Taken off 0.2 m farther, if it kicks at all, as well.
+    #[test]
+    fn it_kicks_off_a_wall_and_catches_a_lip_round_the_corner() {
+        let mut faults = Vec::new();
+        for height in [2.3, 2.5, 2.7] {
+            for (slant, speed, off) in [0.6, 0.75, 0.9].into_iter().flat_map(|slant| [3.5, 4.5].into_iter().flat_map(move |speed| [-0.2, -0.1, 0.0, 0.1, 0.2].map(|off| (slant, speed, off)))) {
+                let name = format!("a {height} m lip, {slant} rad off square, {speed} m/s, {off} m off the best");
+                // Within the walker's window kicked; past it, maybe not.
+                let Some(m) = kicked_from(height, slant, speed, None, off) else {
+                    if (-KICK_TAKEOFF.0..=KICK_TAKEOFF.1).contains(&off) {
+                        faults.push(format!("{name}: not kicked"));
+                    }
+                    continue;
+                };
+                eprintln!("{name}: {m:?}");
+                if m.hold_off >= 1.0e-3 {
+                    faults.push(format!("{name}: the foot strayed {:.4} m off its hold", m.hold_off));
+                }
+                if m.into >= 2.0e-3 {
+                    faults.push(format!("{name}: {:?} went {:.4} m into a wall", m.deepest, m.into));
+                }
+                if m.fastest >= 14.0f32.max(m.leap_fastest + 0.01) {
+                    faults.push(format!("{name}: {:?} went {:.1} m/s about the hips", m.fastest_bone, m.fastest));
+                }
+                if m.on_wall >= 3.0 * GRAVITY {
+                    faults.push(format!("{name}: the hips braked at {:.1} m/s² on the wall", m.on_wall));
+                }
+                if !m.caught {
+                    faults.push(format!("{name}: the lip was not caught"));
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults.join("\n"));
+    }
+
+    /// A kick off the foot farther from the wall (the nearer leg crossing in
+    /// front), at a wall met more than [`MOST_KICK_SLANT`] off square, or
+    /// toward a lip too high for a kick's push is not taken.
+    #[test]
+    fn a_kick_off_the_wrong_foot_too_askew_or_toward_too_high_a_lip_is_not_taken() {
+        let (stood, rig) = real_stood();
+        let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 8.0, 4.0, 1.0);
+        let yaw = super::super::Hanging::square(&wall, rig.forward()) + 0.75;
+        let crossed = 1 - WallRun::kick_leg(&wall, yaw, &stood, &rig);
+        assert!(kicked(2.5, 0.75, 4.0, Some(crossed)).is_none(), "off the foot farther from the wall");
+        assert!(kicked(2.5, MOST_KICK_SLANT + 0.1, 4.0, None).is_none(), "met {} rad off square", MOST_KICK_SLANT + 0.1);
+        assert!(kicked(3.2, 0.75, 4.0, None).is_none(), "toward a 3.2 m lip");
+        assert!(kicked(2.5, 0.75, 4.0, None).is_some(), "but the same kick toward a 2.5 m lip is taken");
+    }
+
     /// Running at a wall too far off square, or taking off so far from or
     /// near it that the foot would not meet it right, it does not run up.
     #[test]
@@ -664,7 +1019,7 @@ mod tests {
         let start = RunStart { leg: 0, speed: 4.0 };
         let wall = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 4.0, 2.5, 1.0);
         let yaw = super::super::Hanging::square(&wall, rig.forward());
-        let best = WallRun::takeoff(start, &stood, &rig);
+        let best = WallRun::takeoff(start, 0.0, &stood, &rig);
         let from = |off: f32| Vec3::new(0.0, 0.0, wall.a.z + best + off);
         assert!(WallRun::plan(&wall, from(0.0), yaw, start, 0.0, &stood, &rig).is_some(), "not run up from its best");
         assert!(WallRun::plan(&wall, from(0.0), yaw + 0.5, start, 0.0, &stood, &rig).is_none(), "run up 0.5 rad off square");

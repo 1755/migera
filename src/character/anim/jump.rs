@@ -44,7 +44,7 @@ use super::stance::place_ankle;
 use crate::character::skeleton::Bone;
 
 mod leap;
-pub use leap::{Resume, RunStart};
+pub use leap::{Lift, Resume, RunStart};
 
 /// Gravity, m/s².
 pub const GRAVITY: f32 = 9.81;
@@ -211,6 +211,9 @@ pub struct JumpAsk {
     pub height: f32,
     pub distance: f32,
     pub keep_running: bool,
+    /// From a run running on, held up in the air by pushes off a wall
+    /// ([`Lift`]); not read otherwise.
+    pub lift: Option<Lift>,
 }
 
 impl JumpAsk {
@@ -221,13 +224,13 @@ impl JumpAsk {
 
     /// `height` metres up and `distance` forward, landing on both feet.
     pub const fn forward(height: f32, distance: f32) -> Self {
-        Self { height, distance, keep_running: false }
+        Self { height, distance, keep_running: false, lift: None }
     }
 
     /// From a run, `height` up and `distance` toe to toe (0: as far as the
     /// run carries it), landing on the other foot and running on.
     pub const fn running(height: f32, distance: f32) -> Self {
-        Self { height, distance, keep_running: true }
+        Self { height, distance, keep_running: true, lift: None }
     }
 }
 
@@ -341,6 +344,9 @@ pub struct Jump {
     settle: Vec3,
     /// Vaulting an obstacle ([`Jump::vault`]): the flight reshaped over it.
     vault: Option<Box<super::parkour::vault::Vaulting>>,
+    /// Running along a wall ([`Jump::along_wall`]): the flight reshaped
+    /// onto it.
+    along: Option<Box<super::parkour::along::AlongWall>>,
 }
 
 /// Where the feet stand, worked out once from the standing pose; and how a
@@ -445,6 +451,7 @@ impl Jump {
             run: None,
             settle: Vec3::ZERO,
             vault: None,
+            along: None,
         };
         let asked = ask.distance.max(0.0);
         let passes = if asked > 0.0 { 6 } else { 1 };
@@ -713,15 +720,27 @@ impl Jump {
     /// flight reshaped over the obstacle.
     pub fn pose_at(&self, t: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
         let pose = self.pose_at_unshaped(t, stood, rig);
-        match self.vault.as_deref() {
-            Some(vault) => vault.reshape(&pose, t, self.travelled_at(t), rig),
-            None => pose,
+        match (self.vault.as_deref(), self.along.as_deref()) {
+            (Some(vault), _) => vault.reshape(&pose, t, self.travelled_at(t), rig),
+            (_, Some(along)) => along.reshape(&pose, t, self.travelled_at(t), rig),
+            _ => pose,
         }
     }
 
     /// Vaulting: its flight reshaped by `vault`.
     pub(crate) fn set_vault(&mut self, vault: super::parkour::vault::Vaulting) {
         self.vault = Some(Box::new(vault));
+    }
+
+    /// Running along a wall: its flight reshaped by `along`.
+    pub(crate) fn set_along(&mut self, along: super::parkour::along::AlongWall) {
+        self.along = Some(Box::new(along));
+    }
+
+    /// Running along a wall ([`Jump::along_wall`]), how its flight is
+    /// reshaped.
+    pub fn running_along(&self) -> Option<&super::parkour::along::AlongWall> {
+        self.along.as_deref()
     }
 
     /// Vaulting, how its flight is reshaped.
