@@ -69,6 +69,11 @@ enum Gait {
     /// A standing jump off a 3 m top falling short of a wall as high
     /// across the gap, catching its lip.
     JumpShort,
+    /// Leaping from a braced hang on a 2.5 m wall: up from a step in it to
+    /// its lip 0.8 m above, aside across a 1 m gap, or back to a 2 m wall
+    /// 2.5 m behind; from the launch to the catch, the catch tested each
+    /// frame of the flight.
+    Leap(migera::character::anim::parkour::hang::Leap),
 }
 
 fn main() {
@@ -106,7 +111,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -206,6 +211,36 @@ fn main() {
         }
         _ => None,
     };
+    // A leap from a hang (`parkour::hang::Leap`): the clock is how far from
+    // the launch to the catch; launching, the hang posed, and once let go,
+    // the flight, as the walker poses each.
+    let leaping = match gait {
+        Gait::Leap(way) => {
+            use migera::character::anim::parkour::{hang::Leap, Hanging, Ledge};
+            let (from, target) = match way {
+                Leap::Up => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 0.12), Ledge::wall(Vec3::new(0.0, 0.0, -0.62), Vec3::Z, 2.0, 3.3, 1.0)),
+                Leap::Aside(_) => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(3.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0)),
+                Leap::Back => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 3.0, 2.0, 1.0)),
+            };
+            let mut hanging = Hanging::hung(&from, &[target], Vec3::new(0.2, 0.0, 1.0), 0.0, [None; 2], &stood, &rig);
+            hanging.advance(1.5);
+            assert!(hanging.leap(way, &rig), "did not leap");
+            let (mut probe, mut launch) = (hanging.clone(), 0.0);
+            while !probe.is_released() {
+                probe.advance(DT);
+                launch += DT;
+            }
+            let falling = probe.release(&|_| Some(0.0), &[from, target], &stood, &rig);
+            let (mut probe, mut flight) = (falling.clone(), 0.0);
+            while probe.catches(&[target], &rig).is_none() {
+                assert!(probe.airborne() || flight == 0.0, "never caught the ledge leapt at");
+                probe.advance(DT);
+                flight += DT;
+            }
+            Some((hanging, launch, falling, flight, target))
+        }
+        _ => None,
+    };
     // A drop (`parkour::fall`): the clock is how far from leaving the top to
     // standing below; posed led ahead of its springs, as the walker poses it.
     let falling = match gait {
@@ -285,6 +320,20 @@ fn main() {
                 std::hint::black_box(now.catches(&[*lower], &rig));
             }
             Some((now.pose_led(&rig, &springs), None))
+        }
+        _ if let Some((hanging, launch, falling, flight, target)) = &leaping => {
+            let at = cycle * (launch + flight);
+            if at < *launch {
+                let mut now = hanging.clone();
+                now.advance(at);
+                Some((now.pose_led(&rig, &springs), None))
+            } else {
+                let mut now = falling.clone();
+                now.advance((at - launch - DT).max(0.0));
+                now.advance(DT);
+                std::hint::black_box(now.catches(&[*target], &rig));
+                Some((now.pose_led(&rig, &springs), None))
+            }
         }
         _ if let Some(falling) = &falling => {
             let mut now = falling.clone();
@@ -372,6 +421,15 @@ fn main() {
         Gait::DropDown => "   dropping down into a braced hang from a wall's top".to_string(),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
+        Gait::Leap(way) => {
+            use migera::character::anim::parkour::hang::Leap;
+            let way = match way {
+                Leap::Up => "up to a ledge 0.8 m above",
+                Leap::Aside(_) => "aside to the next ledge along",
+                Leap::Back => "back to a wall behind",
+            };
+            format!("   leaping from a hang {way} and catching it")
+        }
     };
     let gait = match (walls, away) {
         (0, _) => gait,
@@ -488,6 +546,9 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,
+        Some("leap-up") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Up),
+        Some("leap-aside") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Aside(migera::character::anim::parkour::hang::Shimmy::Right)),
+        Some("leap-back") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Back),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

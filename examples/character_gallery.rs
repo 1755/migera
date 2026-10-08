@@ -1416,6 +1416,10 @@ struct HangSchedule {
     drop_fired: bool,
     /// Catching a ledge falling past (`--catch`).
     catch: bool,
+    /// Leaping from the hang (`--leap-at T,up|back|left|right`), at a ledge
+    /// among the others.
+    leap: Option<(f32, migera::character::anim::parkour::hang::Leap)>,
+    leap_fired: bool,
 }
 
 impl HangSchedule {
@@ -1458,6 +1462,22 @@ impl HangSchedule {
                 "--let-go-at" => schedule.let_go_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--drop-down-at" => schedule.drop_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--catch" => schedule.catch = true,
+                "--leap-at" => {
+                    use migera::character::anim::parkour::hang::{Leap, Shimmy};
+                    let given = args.next().unwrap_or_default();
+                    if let Some((at, way)) = given.split_once(',')
+                        && let Ok(at) = at.trim().parse()
+                    {
+                        let way = match way.trim() {
+                            "up" => Some(Leap::Up),
+                            "back" => Some(Leap::Back),
+                            "left" => Some(Leap::Aside(Shimmy::Left)),
+                            "right" => Some(Leap::Aside(Shimmy::Right)),
+                            _ => None,
+                        };
+                        schedule.leap = way.map(|way| (at, way));
+                    }
+                }
                 "--shimmy-at" => {
                     use migera::character::anim::parkour::hang::Shimmy;
                     let given = args.next().unwrap_or_default();
@@ -1495,6 +1515,13 @@ impl HangSchedule {
         if !self.drop_fired && self.drop_at.is_some_and(|at| elapsed >= at) {
             self.drop_fired = true;
             return Some(HangAsk::DropDown);
+        }
+        if let Some((at, way)) = self.leap
+            && !self.leap_fired
+            && elapsed >= at
+        {
+            self.leap_fired = true;
+            return Some(HangAsk::Leap(way));
         }
         if !self.up_fired && self.up_at.is_some_and(|at| elapsed >= at) {
             self.up_fired = true;

@@ -1,6 +1,6 @@
 ---
 title: A fall facing a wall is held off it
-description: "Falling has no collision: facing a wall (Falling::against) its hips stop 0.25 m off over a 0.2 m give, the landing's room is planned over time, hands and toes kept off, no hurt lean; a hang caught there keeps hips and knees out. Read before changing a fall's path, a landing near a wall, or a caught hang."
+description: "Falling has no collision: facing a wall (Falling::against) its hips stop 0.25 m off over a 0.2 m give (less leaving nearer), the landing's room planned over time, hands and toes kept off; a hang caught there keeps hips and knees out. Read before changing a fall's path, a landing near a wall, or a caught hang."
 type: decision
 status: current
 tags:
@@ -47,6 +47,11 @@ wall, the hips are about that far off it). They slow from 0.2 m further out
 (`WALL_GIVE`), as if the arms took the impact, and come to rest without
 penetrating. The stop is the C¹ soft clamp `(x+s)²/4s` on the distance
 past the stop. At 3 m/s it brakes at about 2.3 g; over 0.1 m it was 7.5 g.
+Leaving already inside the give (a braced hang's hips are 0.42 m off the
+face, the give starting at 0.45), the give is cut to start where the hips
+leave, down to 0.05 m (`MIN_WALL_GIVE`). Otherwise the clamp pushes the hips
+the instant the fall begins: a leap aside from a hang, along a wall in line
+with the one let go, was pushed 1.1 mm off it in its first frame (4 m/s²).
 
 **Landing, the hips come back as far as the landing's shape needs.** The
 room is planned once, when the wall is set:

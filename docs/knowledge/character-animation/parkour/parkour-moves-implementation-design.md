@@ -8,7 +8,7 @@ tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-07
+updated: 2026-10-08
 code:
   - src/character/anim/ladder.rs
   - src/character/anim/jump.rs
@@ -317,7 +317,13 @@ its API, its tests, and when it is done.
   under the feet if there is room; a jump over an edge falling on; catching
   from any fall, swept over the frame; a fall facing a wall held off it
   ([its note](./a-fall-facing-a-wall-is-held-off-it.md)).
-- Steps 6-10: not started.
+- **Step 6**, jumps from a hang: built 2026-10-08 ([the
+  note](./a-hang-is-leapt-from-up-aside-or-back.md)): a launch in the
+  hang, the hands letting go over 0.12 s (inside the bar release window),
+  then a `Falling` aimed at the ledge leapt at; up, aside, and back turning
+  round to catch or land. The flight is ballistic but for the hold off the
+  wall it faces.
+- Steps 7-10: not started.
 
 ## Related
 

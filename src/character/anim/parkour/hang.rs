@@ -36,9 +36,11 @@ use crate::character::anim::rig::{accumulate_bind_rotations, accumulate_world_ro
 use crate::character::anim::stance::place_ankle;
 use crate::character::skeleton::Bone;
 
+mod leap;
 mod shimmy;
 mod up;
 
+pub use leap::Leap;
 pub use shimmy::Shimmy;
 
 /// What a walker is asked to do with its ledge ([`Walker::hang`](crate::character::anim::Walker::hang)).
@@ -56,6 +58,9 @@ pub enum HangAsk {
     /// Standing on its top, walk to its edge, turn the back to it and lower
     /// down into a hang from it.
     DropDown,
+    /// Hanging from it, leap up, back or aside ([`Leap`]), at a ledge among
+    /// [`Walker::ledges`](crate::character::anim::Walker::ledges).
+    Leap(Leap),
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -74,6 +79,9 @@ const SIGN: [f32; 2] = [1.0, -1.0];
 /// the flight, and only a 1.9 m ledge was reached.
 pub const SPOT_OUT: f32 = 0.55;
 const JUMP_IN: f32 = 0.2;
+/// Stopped short of the spot, the jump goes in as much further, up to this,
+/// metres.
+const STOPPED_SHORT: f32 = 0.4;
 /// How far the hands reach from their (lifted) shoulders as they meet the
 /// lip, of the arm: the arms not quite straight, still able to give.
 const CATCH_REACH: f32 = 0.9;
@@ -271,6 +279,8 @@ pub struct Hanging {
     others: Vec<Ledge>,
     /// How far apart the hands hold, a shoulder's width, metres.
     spread: f32,
+    /// Launching a leap ([`Self::leap`]).
+    launch: Option<leap::Launch>,
 }
 
 impl Hanging {
@@ -488,6 +498,7 @@ impl Hanging {
             pulled: 0.0,
             others: Vec::new(),
             spread: 0.0,
+            launch: None,
         }
     }
 
@@ -581,8 +592,16 @@ impl Hanging {
     /// and when, on the way up, they first do. `None` past [`HIGHEST`], or
     /// if they reach it standing.
     fn plan_jump(&mut self, stood: &LocalPose, rig: &RigGeometry) -> Option<()> {
+        // In as far as it was going to, and twice as far again as it stopped
+        // short of its spot (up to `STOPPED_SHORT`; the hands meet the lip
+        // near the top, half way in): the walk's last step left it 0.2-0.3 m
+        // short one time in three, the lip out of reach, and the grab was
+        // dropped.
+        let hips = self.stood_at + self.turn * self.body.hips;
+        let short = (self.ledge.out_of(hips) - SPOT_OUT).clamp(0.0, STOPPED_SHORT);
+        let jump_in = JUMP_IN + 2.0 * short;
         // Reached standing where the jump would land it, a step in: a mantle.
-        self.jump = Jump::plan(JumpAsk::forward(0.05, JUMP_IN), stood, rig);
+        self.jump = Jump::plan(JumpAsk::forward(0.05, jump_in), stood, rig);
         let landed = self.jump.duration();
         if self.jump_reach(landed, stood, rig) <= CATCH_REACH {
             return None;
@@ -594,7 +613,7 @@ impl Hanging {
         };
         let mut height = 0.05;
         loop {
-            self.jump = Jump::plan(JumpAsk::forward(height, JUMP_IN), stood, rig);
+            self.jump = Jump::plan(JumpAsk::forward(height, jump_in), stood, rig);
             if self.jump_reach(top(&self.jump), stood, rig) <= CATCH_REACH {
                 break;
             }
@@ -603,7 +622,7 @@ impl Hanging {
                 return None;
             }
         }
-        self.jump = Jump::plan(JumpAsk::forward((height + CATCH_MARGIN).min(HIGHEST), JUMP_IN), stood, rig);
+        self.jump = Jump::plan(JumpAsk::forward((height + CATCH_MARGIN).min(HIGHEST), jump_in), stood, rig);
         let (start, apex) = (self.jump.ends(JumpPhase::Push), top(&self.jump));
         let mut t = start;
         while t < apex && self.jump_reach(t, stood, rig) > CATCH_REACH {
@@ -692,10 +711,31 @@ impl Hanging {
 
     /// Where foot `side`'s ball goes on the wall's face, toes up, below its
     /// socket at `socket`, for the leg to reach it at `reach` of its length.
+    /// A point on the wall's face, out onto the face of another ledge's
+    /// block standing proud of it there (below its top, facing the same
+    /// way): a step in the wall. Caught on the lip above a step, the feet
+    /// planted on the lip's own face went into the step, 12 cm.
+    fn face_at(&self, point: Vec3) -> Vec3 {
+        let out = self.ledge.out;
+        self.others
+            .iter()
+            .filter(|other| other.out.dot(out) > 0.9 && point.y < other.height())
+            .filter(|other| {
+                let along = (point - other.a).dot(other.along());
+                let back = -other.out_of(point);
+                // Its back may be the face itself (a step's block reaches
+                // back to the wall above it).
+                (0.0..=(other.b - other.a).length()).contains(&along) && (0.0..=other.depth + 0.01).contains(&back)
+            })
+            .map(|other| -other.out_of(point))
+            .fold(None, |most: Option<f32>, inside| Some(most.map_or(inside, |most| most.max(inside))))
+            .map_or(point, |inside| point + out * inside)
+    }
+
     fn wall_ball(&self, side: usize, socket: Vec3, reach: f32) -> Vec3 {
         let out = self.ledge.out;
         let ankle_from_ball = self.ankle_from_ball(side, self.toes_up(side));
-        let on_face = |height: f32| Vec3::new(socket.x, height, socket.z) - out * self.ledge.out_of(Vec3::new(socket.x, height, socket.z));
+        let on_face = |height: f32| self.face_at(Vec3::new(socket.x, height, socket.z) - out * self.ledge.out_of(Vec3::new(socket.x, height, socket.z)));
         let (mut low, mut high) = (socket.y - 2.0 * self.body.legs[side], socket.y);
         for _ in 0..40 {
             let middle = 0.5 * (low + high);
@@ -764,6 +804,11 @@ impl Hanging {
                     }
                 }
                 None => {
+                    // Launching a leap, the hips on its curve.
+                    if self.advance_launch(dt) {
+                        self.since += dt;
+                        return;
+                    }
                     self.advance_shimmy(dt);
                     self.step_swing(dt);
                     self.start_up();
@@ -812,6 +857,9 @@ impl Hanging {
 
     /// The hips in the world now, hanging.
     fn hang_hips(&self) -> Vec3 {
+        if let Some((hips, _)) = self.launch_hips() {
+            return hips;
+        }
         let s = &self.swing;
         let (out, along) = self.face();
         self.grip + along * s.along + out * (s.r * s.theta.sin()) - Vec3::Y * (s.r * s.theta.cos())
@@ -867,7 +915,9 @@ impl Hanging {
             Phase::Hanging => 0.0,
         };
         let closed = smoothstep((1.0 - to_catch / CLOSING).clamp(0.0, 1.0));
-        [0, 1].map(|side| self.shimmy_grip(side).unwrap_or(closed))
+        // Letting go to leap, opening.
+        let open = 1.0 - self.letting_go();
+        [0, 1].map(|side| self.shimmy_grip(side).unwrap_or(closed) * open)
     }
 
     /// Where it looks: at the lip, shimmying along it, and climbing up,
@@ -1001,6 +1051,15 @@ impl Hanging {
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
         self.arms_to(&mut pose, rig, root, self.wrists(), [self.hook_turn(0), self.hook_turn(1)], self.elbows_tucked(), 1.0);
+        // Letting go to leap, the arms going with the body.
+        if let Some(began) = self.letting_go_arms(rig) {
+            let gone = self.letting_go();
+            for (arm, clavicle) in ARMS.iter().zip([Bone::LeftShoulder, Bone::RightShoulder]) {
+                for bone in [clavicle, arm.shoulder, arm.elbow, arm.wrist] {
+                    pose.rotations[bone] = pose.rotations[bone].slerp(began.rotations[bone], gone);
+                }
+            }
+        }
         pose
     }
 
@@ -1601,11 +1660,15 @@ mod tests {
         }
     }
 
+    /// Running off a 3 m top toward a wall as high 1-2.5 m ahead, from every
+    /// part of the stride: landed against it, nothing under the floor or
+    /// into the wall.
     #[test]
-    fn probe_run_off_into_wall() {
+    fn running_off_toward_a_wall_lands_clear_of_it() {
         let (stood, rig) = real_stood();
         let forward = rig.forward();
         for (speed, gap, cycle) in [(3.0, 2.5, 0.0), (3.0, 2.5, 0.25), (3.0, 2.5, 0.5), (3.0, 2.5, 0.75), (3.0, 1.5, 0.3), (1.4, 1.0, 0.3)] {
+            let name = format!("{speed} m/s, the wall {gap} m ahead, {cycle} through the stride");
             let params = crate::character::anim::gait::GaitParams::running_on(speed, &rig);
             let pose = crate::character::anim::gait::walk_pose_on(cycle, &params, &stood, &rig);
             let far = Ledge::wall(forward * gap, -forward, 4.0, 3.0, 1.0);
@@ -1617,15 +1680,10 @@ mod tests {
                 let pose = falling.pose(&rig);
                 into = into.max(into_block(&far, &pose, falling.root(), falling.facing(), &rig));
                 let at = forward_kinematics_on(&pose, &rig);
-                for bone in Bone::ALL {
-                    let y = -(falling.root() + at[bone]).y;
-                    if y > under + 0.01 {
-                        eprintln!("  {speed} {gap}: {bone:?} {:.3} under, phase {:?} hips {:?} out {:.3}", y, falling.phase(), falling.hips(), far.out_of(falling.hips()));
-                    }
-                    under = under.max(y);
-                }
+                under = Bone::ALL.iter().map(|&bone| -(falling.root() + at[bone]).y).fold(under, f32::max);
             }
-            eprintln!("{speed} m/s, wall {gap}: under {under:.3} into {into:.3} hurt {} ends {:?}", falling.is_hurt(), falling.ends());
+            assert!(under < 1.0e-3, "{name}: a joint {under:.4} m under the floor");
+            assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the wall");
         }
     }
 
@@ -1718,6 +1776,168 @@ mod tests {
             }
             assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the top's block");
             assert!(under < 1.0e-3, "{name}: a joint {under:.4} m under the top, landed");
+        }
+    }
+
+    /// Stopped up to 0.3 m short of its spot (the walk's last step left it
+    /// 0.2-0.3 m short one time in three, and the grab was dropped), it
+    /// jumps in further and hangs from a 2.25 m ledge, the hands on the lip.
+    #[test]
+    fn a_grab_from_short_of_its_spot_jumps_in_further() {
+        let (stood, rig) = real_stood();
+        let ledge = Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.25, 1.0);
+        let square = Hanging::square(&ledge, rig.forward());
+        let spot = Hanging::spot(&ledge, &[], Vec3::ZERO, square, &stood, &rig);
+        for short in [0.0, 0.1, 0.2, 0.3] {
+            let mut hanging = Hanging::grab(&ledge, spot + ledge.out * short, square, 0.0, &stood, &rig).unwrap_or_else(|| panic!("{short} m short: not grabbed"));
+            hanging.advance(3.0);
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            let held = (0..2).map(|side| (hanging.root() + turn * at[ARMS[side].wrist] - hanging.wrists()[side]).length()).fold(0.0, f32::max);
+            assert!(hanging.is_hanging() && held < 1.0e-3, "{short} m short: a wrist {held:.4} m off the lip");
+        }
+    }
+
+    /// The leaps catch at any frame rate down to 5 fps (live under lavapipe;
+    /// back at 5 fps, the shoulders passed the lip out of reach between two
+    /// frames and it fell on to the floor).
+    #[test]
+    fn leaps_catch_at_low_frame_rates() {
+        let (stood, rig) = real_stood();
+        let wall = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
+        let along = Ledge::wall(Vec3::new(3.26, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
+        let behind = Ledge::wall(Vec3::new(0.0, 0.0, 2.5), Vec3::NEG_Z, 3.0, 2.0, 1.0);
+        for (name, target, way) in [("aside", along, Leap::Aside(Shimmy::Right)), ("back", behind, Leap::Back)] {
+            for fps in [60.0, 20.0, 10.0, 5.0] {
+                let dt = 1.0 / fps;
+                let mut hanging = hung_from(&wall, &[target]);
+                hanging.advance(1.5);
+                assert!(hanging.leap(way, &rig), "{name}: did not leap");
+                while !hanging.is_released() {
+                    hanging.advance(dt);
+                }
+                let mut falling = hanging.release(&|_| Some(0.0), &[wall, target], &stood, &rig);
+                let mut caught = false;
+                while !falling.is_done() && !caught {
+                    falling.advance(dt);
+                    caught = falling.target().is_some_and(|target| falling.catches(&[target], &rig).is_some());
+                }
+                assert!(caught, "{name} at {fps} fps: never caught");
+            }
+        }
+    }
+
+    /// Leaps from a hang, each ballistic once let go: up from a step in a
+    /// wall 2.5 m up to the wall's lip 0.8 m above; aside across a 1 m gap
+    /// to the next ledge along; back, turning round, to a 2 m wall 2.5 m
+    /// behind; and back with nothing behind, landing on the floor turned
+    /// round; and as live, aside 2 m and back 3 m. No joint's step changing
+    /// 2 cm the frame it lets go (the hands held to the lip, 7.8; a toe,
+    /// 2.2; the head, 2.0; a knee turning at once, 2.2; a straight arm's
+    /// elbow chasing its wrist, 3.4; the hands pushed onto the face's plane,
+    /// 6); caught, the wrists held at the ledge leapt at; nothing into a
+    /// block (the shoulders through the lip rising straight up, 11 cm; the
+    /// feet into the wall below, 9; an elbow into the target, 3.9; the hands
+    /// into the wall under it, 2.6; the wrists into the lip letting go, 0.8).
+    #[test]
+    fn leaps_from_a_hang_catch_or_land() {
+        use crate::character::anim::ground::{FlatGround, GroundProbe};
+        let (stood, rig) = real_stood();
+        let wall = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
+        // A step in a wall: the lower part 0.12 m proud of the upper, its lip
+        // 0.8 m under the wall's.
+        let sill = Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 0.12);
+        let above = Ledge::wall(Vec3::new(0.0, 0.0, -0.62), Vec3::Z, 2.0, 3.3, 1.0);
+        let along = Ledge::wall(Vec3::new(3.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
+        let behind = Ledge::wall(Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 3.0, 2.0, 1.0);
+        // As live: the next along 2.06 m from the grip, a wall 3 m behind.
+        let farther = Ledge::wall(Vec3::new(3.26, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
+        let far_behind = Ledge::wall(Vec3::new(0.0, 0.0, 2.5), Vec3::NEG_Z, 3.0, 2.0, 1.0);
+        let cases = [
+            ("up", sill, vec![above], Leap::Up, Some(above)),
+            ("aside", wall, vec![along], Leap::Aside(Shimmy::Right), Some(along)),
+            ("aside, 2 m", wall, vec![farther], Leap::Aside(Shimmy::Right), Some(farther)),
+            ("back", wall, vec![behind], Leap::Back, Some(behind)),
+            ("back, 3 m", wall, vec![far_behind], Leap::Back, Some(far_behind)),
+            ("back, nothing behind", wall, vec![], Leap::Back, None),
+        ];
+        for (name, from, others, way, catches) in cases {
+            let blocks: Vec<Ledge> = std::iter::once(from).chain(others.iter().copied()).collect();
+            let ground = super::super::geometry::LedgeGround::new(Box::new(FlatGround::default()), blocks.clone());
+            let height = |at: Vec3| ground.sample(at).map(|hit| hit.height);
+            let mut hanging = hung_from(&from, &others);
+            hanging.advance(1.5);
+            assert!(hanging.leap(way, &rig), "{name}: did not leap");
+            let world = |pose: &LocalPose, root: Vec3, yaw: f32| {
+                let at = forward_kinematics_on(pose, &rig);
+                BoneSet::from_fn(|bone| root + Quat::from_rotation_y(yaw) * at[bone])
+            };
+            let into = |pose: &LocalPose, root: Vec3, yaw: f32| blocks.iter().map(|block| into_block(block, pose, root, yaw, &rig)).fold(0.0, f32::max);
+            let mut deepest = 0.0f32;
+            let mut before = world(&hanging.pose(&rig), hanging.root(), hanging.facing());
+            while !hanging.is_released() {
+                before = world(&hanging.pose(&rig), hanging.root(), hanging.facing());
+                hanging.advance(DT);
+                deepest = deepest.max(into(&hanging.pose(&rig), hanging.root(), hanging.facing()));
+            }
+            let held = world(&hanging.pose(&rig), hanging.root(), hanging.facing());
+            let mut falling = hanging.release(&height, &blocks, &stood, &rig);
+            falling.advance(DT);
+            let first = world(&falling.pose(&rig), falling.root(), falling.facing());
+            // Each joint's step letting go against its step before.
+            let kink = Bone::ALL.iter().map(|&bone| (first[bone] - 2.0 * held[bone] + before[bone]).length()).fold(0.0, f32::max);
+            let worst = Bone::ALL.into_iter().max_by(|&a, &b| (first[a] - 2.0 * held[a] + before[a]).length().total_cmp(&(first[b] - 2.0 * held[b] + before[b]).length()));
+            assert!(kink < 0.02, "{name}: a joint's step changed {kink:.4} m the frame it let go ({worst:?})");
+            let mut caught = None;
+            let mut flight = vec![held[Bone::Hips]];
+            while !falling.is_done() {
+                deepest = deepest.max(into(&falling.pose(&rig), falling.root(), falling.facing()));
+                if falling.airborne() {
+                    flight.push(falling.hips());
+                }
+                if let Some(target) = falling.target()
+                    && let Some(ledge) = falling.catches(&[target], &rig)
+                {
+                    let square = Hanging::square(&ledge, rig.forward());
+                    caught = Some(Hanging::caught(&ledge, &blocks, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.root(), square, 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig));
+                    break;
+                }
+                falling.advance(DT);
+            }
+            // Ballistic from letting go to the catch or touching down: the
+            // hips falling at g, nothing pushing them along the wall or
+            // across, only out off the wall faced, held as any fall facing
+            // one (up, the feet coming up the wall below, 0.17 g; back 2 m,
+            // the room for a landing at its foot coming in before the
+            // catch, 3.6 g over two frames). A leap aside along a wall in
+            // line was pushed off it the frame it let go, 4 m/s².
+            let (mut off, mut held_off) = (0.0f32, 0.0f32);
+            for w in flight.windows(3) {
+                let push = (w[2] - 2.0 * w[1] + w[0]) / (DT * DT) + Vec3::Y * GRAVITY;
+                let out = catches.map_or(0.0, |target| push.dot(target.out).max(0.0));
+                held_off = held_off.max(out);
+                off = off.max((push - catches.map_or(Vec3::ZERO, |target| target.out) * out).length());
+            }
+            assert!(off < 0.05, "{name}: the hips' flight off ballistic by {off:.3} m/s²");
+            assert!(held_off < 4.5 * GRAVITY, "{name}: the hips held off the wall at {:.1} g", held_off / GRAVITY);
+            match (catches, caught) {
+                (Some(target), Some(mut caught)) => {
+                    for _ in 0..(3.0 / DT) as usize {
+                        caught.advance(DT);
+                        deepest = deepest.max(into(&caught.pose(&rig), caught.root(), caught.facing()));
+                    }
+                    let at = world(&caught.pose(&rig), caught.root(), caught.facing());
+                    let held = (0..2).map(|side| (at[ARMS[side].wrist] - caught.wrists()[side]).length()).fold(0.0, f32::max);
+                    assert!(held < 1.0e-3, "{name}: a caught wrist {held:.4} m off its hook");
+                    assert!((caught.wrists()[0].y - target.height()).abs() < 0.15, "{name}: caught at {:.2} m, not the ledge leapt at", caught.wrists()[0].y);
+                }
+                (None, None) => {
+                    let turned = crate::character::anim::facing::shortest_angle(falling.facing() - hanging.facing() - std::f32::consts::PI).abs();
+                    assert!(turned < 0.01 && falling.root().y.abs() < 1.0e-3, "{name}: landed {:.2} rad off turned round, the root {:.3} m up", turned, falling.root().y);
+                }
+                (want, got) => panic!("{name}: to catch {:?}, caught {}", want.map(|l| l.height()), got.is_some()),
+            }
+            assert!(deepest < 1.0e-3, "{name}: a joint {deepest:.4} m into a block");
         }
     }
 

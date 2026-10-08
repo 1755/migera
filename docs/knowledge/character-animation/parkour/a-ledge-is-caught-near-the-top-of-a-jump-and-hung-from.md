@@ -7,8 +7,8 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-07
-verified: 2026-10-07
+updated: 2026-10-08
+verified: 2026-10-08
 code:
   - src/character/anim/parkour/hang.rs
   - src/character/anim/parkour/geometry.rs
@@ -49,7 +49,9 @@ reach the lip within 0.9 of the arm at the top of its flight, 4 cm higher
 stands with its hips 0.55 m out from the face (`SPOT_OUT`) and jumps 0.2 m
 in (`JUMP_IN`). On `puppet_base` that reaches ledges 1.9 to 2.35 m high;
 lower, the lip is in reach standing (a mantle, step 7), and the grab is
-refused.
+refused. Stopped short of the spot, it jumps in twice as far again as it
+fell short, up to 0.4 m (`STOPPED_SHORT`): the hands meet the lip near the
+top of the flight, half way in.
 
 **The arms reach for the lip through the push**, each wrist on the straight
 line from where it was as the push began to its hook: the jump's own arm
@@ -118,6 +120,11 @@ oscillators faded.
   -Z); `atan2(x, z)` sent the walk the other way, through the wall.
 - **Settled is not reached in seconds at 0.15 of critical damping**: a free
   hang still drifted 1.3 cm/s after 12 s.
+- **The walk's stop also falls short.** One live grab in three stopped
+  0.2-0.3 m short of its spot (seen as well on a build from before the
+  walls were added), the lip was out of the fixed jump's reach, and the
+  grab was dropped. Hence the jump in grows with the shortfall
+  (`a_grab_from_short_of_its_spot_jumps_in_further`).
 
 ## Consequences
 

@@ -53,6 +53,10 @@ const LEGS_REACH: f32 = 0.25;
 /// the trunk's and arms' swing is read off this far ahead in the jump
 /// (over 75 ms, a hand's curved swing left 1.1 cm a frame off).
 const LEGS_COAST: f32 = 0.15;
+/// Turning round in the air, begun this long after leaving, seconds, and
+/// done within this share of the flight.
+const SPIN_AFTER: f32 = 0.1;
+const SPIN_IN_FLIGHT: f32 = 0.8;
 /// The flight is searched for a top to land on this finely, seconds.
 const LAND_STEP: f32 = 0.01;
 /// A foot on a top: from this far behind its ankle to this far ahead (the
@@ -93,6 +97,8 @@ const KNEE_OFF_WALL: f32 = 0.02;
 /// much more.
 const HIPS_OFF_WALL: f32 = 0.25;
 const WALL_GIVE: f32 = 0.2;
+/// The least the give is cut to, leaving near the wall, metres.
+const MIN_WALL_GIVE: f32 = 0.05;
 const ROOM_MARGIN: f32 = 0.05;
 /// A wall faced within this of where it would come to rest is fallen
 /// against, metres: a landing's shape reaches 0.65 m ahead of the hips.
@@ -128,6 +134,8 @@ const FREED_BONES: [Bone; 18] = [
 /// Falling past a ledge, the hands catch it once its lip comes within this
 /// share of the arm's length of the shoulders' middle, above them.
 const CATCH_REACH: f32 = 0.9;
+/// The frame's way past the lip is looked along at this many points.
+const CATCH_SWEEP: usize = 8;
 /// The quickest a landing rises back to standing, seconds.
 const QUICKEST_UP: f32 = 0.5;
 /// Dropping further than this, metres, it rolls: the guidance is to roll
@@ -311,6 +319,9 @@ pub struct Falling {
     /// How far the hips keep off it, metres, every [`ROOM_STEP`] seconds
     /// from leaving (empty: [`HIPS_OFF_WALL`]).
     wall_rooms: Vec<f32>,
+    /// How far out from that the hips start slowing, metres: [`WALL_GIVE`],
+    /// or less, leaving nearer (see [`Self::facing_wall`]).
+    wall_give: f32,
     /// Each ankle's velocity as it left, relative to the hips (the world):
     /// the legs swinging in a jump ([`Self::from_jump`]).
     ankle_velocities: [Vec3; 2],
@@ -326,6 +337,12 @@ pub struct Falling {
     /// Squatting where a roll would go off what it lands on
     /// ([`Self::keep_roll_on`]).
     no_roll: bool,
+    /// Turning in the air: how far short of its facing it leaves, radians,
+    /// and how long it takes ([`Self::spin_round`]).
+    spin: f32,
+    spin_time: f32,
+    /// The ledge it leaps at ([`Self::aim_at`]).
+    target: Option<Ledge>,
     /// Rolling, not squatting; landing hurt; the rig it was measured on.
     roll: Option<Roll>,
     hurt: bool,
@@ -375,11 +392,15 @@ impl Falling {
             feet: [Vec3::ZERO; 2],
             wall: None,
             wall_rooms: Vec::new(),
+            wall_give: WALL_GIVE,
             ankle_velocities: [Vec3::ZERO; 2],
             from_ahead: None,
             hips_drift: Vec3::ZERO,
             land_shift: Vec3::ZERO,
             no_roll: false,
+            spin: 0.0,
+            spin_time: 0.0,
+            target: None,
             roll: None,
             hurt: false,
             rig: std::sync::Arc::new(rig.clone()),
@@ -561,11 +582,11 @@ impl Falling {
         (0..=(end / 0.005).ceil() as usize).all(|i| {
             at.t = (0.005 * i as f32).min(end);
             let joints = forward_kinematics_on(&at.pose(rig), rig);
-            let root = at.root();
+            let (root, turn) = (at.root(), at.turn_now());
             // The highest ground at each joint's spot, read from far above
             // (from the joint, a top more than a foot over it was missed).
             Bone::ALL.into_iter().all(|bone| {
-                let joint = root + self.turn * joints[bone];
+                let joint = root + turn * joints[bone];
                 ground(Vec3::new(joint.x, joint.y + 100.0, joint.z)).is_none_or(|height| height <= joint.y - 0.01 || height < self.ground + STEP_DOWN)
             })
         })
@@ -665,6 +686,13 @@ impl Falling {
             self.wall_rooms = average(&average(&held));
             self.replan(&rig);
         }
+        // Leaving nearer than the give (a braced hang's hips, 0.42 m out,
+        // against the 0.45 m it starts at in the air), slowing starts where
+        // they leave: else a leap aside along a wall in line was pushed off
+        // it the frame it let go (4 m/s²).
+        let leaving = (self.from_hips - point).dot(out) - self.wall_room_at(0.0);
+        self.wall_give = leaving.clamp(MIN_WALL_GIVE, WALL_GIVE);
+        self.replan(&rig);
     }
 
     /// How far the hips keep off the wall `t` seconds in, metres (planned
@@ -741,34 +769,66 @@ impl Falling {
     /// along it, its lip within the arms' reach of the shoulders and above
     /// them, falling. Reaching up ([`Self::reach`]), the hands meet it.
     ///
-    /// Swept over the last frame: the shoulders where they passed the lip's
-    /// height (the frame's start, if already under it). Tested at the
-    /// frame's end alone, a frame of a tenth of a second (a hitch) fell
-    /// past the 0.36 m the lip is in reach and on to the ground.
+    /// Swept over the frame the shoulders pass the lip's height, the body as
+    /// it is at times across it. Tested at the frame's end alone, a frame of
+    /// a tenth of a second (a hitch) fell past the 0.36 m the lip is in
+    /// reach and on to the ground.
     pub fn catches(&self, ledges: &[Ledge], rig: &RigGeometry) -> Option<Ledge> {
+        // Rising at the frame's end, it rose all of it (ballistic).
         if !self.airborne() || self.hips_velocity().y >= 0.0 {
             return None;
         }
-        let pose = self.pose(rig);
-        let at = forward_kinematics_on(&pose, rig);
-        let root = self.root();
-        let shoulders = root + self.turn * (0.5 * (at[ArmChain::LEFT.shoulder] + at[ArmChain::RIGHT.shoulder]));
-        let arm = (at[ArmChain::LEFT.elbow] - at[ArmChain::LEFT.shoulder]).length() + (at[ArmChain::LEFT.wrist] - at[ArmChain::LEFT.elbow]).length();
-        let hips = root + self.turn * at[Bone::Hips];
-        // The frame's start, the body moved as the hips did.
-        let before = shoulders + self.hips_at(self.last_t) - hips;
-        let forward = self.turn * rig.forward();
+        // The body `t` seconds in: its shoulders' middle, hips, facing and
+        // arm's length; whether it can catch then (falling, not turning).
+        struct Then {
+            shoulders: Vec3,
+            hips: Vec3,
+            forward: Vec3,
+            arm: f32,
+            able: bool,
+        }
+        let then = |t: f32| {
+            let mut at = self.clone();
+            at.t = t;
+            let joints = forward_kinematics_on(&at.pose(rig), rig);
+            let (root, turn) = (at.root(), at.turn_now());
+            Then {
+                shoulders: root + turn * (0.5 * (joints[ArmChain::LEFT.shoulder] + joints[ArmChain::RIGHT.shoulder])),
+                hips: root + turn * joints[Bone::Hips],
+                forward: turn * rig.forward(),
+                arm: (joints[ArmChain::LEFT.elbow] - joints[ArmChain::LEFT.shoulder]).length() + (joints[ArmChain::LEFT.wrist] - joints[ArmChain::LEFT.elbow]).length(),
+                able: at.airborne() && at.hips_velocity().y < 0.0 && !at.is_spinning(),
+            }
+        };
+        let catches = |ledge: &Ledge, body: &Then| {
+            body.able
+                && body.shoulders.y <= ledge.height()
+                && body.forward.dot(-ledge.out) > std::f32::consts::FRAC_1_SQRT_2
+                && (0.05..0.8).contains(&ledge.out_of(body.hips))
+                && (ledge.nearest(body.shoulders, 0.3) - body.shoulders).length() <= CATCH_REACH * body.arm
+        };
+        let now = then(self.t);
+        // The frame's start, posed only when its shoulders may have been
+        // over a lip: no higher than its hips by their distance now (a
+        // frame's bend of the spine barely changes it).
+        let reach_up = (now.shoulders - now.hips).length() + 0.05;
+        let start_hips = self.hips_at(self.last_t).y;
+        let mut start: Option<Then> = None;
+        // Swept over the frame the shoulders pass the lip, the body as it is
+        // at each of `CATCH_SWEEP` times across it: estimated by moving the
+        // body back as the hips moved, at 5 fps a leap back passed the lip
+        // out of reach (the body turning and reaching meanwhile).
         ledges.iter().copied().find(|ledge| {
-            let height = ledge.height();
-            if shoulders.y > height {
+            if now.shoulders.y > ledge.height() {
                 return false;
             }
-            let passing = if before.y > height { before.lerp(shoulders, (before.y - height) / (before.y - shoulders.y)) } else { before };
-            let lip = ledge.nearest(passing, 0.3);
-            let out = ledge.out_of(hips);
-            forward.dot(-ledge.out) > std::f32::consts::FRAC_1_SQRT_2
-                && (0.05..0.8).contains(&out)
-                && (lip - passing).length() <= CATCH_REACH * arm
+            if start_hips + reach_up < ledge.height() || start.get_or_insert_with(|| then(self.last_t)).shoulders.y <= ledge.height() {
+                return catches(ledge, &now);
+            }
+            (1..=CATCH_SWEEP).any(|k| {
+                let t = self.last_t + (self.t - self.last_t) * k as f32 / CATCH_SWEEP as f32;
+                if k == CATCH_SWEEP { catches(ledge, &now) } else { catches(ledge, &then(t)) }
+            })
         })
     }
 
@@ -1078,9 +1138,67 @@ impl Falling {
         self.ends
     }
 
-    /// The facing (radians about `+Y`).
+    /// The facing (radians about `+Y`): turning in the air
+    /// ([`Self::spin_round`]), from where it left to where it lands.
     pub fn facing(&self) -> f32 {
-        self.yaw
+        if self.spin == 0.0 {
+            return self.yaw;
+        }
+        // Begun a moment after leaving, and eased in from no speed and no
+        // acceleration: turning from the instant it left, one knee's step
+        // changed 0.9 cm more the frame it let go, the other's less.
+        let s = ((self.t - SPIN_AFTER) / (self.spin_time - SPIN_AFTER).max(1.0e-3)).clamp(0.0, 1.0);
+        self.yaw - self.spin * (1.0 - s * s * s * (s * (6.0 * s - 15.0) + 10.0))
+    }
+
+    /// The facing now as a turn (the body's frame; the landing is planned in
+    /// the facing it lands in).
+    fn turn_now(&self) -> Quat {
+        Quat::from_rotation_y(self.facing())
+    }
+
+    /// Turning `spin` radians about `+Y` in the air over `seconds` (within
+    /// the flight), from the facing it left with: it lands facing `spin` on
+    /// from it, the landing planned so. Pushing back off a wall, it turns
+    /// round to land or catch facing away from it.
+    pub fn spin_round(&mut self, spin: f32, seconds: f32, rig: &RigGeometry) {
+        self.yaw += spin;
+        self.turn = Quat::from_rotation_y(self.yaw);
+        self.spin = spin;
+        self.replan(rig);
+        self.spin_time = seconds.min(SPIN_IN_FLIGHT * self.ends[0]);
+    }
+
+    /// Whether it is still turning in the air.
+    pub fn is_spinning(&self) -> bool {
+        self.spin != 0.0 && self.t < self.spin_time
+    }
+
+    /// Leaping at a ledge (`hang::leap`): the one it catches, reaching for
+    /// it, whatever the walker asks.
+    pub fn aim_at(&mut self, ledge: Ledge) {
+        self.target = Some(ledge);
+        self.reaching = true;
+    }
+
+    /// Leaving with the legs moving, each ankle's velocity relative to the
+    /// hips (the world): they coast on it, as leaving a jump.
+    pub fn coast_legs(&mut self, ankle_velocities: [Vec3; 2]) {
+        self.ankle_velocities = ankle_velocities;
+    }
+
+    /// Leaving with the trunk and arms turning: the pose they would be in
+    /// [`AHEAD`] later, which they leave turning toward (and on past).
+    pub fn coast_upper(&mut self, ahead: LocalPose) {
+        self.from_ahead = Some(ahead);
+    }
+
+    /// How far ahead the pose given to [`Self::coast_upper`] is, seconds.
+    pub const COAST_AHEAD: f32 = AHEAD;
+
+    /// The ledge it leaps at, if any ([`Self::aim_at`]).
+    pub fn target(&self) -> Option<Ledge> {
+        self.target
     }
 
     /// The hips in the world now.
@@ -1099,7 +1217,7 @@ impl Falling {
         let Some((top, out)) = self.wall else {
             return point;
         };
-        let (x, s) = ((point - top).dot(out) - room, WALL_GIVE);
+        let (x, s) = ((point - top).dot(out) - room, self.wall_give);
         let kept = if x >= s {
             x
         } else if x > -s {
@@ -1163,7 +1281,7 @@ impl Falling {
     /// The root riding the hips (under them as standing has them, the drop
     /// added once stood): the roll eases its height from the squat's.
     fn hips_root(&self) -> Vec3 {
-        let root = self.hips() - self.turn * self.body.hips;
+        let root = self.hips() - self.turn_now() * self.body.hips;
         if self.is_done() { root + Vec3::Y * self.drop } else { root }
     }
 
@@ -1196,7 +1314,10 @@ impl Falling {
     /// [`Self::pose`] (not rolling) from the walker's root at `root`.
     fn pose_at_root(&self, root: Vec3, rig: &RigGeometry) -> LocalPose {
         let hips = self.hips();
-        let back = self.turn.inverse();
+        // In the frame it faces now: turning in the air, the leaving pose
+        // and the feet's places in the world kept as they are at the start.
+        let turn = self.turn_now();
+        let back = turn.inverse();
         let [flight, _, _] = self.ends;
         let landed = self.t >= flight;
         let squat = self.squat();
@@ -1255,7 +1376,7 @@ impl Falling {
             // its landing put a knee 5 cm in, the hips held off).
             if let Some((top, out)) = self.wall.filter(|_| !landed) {
                 for _ in 0..2 {
-                    let knee = root + self.turn * forward_kinematics_on(&pose, rig)[LEGS[side].1];
+                    let knee = root + turn * forward_kinematics_on(&pose, rig)[LEGS[side].1];
                     let short = KNEE_OFF_WALL - (knee - top).dot(out);
                     if short <= 0.0 || knee.y >= top.y {
                         break;
@@ -1275,7 +1396,7 @@ impl Falling {
             // Facing a wall, the ankle out as far as its toes would go into
             // it levelling (let go onto a step, coming in to it, 7 mm).
             if let Some((top, out)) = self.wall {
-                let toe = root + self.turn * forward_kinematics_on(&pose, rig)[LEGS[side].3];
+                let toe = root + turn * forward_kinematics_on(&pose, rig)[LEGS[side].3];
                 let short = (top - toe).dot(out);
                 if short > 0.0 && toe.y < top.y {
                     place_ankle(&mut pose, rig, bone, back * (ankle + out * short - root) - pose_hips);
@@ -1289,13 +1410,19 @@ impl Falling {
         // wall as it landed nearer it). Only under its top; and off it by
         // nothing at first, more as they are let go: held hooked on the
         // lip, kept off it at once, they jumped 4-15 cm the frame it let go.
-        if let Some((top, out)) = self.wall {
+        // And the face of the ledge leapt at, below its lip (leaping up, the
+        // hands reaching for it went 2.6 cm into the wall under it).
+        let target_wall = self.target.map(|ledge| (ledge.nearest(hips, 0.0), ledge.out));
+        for (top, out) in self.wall.into_iter().chain(target_wall) {
             let at = forward_kinematics_on(&pose, rig);
             for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
-                let wrist = root + self.turn * at[chain.wrist];
+                let wrist = root + turn * at[chain.wrist];
                 let under = smoothstep(((top.y - wrist.y) / WALL_EASED).clamp(0.0, 1.0));
                 let short = HANDS_OFF_WALL * under * freed - (wrist - top).dot(out);
-                if short > 0.0 {
+                // Only under the top: above it (a hand let go from over the
+                // lip), there is no wall, and pushed out onto the face's
+                // plane the hands jumped 6 cm the frame it leapt.
+                if short > 0.0 && wrist.y < top.y {
                     // The elbow's own way: turned to another, it jumped
                     // 12 cm as the hands began to be kept off.
                     let pole = (at[chain.elbow] - 0.5 * (at[chain.shoulder] + at[chain.wrist])).normalize_or(back * out);
@@ -1310,7 +1437,7 @@ impl Falling {
             let free = pose;
             let at = forward_kinematics_on(&pose, rig);
             for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
-                let shoulder = root + self.turn * at[chain.shoulder];
+                let shoulder = root + turn * at[chain.shoulder];
                 let hand = Vec3::new(shoulder.x, self.ground + WRIST_ON_GROUND, shoulder.z);
                 let pole = (rig.forward() * -0.5 + Vec3::Y * 0.2).normalize();
                 solve_arm_toward_from(&mut pose, &at, chain, back * (hand - root), pole, rig);

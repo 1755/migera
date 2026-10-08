@@ -41,6 +41,54 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 6: leaping from a hang, up, aside or back
+
+Hanging, asked `HangAsk::Leap(Leap::Up | Aside | Back)`, it leaps at a ledge
+among those about the hang (`Hanging::leap`). A launch in the hang (0.35 s)
+takes the hips on a Hermite curve to the release velocity while the hands
+let go over the last 0.12 s, inside a bar release's 73-157 ms window. Then
+a `Falling` takes over, aimed so the shoulders come 8 cm under the target's
+lip, at most 3 m/s across. A leap back turns round in the air; with nothing
+behind it lands. Note: [a hang is leapt from, up, aside or
+back](docs/knowledge/character-animation/parkour/a-hang-is-leapt-from-up-aside-or-back.md).
+
+- **Fixed on the way:**
+  - the release jolted the wrists 7.8 cm; each joint's step now changes
+    under 2 cm the frame it lets go;
+  - the shoulders went 11 cm through the lip rising straight up, an elbow
+    3.9 cm into the target's wall, the feet 9 cm into the wall below;
+  - a leap back at 5 fps passed the lip out of reach. The catch sweep now
+    poses the body at eight times across the frame, not estimated from the
+    hips. Posed only when a lip may lie between, it costs 4% on `catch`
+    (21% posed every frame);
+  - a leap aside along a wall in line was pushed off it in the frame it let
+    go (4 m/s²). A fall leaving inside the wall hold's give now starts the
+    give where it leaves;
+  - a grab whose walk stopped 0.2-0.3 m short of its spot (one live grab in
+    three) was dropped. The jump now goes in as much further.
+- **Headless:** up, aside (1 m and 2.06 m gaps), back (2.5 m and 3 m) and
+  back with nothing behind:
+  - the flight is ballistic (the hips at g within 0.003 m/s², nothing
+    along the wall or across);
+  - only the wall faced holds the hips out: 0.17 g up, 3.6 g over two
+    frames back 2 m, the landing's room coming in before the catch;
+  - caught, the wrists are held within 1 mm at the ledge leapt at;
+  - with nothing behind it lands turned round;
+  - nothing goes into a block;
+  - aside and back catch at 5-60 fps.
+- **Live** (Xvfb, 1/30 s steps, gizmos on, mesh off): up from a 2.25 m step
+  to the lip above, the feet braced on the step; aside to the next ledge;
+  back from the block's front to the 2.0 m wall behind, the hands over its
+  top, the feet on its face (right side and top views).
+- **Gallery:** `--leap-at T,up|back|left|right`, e.g. `--block
+  0,-1,180,2.25,2.0,1.0 --side-ledge 0,2.0,0,2.0,3.0 --hang-at 1
+  --leap-at 16,back --step-seconds 0.0333333`.
+- **Cost** (`anim_bench --gait leap-up|leap-aside|leap-back --characters
+  100`, a character a frame): 42, 41 and 45 µs. `catch` is 26 µs and
+  `jump-catch` 35 µs with the new sweep (24.6 and 34.3 µs before).
+
+1252 library tests pass; clippy is clean.
+
 ### Parkour, step 5: dropping down to a hang, letting go, catching from a fall
 
 Standing on a top, asked `HangAsk::DropDown`, the walker walks to where a

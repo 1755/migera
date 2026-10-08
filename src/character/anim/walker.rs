@@ -1638,6 +1638,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
         }
+        // Let go to leap this frame (below), the flight starts from this
+        // frame's pose.
+        let mut leapt = false;
         // Grabbing a ledge (`parkour::hang`): once stopped on the spot under
         // it, it jumps for the lip and hangs from it, posed on its holds,
         // the root riding its hips, the legs as posed. Out of a standing
@@ -1696,6 +1699,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     hanging.climb_up();
                     walker.hang = None;
                 }
+                // A leap is taken once it just hangs (not climbing up nor
+                // mid-step); with nothing to leap at, the ask is dropped.
+                if let Some(super::parkour::hang::HangAsk::Leap(way)) = walker.hang
+                    && hanging.is_hanging()
+                    && !hanging.is_climbing_up()
+                    && !hanging.is_shimmying()
+                {
+                    hanging.leap(way, &rig);
+                    walker.hang = None;
+                }
                 // Shimmying while asked; the step under way finishes.
                 hanging.shimmy(match walker.hang {
                     Some(super::parkour::hang::HangAsk::Shimmy(way)) => Some(way),
@@ -1735,13 +1748,22 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     phase.elapsed = 0.0;
                 }
             }
+            // Leaping, let go: in the air (`parkour::fall`), aimed at the
+            // ledge leapt at.
+            if let Some(hanging) = state.hanging.as_ref().filter(|hanging| hanging.is_released()) {
+                let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                let falling = hanging.release(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height), &ledges, &stood, &rig);
+                state.falling = Some(falling);
+                state.hanging = None;
+                leapt = true;
+            }
         }
         // Over an edge (`parkour::fall`): from the gait's pose and the root's
         // velocity it falls to the ground found below and lands, posed off
         // the floor, the root riding its hips; stood again, it walks on.
         if let Some(rig) = foot_ik.rig.clone() {
             // Started from this frame's pose, it moves on from the next.
-            let mut started = false;
+            let mut started = leapt;
             if let Some(below) = state.fall_to.take()
                 && state.falling.is_none()
                 && !fallen
@@ -1786,10 +1808,19 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 legs_free = true;
                 // Asked to catch: reaching up, the hands catch a ledge it
                 // falls past (its ledge, or any about it), hanging from it.
-                falling.reach(walker.catch);
+                // A leap's flight catches the ledge leapt at, whatever is asked.
+                let target = falling.target();
+                if target.is_none() {
+                    falling.reach(walker.catch);
+                }
                 let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
-                let caught = walker.catch && falling.airborne() && !ledges.is_empty();
-                if let Some(ledge) = caught.then(|| falling.catches(&ledges, &rig)).flatten() {
+                let catchable: Vec<super::parkour::Ledge> = match target {
+                    Some(target) => vec![target],
+                    None if walker.catch => ledges.clone(),
+                    None => Vec::new(),
+                };
+                let caught = falling.airborne() && !catchable.is_empty();
+                if let Some(ledge) = caught.then(|| falling.catches(&catchable, &rig)).flatten() {
                     let pose = falling.pose(&rig);
                     let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
                     let square = super::parkour::Hanging::square(&ledge, rig.forward());

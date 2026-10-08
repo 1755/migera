@@ -306,6 +306,9 @@ impl Hanging {
 
     /// The hips' velocity hanging now, in the world.
     pub(super) fn hang_velocity(&self) -> Vec3 {
+        if let Some((_, velocity)) = self.launch_hips() {
+            return velocity;
+        }
         let s = &self.swing;
         let (sin, cos) = s.theta.sin_cos();
         let (out, along) = self.face();

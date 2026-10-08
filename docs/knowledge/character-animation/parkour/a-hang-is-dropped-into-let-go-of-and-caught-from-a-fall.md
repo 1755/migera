@@ -129,10 +129,12 @@ length. `Hanging::caught` then starts the hang from the body's hips,
 velocity and pose, with step 1's spring and pendulum taking it. Braced, the
 feet swing out in an arc (0.3 m) onto the wall over 0.5 s.
 
-**The catch is swept over the frame.** The shoulders at the frame's start
-are the body moved back as the hips moved (ballistic, exact for the hips).
-The test is made where they passed the lip's height. The walker runs on the
-variable frame time.
+**The catch is swept over the frame.** In the frame the shoulders pass the
+lip's height, the body is posed as it is at eight times across the frame
+(`CATCH_SWEEP`), and the catch tested at each. The frame's start is posed
+only when its shoulders could have been over a lip: its hips plus their
+distance to the shoulders now. Rising, it does not catch. The walker runs
+on the variable frame time.
 
 ## Alternatives considered
 
@@ -160,6 +162,12 @@ variable frame time.
   about 70 ms. At 9 fps (a hitch, or lavapipe live at 6) the shoulders fell
   past between two frames and it fell on to the ground. Swept, it catches
   at every rate from 6 to 120 fps.
+- **The frame's start estimated by moving the body back as the hips
+  moved** is wrong for a body turning or reaching in the frame. A leap
+  back from a hang (step 6), turning round, passed the lip out of reach at
+  5 fps. The sweep now poses the body at each time. Posing the frame's
+  start every frame cost 21% more on `catch` (2.46 to 2.98 ms for 100
+  characters); posed only when a lip may lie between, 4%.
 - **A step under braced feet is landed on, not fallen through.** Falling to
   the ground under the root, the feet went 0.99 m into a step 0.35 m out
   under them. The root itself hangs over the step, so the ground must be
@@ -276,8 +284,8 @@ variable frame time.
 |---|---|
 | `drop-down` | 42 µs, as climbing up |
 | `let-go` | 25 µs (19 before the wall it faces was kept off) |
-| `catch` | 24 µs (with the swept catch test each frame) |
-| `jump-catch` | 34 µs |
+| `catch` | 26 µs (with the swept catch test each frame; 24 swept by the hips alone) |
+| `jump-catch` | 35 µs |
 
 **A roll stays on what it lands on** (`keep_roll_on`). A roll goes about
 4 m along the ground from a 2 m drop. Its way, from where it tucks to where
