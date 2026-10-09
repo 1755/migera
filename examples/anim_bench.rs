@@ -150,6 +150,9 @@ enum Gait {
     /// Sliding down a 40° roof to its edge (`true`, a trailing hand) or a
     /// 50° face run out onto the floor to standing: its whole length.
     SlopeSlide(bool),
+    /// Climbing in through a window from a braced hang on its sill, to
+    /// crouching on the sill under the lintel.
+    WindowIn,
 }
 
 fn main() {
@@ -198,7 +201,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner | Gait::LongFall | Gait::SlopeSlide(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner | Gait::LongFall | Gait::SlopeSlide(..) | Gait::WindowIn => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -207,11 +210,13 @@ fn main() {
     // Shimmying, from hanging braced: along a wall (4 s), or on round a
     // block's corner (6 s).
     let hanging = match gait {
-        Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) => {
+        Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::WindowIn => {
             use migera::character::anim::parkour::{hang::Shimmy, Hanging, Ledge};
             let block = Ledge::block(Vec3::new(-0.6, 0.0, -1.0), Vec3::Z, 1.6, 1.0, 2.15);
             let mut ledge = match gait {
                 Gait::Shimmy(true) => block[0],
+                // A window's sill: the wall 0.3 m thick.
+                Gait::WindowIn => Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 0.3),
                 _ => Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.15, 1.0),
             };
             if let Gait::Hang(false) = gait {
@@ -226,6 +231,12 @@ fn main() {
                     hanging.advance(3.0);
                     assert!(hanging.climb_up() && hanging.is_climbing_up(), "a braced hang climbs up at once");
                     Some((hanging, 3.8))
+                }
+                Gait::WindowIn => {
+                    hanging.advance(3.0);
+                    hanging.through_window(1.2);
+                    assert!(hanging.climb_up() && hanging.is_climbing_up(), "a braced hang climbs in at once");
+                    Some((hanging, 3.4))
                 }
                 Gait::Shimmy(corner) => {
                     hanging.set_others(others);
@@ -957,6 +968,7 @@ fn main() {
         Gait::Hook => "   swinging one-handed on a hook".to_string(),
         Gait::Corner => "   a 4 m/s run swung a quarter turn round a corner post".to_string(),
         Gait::LongFall => "   walking off an 8 m top, the long fall's loop".to_string(),
+        Gait::WindowIn => "   climbing in through a window from a braced hang on its sill".to_string(),
         Gait::SlopeSlide(roof) => if roof { "   sliding down a 40° roof to its edge" } else { "   sliding down a 50° face, run out to standing" }.to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
@@ -1123,6 +1135,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("long-fall") => Gait::LongFall,
         Some("roof-slide") => Gait::SlopeSlide(true),
         Some("face-slide") => Gait::SlopeSlide(false),
+        Some("window-in") => Gait::WindowIn,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

@@ -1291,6 +1291,9 @@ fn steer_the_walker(
         if walker.slopes != hangs.slopes {
             walker.slopes = hangs.slopes.clone();
         }
+        if walker.windows != hangs.windows {
+            walker.windows = hangs.windows.clone();
+        }
         if !hangs.corner_fired
             && let (Some(at), Some(corner)) = (hangs.corner_at, hangs.corner)
             && time.elapsed_secs() >= at
@@ -1631,6 +1634,12 @@ struct HangSchedule {
     /// house as high as the eave whose wall is a ledge to catch;
     /// `--steep` the same, a steep face slid down leant back).
     slopes: Vec<migera::character::anim::parkour::slope::Slope>,
+    /// Windows (`--window X,Z,HEADING,SILL,WIDTH,OPENING,DEPTH,ROOM[,1]`:
+    /// a wall DEPTH thick, its outside face through X,Z facing HEADING, an
+    /// opening WIDTH wide and OPENING high over a sill SILL high, a room
+    /// floor ROOM high behind it; the sill the ledge asked of, or with a
+    /// last 1, the sill from the room).
+    windows: Vec<migera::character::anim::parkour::window::Window>,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1779,6 +1788,33 @@ impl HangSchedule {
                     }
                 }
                 "--corner-at" => schedule.corner_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--window" => {
+                    use migera::character::anim::parkour::window::Window;
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, sill_height, width, opening, depth, room, ref rest @ ..] = numbers[..] {
+                        let (face, out) = (Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()));
+                        let along = Vec3::Y.cross(out);
+                        let sill = Ledge::wall(face, out, width, sill_height, depth);
+                        let top = sill_height + opening + 0.6;
+                        // Over the opening, the jambs either side, and the
+                        // room's floor behind.
+                        schedule.others.push(Ledge { wall_below: 0.6, ..Ledge::wall(face, out, width, top, depth) });
+                        for side in [-1.0f32, 1.0] {
+                            schedule.others.push(Ledge::wall(face + along * (side * (0.5 * width + 0.5)), out, 1.0, top, depth));
+                        }
+                        if room > 0.0 {
+                            schedule.others.push(Ledge::wall(face - out * depth, out, width + 2.0, room, 3.0));
+                        }
+                        let window = Window { sill, lintel: opening, room };
+                        if rest.first() == Some(&1.0) {
+                            schedule.ledge = Some(window.inner());
+                            schedule.others.push(sill);
+                        } else {
+                            schedule.ledge = Some(sill);
+                        }
+                        schedule.windows.push(window);
+                    }
+                }
                 "--roof" | "--steep" => {
                     use migera::character::anim::parkour::slope::{Slope, SlopeKind};
                     let kind = if arg == "--roof" { SlopeKind::Roof } else { SlopeKind::Face };

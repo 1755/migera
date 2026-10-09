@@ -242,6 +242,13 @@ pub struct Walker {
     /// drop, it goes over the edge falling (catching the eave if asked to
     /// catch and it is among its ledges); asked to jump, it leaps off.
     pub slopes: Vec<super::parkour::slope::Slope>,
+    /// Windows (`parkour::window`), their sills also among its ledges:
+    /// hanging from one's sill outside, asked to climb up, it climbs in
+    /// through the opening, crouches on the sill and drops into the room;
+    /// asked to mantle onto one's sill from the room (its inner edge,
+    /// `Window::inner`), it mantles up through the opening, turns round on
+    /// the sill and lowers itself into a hang from it outside.
+    pub windows: Vec<super::parkour::window::Window>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -301,6 +308,7 @@ impl Default for Walker {
             hooks: Vec::new(),
             platforms: Default::default(),
             slopes: Vec::new(),
+            windows: Vec::new(),
         }
     }
 }
@@ -604,6 +612,9 @@ pub struct WalkerState {
     pub skid: Option<super::parkour::skid::Skid>,
     /// Sliding down a slope too steep to walk (`parkour::slope`).
     pub sloping: Option<super::parkour::slope::SlopeSlide>,
+    /// Turning round crouched on a window's sill, and the hang it then
+    /// lowers itself into (`parkour::window`).
+    pub sill_turn: Option<(super::parkour::window::SillTurn, Box<super::parkour::Hanging>)>,
     /// Jumping onto a small top (`parkour::precision`), and the top it
     /// stands on after, balancing.
     pub onto: Option<Vec3>,
@@ -713,6 +724,7 @@ impl WalkerState {
             holds_spot: None,
             skid: None,
             sloping: None,
+            sill_turn: None,
             onto: None,
             perched: None,
             spinning: None,
@@ -745,7 +757,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some() || self.flagging.is_some() || self.sloping.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some() || self.flagging.is_some() || self.sloping.is_some() || self.sill_turn.is_some()
     }
 
     /// Leaping off a springboard, the board and how far it is bent under the
@@ -3005,7 +3017,13 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     // Mantling: the hands onto the top from where it stands;
                     // too low, too high or too shallow, the ask is dropped.
                     let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
-                    state.hanging = super::parkour::Hanging::mantle(&ledge, &walker.ledges, state.locomotion.position, square, foot_ik.pelvis_drop, grips, None, &stood, &rig);
+                    // A window's sill from the room: up through its opening
+                    // (`parkour::window`).
+                    let window = walker.windows.iter().find(|window| window.outside(&ledge) == Some(false));
+                    state.hanging = match window {
+                        Some(window) => super::parkour::Hanging::mantle_through(&ledge, &walker.ledges, state.locomotion.position, square, foot_ik.pelvis_drop, grips, window.lintel, &stood, &rig),
+                        None => super::parkour::Hanging::mantle(&ledge, &walker.ledges, state.locomotion.position, square, foot_ik.pelvis_drop, grips, None, &stood, &rig),
+                    };
                     walker.hang = None;
                 } else {
                 match super::parkour::Hanging::grab(&ledge, state.locomotion.position, square, foot_ik.pelvis_drop, &stood, &rig) {
@@ -3049,6 +3067,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 // walks there or jumps, it grabs first); a top with no room
                 // to stand drops the ask.
                 if walker.hang == Some(super::parkour::hang::HangAsk::ClimbUp) && hanging.is_hanging() {
+                    // A window's sill: in through its opening
+                    // (`parkour::window`).
+                    if let Some(window) = walker.windows.iter().find(|window| window.outside(hanging.ledge()) == Some(true)) {
+                        hanging.through_window(window.lintel);
+                    }
                     hanging.climb_up();
                     walker.hang = None;
                 }
@@ -3107,11 +3130,59 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         hands.hook = [true; 2];
                     }
                 }
-                // Climbed up, it stands on the top, as off a ladder.
-                if hanging.is_done() {
+                // Climbed up, it stands on the top, as off a ladder. Through a
+                // window (`parkour::window`), crouched on the sill: in, it
+                // drops into the room; out, it turns round on the sill, then
+                // lowers itself into a hang from it.
+                if hanging.is_done() && hanging.is_through_window() {
+                    let window = walker.windows.iter().copied().find(|window| window.outside(hanging.ledge()).is_some());
+                    match window.map(|window| (window, window.outside(hanging.ledge()) == Some(true))) {
+                        Some((window, false)) => {
+                            let grips = hands.as_ref().map_or([None; 2], |hands| hands.grips);
+                            let mut lowering = super::parkour::Hanging::hung(&window.sill, &walker.ledges, hanging.root(), foot_ik.pelvis_drop, grips, &stood, &rig);
+                            lowering.through_window(window.lintel);
+                            let spot = lowering.standing_spot();
+                            lowering.lower_down(spot);
+                            let crouch = |pose: LocalPose, root: Vec3, yaw: f32| super::parkour::window::Crouch { pose, root, yaw };
+                            let turn = super::parkour::window::SillTurn::new(
+                                crouch(hanging.pose(&rig), hanging.root(), hanging.facing()),
+                                crouch(lowering.pose(&rig), lowering.root(), lowering.facing()),
+                                &rig,
+                            );
+                            state.sill_turn = Some((turn, Box::new(lowering)));
+                        }
+                        _ => {
+                            let ground_at = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                            state.falling = Some(hanging.off_window(&ground_at, &stood, &rig));
+                            leapt = true;
+                        }
+                    }
+                    state.hanging = None;
+                } else if hanging.is_done() {
                     state.hanging = None;
                     state.stood_hold = STOOD_HOLD;
                     phase.elapsed = 0.0;
+                }
+            }
+            // Turning round on a window's sill (`parkour::window`), then
+            // lowering itself into a hang from it.
+            if let Some((turn, _)) = state.sill_turn.as_mut() {
+                turn.advance(dt);
+                target.pose = turn.pose();
+                state.locomotion.position = turn.root();
+                state.facing.yaw = turn.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if turn.is_done()
+                    && let Some((_, lowering)) = state.sill_turn.take()
+                {
+                    state.hanging = Some(*lowering);
                 }
             }
             // Leaping, let go: in the air (`parkour::fall`), aimed at the

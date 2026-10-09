@@ -324,6 +324,10 @@ pub struct Hanging {
     pump: f32,
     /// How long it has pumped, seconds.
     pumped_for: f32,
+    /// A window's opening over its ledge (its sill), this high above it,
+    /// metres: climbed up or mantled through it, it ends crouched on the
+    /// sill under the lintel ([`Self::through_window`]).
+    window: Option<f32>,
 }
 
 impl Hanging {
@@ -574,6 +578,7 @@ impl Hanging {
             pumping: false,
             pump: 0.0,
             pumped_for: 0.0,
+            window: None,
         }
     }
 

@@ -249,7 +249,8 @@ climbing is the heart of the style; perches and agility make it feel right.
   [any wall climbed on holds grown from its roughness](./any-wall-is-climbed-on-holds-grown-from-its-roughness.md).
   Not built: the reach aimed with whole-body IK (Uncharted 4's); the
   step-13 climber's own choice of hold stands in for it.
-- Step 15 not started.
+- **Step 15** under way (2026-10-10):
+  [windows, in and out](./a-window-is-climbed-through-crouched-on-its-sill.md).
 
 ## Related
 

@@ -41,6 +41,36 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 15 (first part): windows
+
+A window (`parkour::window::Window`) is climbed through by the climb-up's
+"through" variant, which ends crouched on the sill under the lintel:
+- **In:** from a hang on the sill, it then drops into the room.
+- **Out:** mantled from the room, it turns round on the sill (`SillTurn`)
+  and lowers itself into a hang, the climb in played backward.
+
+Note: [a window is climbed through crouched on its
+sill](docs/knowledge/character-animation/parkour/a-window-is-climbed-through-crouched-on-its-sill.md).
+
+- **Fixed on the way:**
+  - a lead knee flipping 1.3-1.6 m as the foot came up beside its hip;
+  - hands pressing out of reach while crouching (40 and 7.5 cm);
+  - feet sinking 29 cm into the sill as it fell off;
+  - the end root off by 0.44 m.
+- **Dropped:** going out by turning in the air to catch the sill (knees
+  into the wall, hips shoved 50 cm, a 27 cm knee pop).
+- **Headless:**
+  - nothing over the lintel, past a jamb or into the wall;
+  - hands and ankles on their places to 1 µm;
+  - landed in the room;
+  - hanging outside at the end;
+  - changes of step no larger than a plain climb-up's or mantle's own.
+- **Live** (BRP; gizmos from outside and from the room, mesh): in, hung,
+  crouched under the lintel (neck 2.97 m under 3.15 m), stood in the
+  room; out, crouched, turned, lowered out onto the lip.
+- **Gallery:** `--window X,Z,HEADING,SILL,WIDTH,OPENING,DEPTH,ROOM[,1]`.
+  **Bench:** `--gait window-in`, 46 µs a character (a climb-up: 46).
+
 ### Parkour, step 14: climbing any wall
 
 A rough wall grows its own holds (`HoldWall::rough`). They form a jittered

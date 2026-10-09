@@ -28,6 +28,7 @@ pub mod underslide;
 pub mod vault;
 pub mod wall;
 pub mod wallhand;
+pub mod window;
 
 pub use fall::Falling;
 pub use geometry::{Ledge, LedgeGround};

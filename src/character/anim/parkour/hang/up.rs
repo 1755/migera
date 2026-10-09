@@ -72,6 +72,32 @@ const HAND_LIFT: f32 = 0.08;
 /// the least top that leaves room to stand on, metres.
 const STAND_BACK: f32 = 0.3;
 const LEAST_DEPTH: f32 = 0.55;
+/// Through a window ([`Hanging::through_window`]): the least sill that
+/// takes the feet and the hands, metres; crouched on it at the end, the
+/// ankles this far in from its lip, the hips this far above it and out
+/// from the ankles, metres; the head this far under the lintel at least,
+/// metres; and the last part (the trail foot on, crouching) this long,
+/// seconds.
+const WINDOW_LEAST_DEPTH: f32 = 0.2;
+const SILL_FEET_IN: f32 = 0.08;
+const CROUCHED: (f32, f32) = (0.5, 0.05);
+const LINTEL_CLEAR: f32 = 0.08;
+const CROUCH_ON: f32 = 1.0;
+/// Crouched on a sill, the trunk leant forward over the knees at least
+/// this far, radians (whatever the lintel's room).
+const CROUCH_LEAN: f32 = 0.5;
+/// Through a window, the hands let go over this share of the crouch.
+const LET_GO_THROUGH: (f32, f32) = (0.0, 0.4);
+/// Through a window, the hips this much higher as the lead foot comes on
+/// to the sill than a climb onto a top has them, metres.
+const STEPPED_THROUGH_UP: f32 = 0.06;
+/// Off the sill, it falls on forward this fast, m/s: a step off; the feet
+/// pushed off it, going on and up from the hips this fast, m/s.
+const OFF_SILL: f32 = 1.2;
+const OFF_SILL_FEET: (f32, f32) = (1.0, 1.5);
+/// Crouched on a sill, the toes reach this far ahead of the ankles, metres:
+/// the ankles as far in as puts the toes at its inner edge.
+const SILL_TOES: f32 = 0.18;
 /// Braced, each foot steps up the wall through the pull to where its leg
 /// reaches at this share of its length; out from the wall this much
 /// between, metres.
@@ -359,10 +385,18 @@ impl Hanging {
     /// or the hands cannot reach it as it dips.
     #[allow(clippy::too_many_arguments)]
     pub fn mantle(ledge: &Ledge, others: &[Ledge], root: Vec3, square: f32, drop: f32, grips: [Option<HandGrip>; 2], from: Option<FromWalk>, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        Self::mantle_with(ledge, others, root, square, drop, grips, from, None, stood, rig)
+    }
+
+    /// [`Self::mantle`], through a window whose opening is `window` high
+    /// over the ledge if given ([`Self::mantle_through`]).
+    #[allow(clippy::too_many_arguments)]
+    fn mantle_with(ledge: &Ledge, others: &[Ledge], root: Vec3, square: f32, drop: f32, grips: [Option<HandGrip>; 2], from: Option<FromWalk>, window: Option<f32>, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
         let rise = ledge.height() - root.y;
         let mut hanging = Self::blank(ledge, root, square, drop, stood, rig);
+        hanging.window = window;
         let shoulders = 0.5 * (hanging.body.shoulders[0].y + hanging.body.shoulders[1].y) + hanging.body.hips.y;
-        if rise < MANTLE_LOWEST || rise > shoulders - MANTLE_UNDER_SHOULDERS || ledge.depth < LEAST_DEPTH {
+        if rise < MANTLE_LOWEST || rise > shoulders - MANTLE_UNDER_SHOULDERS || ledge.depth < hanging.least_depth() {
             return None;
         }
         hanging.take_grips(grips, rig);
@@ -375,6 +409,52 @@ impl Hanging {
         let up = hanging.plan_mantle(from, rig)?;
         hanging.up = Some(up);
         Some(hanging)
+    }
+
+    /// Its ledge the sill of a window whose opening is `lintel` high above
+    /// it, metres: a climb up ([`Self::climb_up`]) or a mantle onto it goes
+    /// in through the opening and ends crouched on the sill under the
+    /// lintel, its feet on the sill and its hands on it ahead of them
+    /// (the walker then drops off it, in or out: [`Self::off_window`]).
+    /// Set before climbing or mantling.
+    pub fn through_window(&mut self, lintel: f32) {
+        self.window = Some(lintel);
+    }
+
+    /// Whether it climbs through a window ([`Self::through_window`]).
+    pub fn is_through_window(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// The least top it climbs onto: room to stand on, or through a window,
+    /// a sill to crouch on.
+    fn least_depth(&self) -> f32 {
+        if self.window.is_some() { WINDOW_LEAST_DEPTH } else { LEAST_DEPTH }
+    }
+
+    /// A mantle onto a window's sill (its ledge, from the room's side)
+    /// whose opening is `lintel` high above it ([`Self::mantle`],
+    /// [`Self::through_window`]): ending crouched on the sill facing out.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mantle_through(ledge: &Ledge, others: &[Ledge], root: Vec3, square: f32, drop: f32, grips: [Option<HandGrip>; 2], lintel: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        Self::mantle_with(ledge, others, root, square, drop, grips, None, Some(lintel), stood, rig)
+    }
+
+    /// Off a window's sill, crouched on it at the end of a climb through
+    /// ([`Self::through_window`]): falling on forward, the way it faces,
+    /// onto the ground `ground` finds (in, the room's floor; out, the
+    /// ground below the window, caught if it reaches).
+    pub fn off_window(&self, ground: &dyn Fn(Vec3) -> Option<f32>, stood: &LocalPose, rig: &RigGeometry) -> crate::character::anim::parkour::Falling {
+        let forward = self.turn * rig.forward();
+        let root = self.root();
+        let below = ground((root + forward * 0.5).with_y(root.y - 0.05)).unwrap_or(0.0);
+        let mut falling = crate::character::anim::parkour::Falling::off(root, self.facing(), forward * OFF_SILL, &self.pose(rig), below, self.drop, stood, rig);
+        // Pushed off the sill, the feet lift and swing on as the body goes:
+        // left where they were under the falling hips, they sank 29 cm
+        // into the sill before clearing its edge.
+        falling.coast_legs([forward * OFF_SILL_FEET.0 + Vec3::Y * OFF_SILL_FEET.1; 2]);
+        falling.land_on(ground);
+        falling
     }
 
     /// Whether it is mantling ([`Self::mantle`]) rather than climbing up
@@ -417,7 +497,7 @@ impl Hanging {
     /// not hanging yet, or the top has no room to stand. Swinging, it starts
     /// once the swing has slowed (`START_SPEED`), at the end of a swing.
     pub fn climb_up(&mut self) -> bool {
-        if self.phase != Phase::Hanging || self.ledge.depth < LEAST_DEPTH {
+        if self.phase != Phase::Hanging || self.ledge.depth < self.least_depth() {
             return false;
         }
         self.up_asked = true;
@@ -468,8 +548,17 @@ impl Hanging {
         at - self.turn * (0.5 * (leant[ARMS[0].shoulder] + leant[ARMS[1].shoulder]) - leant[Bone::Hips])
     }
 
+    /// A climb's parts as `parts`, through a window its last the crouch on
+    /// the sill ([`CROUCH_ON`]).
+    fn window_parts(&self, mut parts: [f32; 5]) -> [f32; 5] {
+        if self.window.is_some() {
+            parts[4] = CROUCH_ON;
+        }
+        parts
+    }
+
     fn plan_up(&self, rig: &RigGeometry) -> ClimbUp {
-        let ends = ends_of(PARTS);
+        let ends = ends_of(self.window_parts(PARTS));
         let out = self.ledge.out;
         let lip = self.ledge.nearest(self.grip, 0.0);
         let start = self.hang_hips();
@@ -510,7 +599,7 @@ impl Hanging {
         if from.is_some() {
             parts[0] = WALK_DIP;
         }
-        let ends = ends_of(parts);
+        let ends = ends_of(self.window_parts(parts));
         let out = self.ledge.out;
         // The hips standing, down by the foot IK's drop (`up_sink` gives it
         // back to the root).
@@ -632,28 +721,56 @@ impl Hanging {
         let (stepped_in, stepped_up, stepped_lean) = STEPPED;
         let press_middle = 0.5 * (presses[0] + presses[1]);
         let pressed = self.under(press_middle + Vec3::Y * (press_reach * arm), pressed_lean, rig);
+        // Through a window, the hips kept higher as the lead foot comes over
+        // the sill (still outside the wall, under no lintel): planned on
+        // down to the crouch, they let the foot come up beside its hip, the
+        // leg folded to a quarter of its length, and its knee flipped 1.3 m.
+        let stepped_up = stepped_up + if self.window.is_some() { STEPPED_THROUGH_UP } else { 0.0 };
         let stepped = pressed - out * stepped_in + Vec3::Y * stepped_up;
-        let end_hips = end_root + self.turn * self.body.hips - Vec3::Y * self.drop;
-        let (held_share, held_in, held_up) = HIPS_HELD;
-        let held_at = ends[3] + held_share * (ends[4] - ends[3]);
-        let held = stepped - out * held_in + Vec3::Y * held_up;
         let [(first, first_lean), (second, second_lean), (third, third_lean)] = head;
-        let hips = Track::through(
-            &[(0.0, first), (ends[0], second), (ends[1], third), (ends[2], pressed), (ends[3], stepped), (held_at, held), (ends[4], end_hips)],
-            start,
-        );
-        let lean = Track::through(
-            &[
-                (0.0, Vec3::X * first_lean),
-                (ends[0], Vec3::X * second_lean),
-                (ends[1], Vec3::X * third_lean),
-                (ends[2], Vec3::X * pressed_lean),
-                (ends[3], Vec3::X * stepped_lean),
-                (held_at, Vec3::X * stepped_lean),
-                (ends[4], Vec3::ZERO),
-            ],
-            Vec3::ZERO,
-        );
+        let head_knots = [(0.0, first, first_lean), (ends[0], second, second_lean), (ends[1], third, third_lean), (ends[2], pressed, pressed_lean), (ends[3], stepped, stepped_lean)];
+        // Standing on the top at the end; or through a window, crouched on
+        // the sill, leant as little as keeps the head under the lintel, the
+        // hands pressing on it ahead of the feet.
+        let (tail, spots, end_root) = match self.window {
+            None => {
+                let end_hips = end_root + self.turn * self.body.hips - Vec3::Y * self.drop;
+                let (held_share, held_in, held_up) = HIPS_HELD;
+                let held_at = ends[3] + held_share * (ends[4] - ends[3]);
+                let held = stepped - out * held_in + Vec3::Y * held_up;
+                (vec![(held_at, held, stepped_lean), (ends[4], end_hips, 0.0)], spots, end_root)
+            }
+            Some(lintel) => {
+                let sill = self.ledge.height();
+                let feet_at = lip - out * (self.ledge.depth - SILL_TOES).max(SILL_FEET_IN);
+                let (up, back) = CROUCHED;
+                let crouched = Vec3::new(feet_at.x, sill + up, feet_at.z) + out * back;
+                let head_over = |lean: f32| {
+                    let leant = forward_kinematics_on(&crate::character::anim::jump::upper(&self.body.stood, rig, lean, (0.0, 0.0)), rig);
+                    crouched.y + (leant[Bone::Head] - leant[Bone::Hips]).y - (sill + lintel - LINTEL_CLEAR)
+                };
+                // The least lean that clears it: folding forward lowers the
+                // head (as far as `PRESSED`'s, near flat).
+                let (mut low, mut high) = (0.0, pressed_lean);
+                if head_over(low) > 0.0 {
+                    for _ in 0..24 {
+                        let middle = 0.5 * (low + high);
+                        if head_over(middle) > 0.0 { low = middle } else { high = middle }
+                    }
+                    low = high;
+                }
+                let left = self.turn * rig.left();
+                let spots = LEGS.map(|(_, _, ankle, _)| {
+                    let aside = left * (self.turn * (stood[ankle] - stood[Bone::Hips])).dot(left);
+                    Vec3::new(feet_at.x, sill + stood[ankle].y, feet_at.z) + aside
+                });
+                let end_root = crouched - self.turn * self.body.hips;
+                (vec![(ends[4], crouched, low.max(CROUCH_LEAN))], spots, end_root)
+            }
+        };
+        let knots: Vec<(f32, Vec3, f32)> = head_knots.into_iter().chain(tail).collect();
+        let hips = Track::through(&knots.iter().map(|&(t, at, _)| (t, at)).collect::<Vec<_>>(), start);
+        let lean = Track::through(&knots.iter().map(|&(t, _, lean)| (t, Vec3::X * lean)).collect::<Vec<_>>(), Vec3::ZERO);
         ClimbUp {
             t: 0.0,
             ends,
@@ -685,7 +802,9 @@ impl Hanging {
     /// drop, eased in; mantling, eased out first as it dips.
     fn up_sink(&self, up: &ClimbUp) -> f32 {
         let standing = if up.stand.is_some() { 1.0 - across(up.t, (0.0, up.ends[0])) } else { 0.0 };
-        self.drop * (standing + across(up.t, (up.ends[3], up.ends[4])))
+        // Through a window it ends crouched, not standing: no drop.
+        let stands_up = if self.window.is_some() { 0.0 } else { across(up.t, (up.ends[3], up.ends[4])) };
+        self.drop * (standing + stands_up)
     }
 
     /// Each wrist and its hand's world turn, how far each has turned over
@@ -731,7 +850,13 @@ impl Hanging {
             turns[side] = turns[side].slerp(up.press_turns[side], s);
         }
         let (stepped, stood) = (up.ends[3], up.ends[4]);
-        let holding = 1.0 - across(up.t, (stepped + LET_GO.0 * (stood - stepped), stepped + LET_GO.1 * (stood - stepped)));
+        // Through a window too, the hands let go as it crouches, from its
+        // start: crouched under the lintel, the shoulders are too high to
+        // press the sill ahead of the feet (pressed there, a hand was 40 cm
+        // short), and held on through the standing climb's first share, the
+        // hips going in carried the shoulders 7.5 cm out of reach.
+        let let_go = if self.window.is_some() { LET_GO_THROUGH } else { LET_GO };
+        let holding = 1.0 - across(up.t, (stepped + let_go.0 * (stood - stepped), stepped + let_go.1 * (stood - stepped)));
         // Mantling, the arms taken from the standing pose's as they start.
         // Walking in, from the walk's swing over longer: in a quarter of the
         // reach, a chest-high top's elbow went at 7 m/s.
@@ -1011,6 +1136,14 @@ mod tests {
         done: bool,
         /// The pose at the end.
         last: Option<LocalPose>,
+        /// Through a window, the most a joint within the wall's thickness
+        /// goes over the lintel or past a jamb, metres, and which.
+        through_frame: f32,
+        deepest_frame: Option<(Bone, f32)>,
+        /// The most any joint's step changes in a frame, metres, which and
+        /// when.
+        kink: f32,
+        kinked: Option<(Bone, f32)>,
     }
 
     /// How deep `p` is inside the block under `ledge`: in from the face and
@@ -1021,6 +1154,12 @@ mod tests {
     }
 
     fn climbed(ledge: &super::super::Ledge) -> Measured {
+        climbed_through(ledge, None).0
+    }
+
+    /// [`climbed`], through a window `window` high over the ledge if given;
+    /// and the hang at the end.
+    fn climbed_through(ledge: &super::super::Ledge, window: Option<f32>) -> (Measured, Hanging) {
         let (stood, rig) = real_stood();
         // Which way each knee folds standing, in the pelvis's frame: the
         // hinge, thigh across shin.
@@ -1030,6 +1169,9 @@ mod tests {
         };
         // Free, from mid-swing: the climb takes the hang's velocity on.
         let mut hanging = grabbing(ledge).expect("in reach");
+        if let Some(lintel) = window {
+            hanging.through_window(lintel);
+        }
         hanging.advance(if hanging.is_braced() { 3.0 } else { 1.5 });
         let mut hips = Vec::new();
         for _ in 0..2 {
@@ -1046,6 +1188,7 @@ mod tests {
             assert!(waited < 3.0, "never started climbing up");
         }
         let mut m = Measured::default();
+        let mut joints: Vec<BoneSet<Vec3>> = Vec::new();
         let ends = hanging.up.as_ref().expect("climbing").ends;
         while !hanging.is_done() {
             hanging.advance(DT);
@@ -1055,6 +1198,17 @@ mod tests {
             let turn = Quat::from_rotation_y(hanging.facing());
             let world = BoneSet::from_fn(|bone| hanging.root() + turn * at[bone]);
             hips.push(world[Bone::Hips]);
+            if joints.len() >= 2 {
+                let n = joints.len();
+                let (a, b): (&BoneSet<Vec3>, &BoneSet<Vec3>) = (&joints[n - 2], &joints[n - 1]);
+                for bone in Bone::ALL {
+                    let k = (world[bone] - 2.0 * b[bone] + a[bone]).length();
+                    if k > m.kink {
+                        (m.kink, m.kinked) = (k, Some((bone, up.t)));
+                    }
+                }
+            }
+            joints.push(world);
             let (wrists, _, _, holding) = hanging.hands_up(up);
             for side in 0..2 {
                 let off = (world[ARMS[side].wrist] - wrists[side]).length();
@@ -1092,6 +1246,20 @@ mod tests {
                 if depth > m.into_block {
                     (m.into_block, m.deepest) = (depth, Some((bone, up.t)));
                 }
+                // Through a window: within the wall's thickness, under the
+                // lintel and between the jambs.
+                if let Some(lintel) = window {
+                    let p = world[bone];
+                    let into = -ledge.out_of(p);
+                    if (0.0..=ledge.depth).contains(&into) {
+                        let along = (p - ledge.a).dot(ledge.along());
+                        let past = (-along).max(along - (ledge.b - ledge.a).length()).max(0.0);
+                        let over = (p.y - (ledge.height() + lintel)).max(0.0);
+                        if over.max(past) > m.through_frame {
+                            (m.through_frame, m.deepest_frame) = (over.max(past), Some((bone, up.t)));
+                        }
+                    }
+                }
             }
             m.last = Some(pose);
         }
@@ -1108,7 +1276,55 @@ mod tests {
         let turn = Quat::from_rotation_y(hanging.facing());
         m.ankles_off = (0..2).map(|side| (hanging.root() + turn * at[LEGS[side].2] - up.spots[side]).length()).fold(0.0, f32::max);
         m.done = hanging.is_done();
-        m
+        (m, hanging)
+    }
+
+    /// Hanging from a window's sill, free and braced, it climbs in through
+    /// the opening (1.2 m high, 0.3 m deep): nothing above the lintel or
+    /// past a jamb within the wall's thickness, nor into the block under the
+    /// sill; the hands held as a climb up holds them; crouched on the sill
+    /// at the end, the ankles on it. Then off it into the room, landing on
+    /// its floor 0.9 m down, standing.
+    #[test]
+    fn it_climbs_in_through_a_window() {
+        let (stood, rig) = real_stood();
+        for below in [1.95, 0.15] {
+            let sill = Ledge { depth: 0.3, ..wall(1.95, below) };
+            let name = format!("{below} m of wall below the sill");
+            let (m, hanging) = climbed_through(&sill, Some(1.2));
+            eprintln!("{name}: {m:?}");
+            assert!(m.done, "{name}: not done");
+            assert!(m.through_frame < 0.01, "{name}: {:?} {:.4} m over the lintel or past a jamb", m.deepest_frame, m.through_frame);
+            assert!(m.into_block < 1.0e-3, "{name}: {:?} {:.4} m into the block", m.deepest, m.into_block);
+            assert!(m.hooked_off < 1.0e-3 && m.pressed_off < 1.0e-3, "{name}: a hand {:.4} off its hook, {:.4} off its press", m.hooked_off, m.pressed_off);
+            assert!(m.landed_off < 1.0e-3 && m.ankles_off < 1.0e-3, "{name}: an ankle {:.4} off the sill, {:.4} off its spot", m.landed_off, m.ankles_off);
+            assert!(m.acceleration < MOST_ACCELERATION, "{name}: the hips accelerated {:.1} m/s² at {:.2} s", m.acceleration, m.accelerated_at);
+            // No step changing more than a climb onto a top does (its
+            // turn-over's forearm, 4.8-5.4 cm). With the hips planned down
+            // to the crouch as the lead foot came over, a knee flipped 1.3 m.
+            assert!(m.kink < 0.06, "{name}: {:?} a step changed {:.4}", m.kinked, m.kink);
+            // Off the sill into the room.
+            let room = sill.height() - 0.9;
+            let ground = |p: Vec3| {
+                let into = -sill.out_of(p);
+                Some(if into > sill.depth { room } else if into >= 0.0 { sill.height() } else { 0.0 })
+            };
+            let mut falling = hanging.off_window(&ground, &stood, &rig);
+            let mut under_lintel = 0.0f32;
+            for _ in 0..(4.0 / DT) as usize {
+                falling.advance(DT);
+                let at = forward_kinematics_on(&falling.pose(&rig), &rig);
+                let turn = Quat::from_rotation_y(falling.facing());
+                for bone in Bone::ALL {
+                    let p = falling.root() + turn * at[bone];
+                    if (0.0..=sill.depth).contains(&-sill.out_of(p)) {
+                        under_lintel = under_lintel.max(p.y - (sill.height() + 1.2)).max(inside(&sill, p));
+                    }
+                }
+            }
+            assert!(falling.is_done() && (falling.root().y - room).abs() < 1.0e-3, "{name}: landed {} at {:.3}, not on the room's floor {room}", falling.is_done(), falling.root().y);
+            assert!(under_lintel < 0.01, "{name}: dropping in, {under_lintel:.4} m over the lintel or into the sill");
+        }
     }
 
     /// From a braced hang and a free one, on ledges across a jump's reach,
@@ -1231,6 +1447,131 @@ mod tests {
             FromWalk { at: root + Vec3::new(off.x, 0.0, off.z), pose, velocity: turn * rig.forward() * speed, planted: 0 }
         });
         Hanging::mantle(ledge, &[], root, square, 0.0, crate::character::anim::hand::puppet_grips(), from, &stood, &rig).map(|hanging| (hanging, from))
+    }
+
+    /// From the room, 0.9 m under a window's sill, it mantles onto the sill
+    /// through the opening (1.2 m high, 0.3 m deep), crouched on it facing
+    /// out; turns round on the sill; and lowers itself down from it into a
+    /// hang (the climb in played backward). Nothing over the lintel nor into
+    /// the wall under the window meanwhile; every joint's path smooth.
+    #[test]
+    fn it_climbs_out_of_a_window_into_a_hang() {
+        let (stood, rig) = real_stood();
+        let outer = Ledge { depth: 0.3, ..wall(1.95, 1.95) };
+        let (room, lintel) = (outer.height() - 0.9, 1.2);
+        // The sill seen from the room: its line in by the wall's thickness,
+        // facing in.
+        let back = -outer.out * outer.depth;
+        let inner = Ledge { a: outer.b + back, b: outer.a + back, out: -outer.out, depth: outer.depth, wall_below: 0.9 };
+        let ground = |p: Vec3| {
+            let into = -outer.out_of(p);
+            Some(if into > outer.depth { room } else if into >= 0.0 { outer.height() } else { 0.0 })
+        };
+        // How far a joint goes over the lintel or into the wall under the
+        // window, within the wall's thickness.
+        let through = |p: Vec3| if (0.0..=outer.depth).contains(&-outer.out_of(p)) { (p.y - (outer.height() + lintel)).max(inside(&outer, p)).max(0.0) } else { 0.0 };
+        let square = Hanging::square(&inner, rig.forward());
+        let root = Hanging::mantle_spot(&inner, &[], Vec3::new(0.2, room, -2.0), square, &stood, &rig);
+        let grips = crate::character::anim::hand::puppet_grips();
+        let mut hanging = Hanging::mantle_through(&inner, &[], root, square, 0.0, grips, lintel, &stood, &rig).expect("mantles onto the sill");
+        let mut worst = (0.0f32, Bone::Hips, "", 0.0f32);
+        // Every joint's path, mantling and falling: its step's change.
+        let mut frames: Vec<BoneSet<Vec3>> = Vec::new();
+        let mut kink = (0.0f32, Bone::Hips, 0usize);
+        let mut step = |now: BoneSet<Vec3>, frames: &mut Vec<BoneSet<Vec3>>| {
+            if frames.len() >= 2 {
+                let n = frames.len();
+                for bone in Bone::ALL {
+                    let k = (now[bone] - 2.0 * frames[n - 1][bone] + frames[n - 2][bone]).length();
+                    if k > kink.0 {
+                        kink = (k, bone, n);
+                    }
+                }
+            }
+            frames.push(now);
+        };
+        let mut t = 0.0;
+        while !hanging.is_done() {
+            hanging.advance(DT);
+            t += DT;
+            assert!(t < 8.0, "never crouched on the sill");
+            let at = forward_kinematics_on(&hanging.pose(&rig), &rig);
+            let turn = Quat::from_rotation_y(hanging.facing());
+            step(BoneSet::from_fn(|bone| hanging.root() + turn * at[bone]), &mut frames);
+            for bone in Bone::ALL {
+                let d = through(hanging.root() + turn * at[bone]);
+                if d > worst.0 {
+                    worst = (d, bone, "mantling", t);
+                }
+            }
+        }
+        let crouched = frames.len();
+        // Turned round on the sill, then lowered down from it into a hang:
+        // the climb in through it played backward.
+        let mut lowering = Hanging::hung(&outer, &[], outer.nearest(root, 0.0), 0.0, grips, &stood, &rig);
+        lowering.through_window(lintel);
+        let spot = lowering.standing_spot();
+        lowering.lower_down(spot);
+        let crouch = |pose: LocalPose, root: Vec3, yaw: f32| crate::character::anim::parkour::window::Crouch { pose, root, yaw };
+        let mut turning = crate::character::anim::parkour::window::SillTurn::new(
+            crouch(hanging.pose(&rig), hanging.root(), hanging.facing()),
+            crouch(lowering.pose(&rig), lowering.root(), lowering.facing()),
+            &rig,
+        );
+        let mut t = 0.0;
+        let mut world_of = |pose: &LocalPose, root: Vec3, yaw: f32, phase: &'static str, t: f32, frames: &mut Vec<BoneSet<Vec3>>| {
+            let at = forward_kinematics_on(pose, &rig);
+            let turn = Quat::from_rotation_y(yaw);
+            let now = BoneSet::from_fn(|bone| root + turn * at[bone]);
+            step(now, frames);
+            for bone in Bone::ALL {
+                let d = through(now[bone]);
+                if d > worst.0 {
+                    worst = (d, bone, phase, t);
+                }
+            }
+        };
+        while !turning.is_done() {
+            turning.advance(DT);
+            t += DT;
+            world_of(&turning.pose(), turning.root(), turning.facing(), "turning", t, &mut frames);
+        }
+        let turned = frames.len();
+        while lowering.is_lowering() {
+            lowering.advance(DT);
+            t += DT;
+            assert!(t < 8.0, "never lowered into the hang");
+            world_of(&lowering.pose(&rig), lowering.root(), lowering.facing(), "lowering", t, &mut frames);
+        }
+        eprintln!(
+            "climbing out: {:.4} m over the lintel or into the wall ({:?} {} at {:.2} s); a step changed {:.4} ({:?}, frame {}: mantled to {crouched}, turned to {turned})",
+            worst.0, worst.1, worst.2, worst.3, kink.0, kink.1, kink.2
+        );
+        assert!(worst.0 < 0.01, "{:?} {:.4} m over the lintel or into the wall", worst.1, worst.0);
+        assert!(lowering.is_hanging(), "not hanging from the sill");
+        // No step changing more than a plain mantle onto a top as high (deep
+        // enough to stand on) changes its own over the same part.
+        let plain_kink = {
+            let deep = Ledge { depth: 0.6, ..inner };
+            let mut plain = Hanging::mantle(&deep, &[], root, square, 0.0, grips, None, &stood, &rig).expect("a plain mantle");
+            let mut plain_frames: Vec<BoneSet<Vec3>> = Vec::new();
+            let mut most = 0.0f32;
+            for _ in 0..crouched {
+                plain.advance(DT);
+                let at = forward_kinematics_on(&plain.pose(&rig), &rig);
+                let turn = Quat::from_rotation_y(plain.facing());
+                let now = BoneSet::from_fn(|bone| plain.root() + turn * at[bone]);
+                if plain_frames.len() >= 2 {
+                    let n = plain_frames.len();
+                    most = Bone::ALL.iter().map(|&b| (now[b] - 2.0 * plain_frames[n - 1][b] + plain_frames[n - 2][b]).length()).fold(most, f32::max);
+                }
+                plain_frames.push(now);
+            }
+            most
+        };
+        eprintln!("climbing out: the plain mantle's own change of step {plain_kink:.4}");
+        assert!(kink.0 < plain_kink.max(0.06) + 0.01, "a step changed {:.4} ({:?}, frame {}), a plain mantle's own {plain_kink:.4}", kink.0, kink.1, kink.2);
+        let _ = ground;
     }
 
     /// What a mantle measured, frame by frame.
