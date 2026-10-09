@@ -41,6 +41,29 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 17 (second part): a flagpole
+
+Asked (`Walker::flagpole`), a fall coming by a pole sticking out of a wall
+reaches for it and catches it, swings right round (a compound pendulum
+about the grip, driven over the top), and lets go on the way up after a
+turn, flung on as a fall (`parkour::flagpole::Swinging`). Note: [a
+flagpole is swung round as a driven compound
+pendulum](docs/knowledge/character-animation/parkour/a-flagpole-is-swung-round-as-a-driven-compound-pendulum.md).
+
+- **Fixed on the way:** the catch's elbows, six ways (arms put on at once,
+  98 cm; a straight wrist path; wrists on the world's axes; arms by IK
+  alone, 28 cm; blended, 20 cm; a swivel flipping sides, 42 cm; elbows
+  along an arm reaching out, 37 cm); the radial speed dropped; a release
+  mid-frame (9 cm).
+- **The gallery:** `--flagpole X,Z,HEADING,HEIGHT[,LENGTH]`,
+  `--flagpole-at T`. **The bench:** `--gait flagpole`.
+- **Headless:** run off a 1.5 m top at 3-4 m/s: caught, round once, over
+  the top at 2.0 rad/s, landed; hands within 1 µm; no step over 2 cm
+  swinging, 7.2 cm catching.
+- **Live** (BRP; gizmos on and mesh off, mesh on, Left): caught a 2.8 m
+  pole off a block, swung round, flew 5.5 m, rolled and stood.
+- **Cost:** 65 µs a character at p50.
+
 ### Held hands bent the wrong way at the wrist (fix)
 
 Reported live: on the bars, the pole and before, wrists and palms bent the

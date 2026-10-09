@@ -7,6 +7,7 @@ pub mod beam;
 pub mod crawl;
 pub mod faith;
 pub mod fall;
+pub mod flagpole;
 pub mod geometry;
 pub mod hang;
 pub mod holds;

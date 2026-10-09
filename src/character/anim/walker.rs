@@ -215,6 +215,11 @@ pub struct Walker {
     /// gets on, crosses hand over hand, lets go under the last and lands;
     /// the ask is dropped once let go.
     pub monkey_bars: Option<super::parkour::monkey::MonkeyBars>,
+    /// A flagpole to swing round (`parkour::flagpole`): falling by it (off
+    /// an edge, or a jump's flight gone over one), it reaches for it,
+    /// catches it, swings round and is let go on the way up; the ask is
+    /// dropped once let go.
+    pub flagpole: Option<super::parkour::flagpole::Flagpole>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -265,6 +270,7 @@ impl Default for Walker {
             skid: false,
             springboard: None,
             monkey_bars: None,
+            flagpole: None,
         }
     }
 }
@@ -582,6 +588,8 @@ pub struct WalkerState {
     /// under the first.
     pub monkey: Option<super::parkour::monkey::Crossing>,
     pub monkey_spot: Option<(super::parkour::monkey::MonkeyBars, Vec3)>,
+    /// Swinging round a flagpole (`parkour::flagpole`).
+    pub flagging: Option<super::parkour::flagpole::Swinging>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -670,6 +678,7 @@ impl WalkerState {
             springing: None,
             monkey: None,
             monkey_spot: None,
+            flagging: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -690,7 +699,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some() || self.flagging.is_some()
     }
 
     /// Leaping off a springboard, the board and how far it is bent under the
@@ -2713,6 +2722,48 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
         }
+        // Round a flagpole (`parkour::flagpole`): its pose instead, the root
+        // riding its hips; let go, a fall flung on as it swung, landing on
+        // the first top along its flight.
+        if let Some(rig) = foot_ik.rig.clone()
+            && let Some(swinging) = state.flagging.as_mut()
+        {
+            swinging.advance(dt);
+            target.pose = match springs {
+                Some(springs) => swinging.pose_led(&rig, &springs.0),
+                None => swinging.pose(&rig),
+            };
+            state.locomotion.position = swinging.root();
+            state.facing.yaw = swinging.facing();
+            state.facing.target_yaw = state.facing.yaw;
+            foot_ik.planted = [false; 2];
+            foot_ik.landing = None;
+            foot_ik.touchdown = None;
+            foot_ik.clear = [0.0; 2];
+            foot_ik.gait_swing = None;
+            foot_ik.gait_bearing = None;
+            legs_free = true;
+            if look_at.is_none() {
+                look_at = Some(swinging.look());
+            }
+            if let Some(hands) = hands.as_mut() {
+                let grips = swinging.grips();
+                if hands.grip != grips || hands.hook != [false; 2] {
+                    hands.grip = grips;
+                    hands.hook = [false; 2];
+                }
+            }
+            if swinging.is_released() {
+                let top = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                let floor = top(swinging.root().with_y(swinging.root().y + 0.05)).unwrap_or(0.0);
+                let mut falling = swinging.release(&top, floor, &stood, &rig);
+                let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                falling.against(&ledges, &rig);
+                state.falling = Some(falling);
+                state.flagging = None;
+                walker.flagpole = None;
+            }
+        }
         // Across monkey bars (`parkour::monkey`): got on once stopped under
         // the first, its pose instead, the root riding its hips; let go at
         // the far end, into a fall.
@@ -3146,6 +3197,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
             if let Some(falling) = state.falling.as_mut() {
+                // Asked to swing round a flagpole: reaching up for it.
+                if walker.flagpole.is_some() {
+                    falling.reach(true);
+                }
                 if !started {
                     falling.advance(dt);
                 }
@@ -3194,6 +3249,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         poling.set_grips(hands.grips);
                     }
                     state.poling = Some(poling);
+                    state.falling = None;
+                } else if let Some(pole) = walker.flagpole.filter(|_| falling.airborne())
+                    && let Some(mut swinging) = super::parkour::flagpole::Swinging::caught(&pole, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig)
+                {
+                    // Asked to swing round a flagpole, coming by it: caught
+                    // on it (`parkour::flagpole`).
+                    if let Some(hands) = hands.as_ref() {
+                        swinging.set_grips(hands.grips);
+                    }
+                    state.flagging = Some(swinging);
                     state.falling = None;
                 } else if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {
                     // Too far to land: at touchdown the body goes to the

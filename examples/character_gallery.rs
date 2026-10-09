@@ -1278,6 +1278,13 @@ fn steer_the_walker(
             walker.monkey_bars = Some(bars);
             hangs.monkey_fired = true;
         }
+        if !hangs.flagpole_fired
+            && let (Some(at), Some(pole)) = (hangs.flagpole_at, hangs.flagpole)
+            && time.elapsed_secs() >= at
+        {
+            walker.flagpole = Some(pole);
+            hangs.flagpole_fired = true;
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1583,6 +1590,13 @@ struct HangSchedule {
     monkey: Option<migera::character::anim::parkour::monkey::MonkeyBars>,
     monkey_at: Option<f32>,
     monkey_fired: bool,
+    /// A flagpole (`--flagpole X,Z,HEADING,HEIGHT[,LENGTH]`: its axis
+    /// leaving the wall at X,HEIGHT,Z, sticking out along HEADING as
+    /// `--block` faces, 1.5 m long else), swung round from T
+    /// (`--flagpole-at T`).
+    flagpole: Option<migera::character::anim::parkour::flagpole::Flagpole>,
+    flagpole_at: Option<f32>,
+    flagpole_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1703,6 +1717,14 @@ impl HangSchedule {
                     }
                 }
                 "--monkey-at" => schedule.monkey_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--flagpole" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, height, ref rest @ ..] = numbers[..] {
+                        let length = rest.first().copied().unwrap_or(1.5);
+                        schedule.flagpole = Some(migera::character::anim::parkour::flagpole::Flagpole::new(Vec3::new(x, height, z), approach::direction_of(heading.to_radians()), length));
+                    }
+                }
+                "--flagpole-at" => schedule.flagpole_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--spin-jump-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, ref rest @ ..] = numbers[..] {
@@ -1954,6 +1976,24 @@ struct GalleryPole;
 /// The gallery's haystack, as drawn.
 #[derive(Component)]
 struct GalleryHay;
+
+/// The gallery's flagpole, as drawn.
+#[derive(Component)]
+struct GalleryFlagpole;
+
+fn place_flagpole(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryFlagpole>>) {
+    let Some(pole) = hangs.flagpole else { return };
+    if !drawn.is_empty() {
+        return;
+    }
+    let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    commands.spawn((
+        GalleryFlagpole,
+        Mesh3d(meshes.add(Cylinder::new(migera::character::anim::parkour::flagpole::POLE_RADIUS, pole.length))),
+        MeshMaterial3d(steel),
+        Transform::from_translation(pole.at(0.5 * pole.length)).with_rotation(Quat::from_rotation_arc(Vec3::Y, pole.out)),
+    ));
+}
 
 /// The gallery's monkey bars, as drawn: each bar this long, on a post
 /// under each end of the first and last.
@@ -3024,7 +3064,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey, place_flagpole).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:
