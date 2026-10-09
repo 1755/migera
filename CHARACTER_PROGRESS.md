@@ -41,6 +41,36 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 14: climbing any wall
+
+A rough wall grows its own holds (`HoldWall::rough`). They form a jittered
+grid, one hold per cell, each placed and typed by a hash of the wall's
+seed and the cell: the same wall always has the same holds. The step-13
+climber climbs it. Note: [any wall is climbed on holds grown from its
+roughness](docs/knowledge/character-animation/parkour/any-wall-is-climbed-on-holds-grown-from-its-roughness.md).
+
+- **Fixed in the climber**, found by irregular holds where its regular
+  grid never went:
+  - an elbow flipping 34-44 cm where its arm points against its pole:
+    moves are now kept clear (no pole rule is defined for every direction);
+  - the fingers' sideways flip (7.6 cm), whose fix also improved the grid
+    from 2.9 to 1.3 cm;
+  - the get-on sweep 2.8 cm into the wall;
+  - the test harness measuring the topping-out blend.
+- **Headless:**
+  - roughness 0.8 and 1.0 are climbed hold to hold to the top;
+  - climbed twice, bit-identical;
+  - hands and feet on their holds to 1 µm, nothing in the wall, no dynos;
+  - changes of step 1.8-4.1 cm, an elbow sweeping round;
+  - 0.3 and 0.6 climbed with dynos.
+- **Live** (gizmos Left and face side, mesh): on the wall, hands and feet
+  on holds.
+- **Gallery:** `--rough-wall X,Z,HEADING,WIDTH,HEIGHT,ROUGHNESS,SEED`.
+- **Bench:** `--gait free-climb`, 0.108 ms at p50 as before; p99 0.112 →
+  0.313 ms on the frames that choose a move.
+- **Dead end:** checking each move on the pose itself changed no result
+  and cost 5.3 times as much.
+
 ### Parkour, step 18 (last part): roof and steep-face slides
 
 Walked or run onto a slope too steep to walk (`Walker::slopes`), it

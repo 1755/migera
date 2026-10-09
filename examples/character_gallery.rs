@@ -1696,6 +1696,19 @@ impl HangSchedule {
                     }
                 }
                 "--slide-under-at" => schedule.slide_under_at = args.next().and_then(|t| t.trim().parse().ok()),
+                // Any wall, its holds grown from its roughness and seed
+                // (`HoldWall::rough`), its top a ledge to climb out onto:
+                // `--rough-wall X,Z,HEADING,WIDTH,HEIGHT,ROUGHNESS,SEED`.
+                "--rough-wall" => {
+                    use migera::character::anim::parkour::holds::HoldWall;
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, width, height, roughness, seed] = numbers[..] {
+                        let face = Vec3::new(x, 0.0, z);
+                        let out = approach::direction_of(heading.to_radians());
+                        schedule.others.push(Ledge::wall(face, out, width, height, 1.0));
+                        schedule.holds = Some(HoldWall::rough(face, out, width, height, roughness, seed as u32));
+                    }
+                }
                 "--holds-wall" => {
                     use migera::character::anim::parkour::holds::HoldWall;
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();

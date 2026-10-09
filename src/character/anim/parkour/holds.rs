@@ -85,6 +85,41 @@ impl HoldWall {
         Self::new(face, out, holds)
     }
 
+    /// Any wall, its holds grown from its roughness (step 14): a patch
+    /// `width` wide and `height` high facing `out`, its foot's middle at
+    /// `face`, its top a ledge to climb out onto. Its holds are a jittered
+    /// grid, one to a cell, each cell's place and kind drawn from a hash of
+    /// `seed` and the cell (so the same wall always has the same holds,
+    /// whoever climbs it, and none is stored but the wall's own numbers).
+    /// Rougher (`roughness` 0-1), the cells are smaller (from a 0.4 × 0.3 m
+    /// climbing wall's to 0.65 of it) and more of the holds take a hand
+    /// (from 70 % to 95 %, the rest footholds only). From 1.25 of the
+    /// climbing wall's and 60 %, walls of 0.6 had gaps that took a dyno.
+    pub fn rough(face: Vec3, out: Vec3, width: f32, height: f32, roughness: f32, seed: u32) -> Self {
+        let out = out.with_y(0.0).normalize_or(Vec3::Z);
+        let along = out.cross(Vec3::Y);
+        let roughness = roughness.clamp(0.0, 1.0);
+        let scale = 1.0 - 0.35 * roughness;
+        let (cell_x, cell_y) = (0.4 * scale, 0.3 * scale);
+        let (columns, rows) = ((width / cell_x).floor().max(1.0) as i32, ((height - ROUGH_BOTTOM - ROUGH_TOP) / cell_y).floor().max(1.0) as i32);
+        let hands = 0.7 + 0.25 * roughness;
+        let mut holds = Vec::with_capacity((columns * rows) as usize);
+        for row in 0..rows {
+            for column in 0..columns {
+                let draw = |k: u32| cell_hash(seed, column, row, k);
+                let u = (column as f32 + 0.5 + ROUGH_JITTER * (2.0 * draw(0) - 1.0)) * cell_x - 0.5 * columns as f32 * cell_x;
+                let v = ROUGH_BOTTOM + (row as f32 + 0.5 + ROUGH_JITTER * (2.0 * draw(1) - 1.0)) * cell_y;
+                let kind = match draw(2) {
+                    x if x >= hands => HoldKind::Foot,
+                    x if x < 0.15 * hands => HoldKind::Jug,
+                    _ => HoldKind::Edge,
+                };
+                holds.push(Hold { at: face.with_y(0.0) + along * u + Vec3::Y * (face.y + v), kind });
+            }
+        }
+        Self { top: Some(Ledge::wall(face, out, width, face.y + height, 1.0)), ..Self::new(face, out, holds) }
+    }
+
     /// Along the face, level: the left of a body facing it.
     pub fn along(&self) -> Vec3 {
         self.out.cross(Vec3::Y)
@@ -96,6 +131,25 @@ impl HoldWall {
         let off = point - self.face;
         (Vec2::new(off.dot(self.along()), point.y), off.dot(self.out))
     }
+}
+
+/// A rough wall's holds start this far over its foot and stop this far
+/// under its top, metres; each this share of its cell off the cell's middle
+/// at most (two holds no nearer than 0.2 of a cell).
+const ROUGH_BOTTOM: f32 = 0.3;
+const ROUGH_TOP: f32 = 0.15;
+const ROUGH_JITTER: f32 = 0.4;
+
+/// A number in 0-1 drawn for a rough wall's cell `column`, `row` (the
+/// `k`th), from `seed`: SplitMix64's finaliser over the four packed
+/// together. Integer only, so the same on every machine.
+fn cell_hash(seed: u32, column: i32, row: i32, k: u32) -> f32 {
+    let mut x = (seed as u64) ^ ((column as u32 as u64) << 20) ^ ((row as u32 as u64) << 40) ^ ((k as u64) << 60);
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// The way asked, on the face: `x` along it (toward a body's left facing
@@ -127,6 +181,26 @@ const LOCK_OFF: (f32, f32) = (0.2, 0.3);
 /// reaching in from the side bent its wrist 1.7 rad.
 const HOOK_TILT: f32 = 1.4;
 const HOOK_INTO: f32 = 0.9;
+/// A forearm's sideways part under this share of it turns the fingers
+/// aside only as far as it goes, so they pass through straight up as it
+/// crosses over.
+const HOOK_SOFT: f32 = 0.5;
+/// A move is not made if it takes an arm (moving or held) nearer pointing
+/// against its elbow's pole than this (the cosine, about 8°): there the
+/// elbow's way round the arm is undefined, and it flipped 34-44 cm in a
+/// frame on a rough wall. No pole that depends on the arm's way alone is
+/// defined everywhere (a hairy ball), so the climb keeps out of where it is
+/// not. From this (about 18°) a move is chosen the less the nearer it
+/// takes an arm (kept out of all of that, a climb stuck where only such a
+/// move went on; chosen less from 25°, the grid's diagonal went aside).
+/// Judged on an estimate ([`FreeClimb::against_pole`]): checked on the
+/// pose itself at points along each move tried, no climb in the tests
+/// changed by a bit, and climbing cost 5.3 times as much.
+const ELBOW_CLEAR: f32 = 0.99;
+const ELBOW_AVOID: f32 = 0.95;
+/// The moving limb's path and the hips are tried at this many points along
+/// a move.
+const CLEAR_SAMPLES: usize = 8;
 /// The feet under the hips, metres, braced.
 const FEET_BELOW: f32 = 0.75;
 /// A limb reaches this share of its length at most; a foot's hold no nearer
@@ -464,7 +538,12 @@ impl FreeClimb {
         let on = forearm - self.wall.out * forearm.dot(self.wall.out);
         let across = on.with_y(0.0);
         let tilt = across.length().atan2(on.y).clamp(0.0, HOOK_TILT);
-        let level = Vec3::Y * tilt.cos() + across.normalize_or_zero() * tilt.sin();
+        // Sideways as far as the forearm goes sideways, not by its sign
+        // alone: a forearm pointing down, passing straight down, swung the
+        // fingers from one side to the other in a frame, and the held wrist
+        // round its hold 7.6 cm (a rough wall).
+        let aside = across / across.length().max(HOOK_SOFT * on.length()).max(1.0e-6);
+        let level = (Vec3::Y * tilt.cos() + aside * tilt.sin()).normalize_or(Vec3::Y);
         let into = (-forearm.dot(self.wall.out)).atan2(on.length()).clamp(0.0, HOOK_INTO);
         level * into.cos() - self.wall.out * into.sin()
     }
@@ -508,6 +587,45 @@ impl FreeClimb {
         (self.wrist_for(side, at, Vec3::Y) - shoulder).length() <= ARM_REACH * self.body.arms[side]
     }
 
+    /// How nearly hand `side` on a hold at `at`, the hips at `hips`, points
+    /// its arm against its elbow's pole: the cosine between the arm and the
+    /// pole's reverse (the pole as the pose makes it, the clavicle's lift
+    /// aside).
+    fn against_pole(&self, side: usize, at: Vec3, hips: Vec3) -> f32 {
+        let shoulder = hips + self.turn * self.body.shoulders[side];
+        let wrist = self.wrist_for(side, at, Vec3::Y);
+        let reach = (wrist - shoulder).normalize_or_zero();
+        let low = smoothstep(((shoulder.y + LOCK_OFF.0 - wrist.y) / LOCK_OFF.1).clamp(0.0, 1.0));
+        let pole = (self.turn * (self.rig.left() * (SIGN[side] * 0.7) - self.rig.forward() * 0.5) - Vec3::Y * (0.2 + 0.8 * low)).normalize();
+        -reach.dot(pole)
+    }
+
+    /// How nearly moving `limb` to hold `to` from `limbs` takes either arm
+    /// against its pole ([`Self::against_pole`]), at worst: the moving hand
+    /// along its path, a held one as the hips move under it; tried at
+    /// [`CLEAR_SAMPLES`] points past where it is now.
+    fn worst_against_pole(&self, limb: usize, to: usize, limbs: &[Option<usize>; 4]) -> f32 {
+        let mut with = *limbs;
+        with[limb] = Some(to);
+        let (start, end) = (self.hips, self.hips_for(&with));
+        let from = self.limb_at(limb);
+        let goal = self.wall.holds[to].at;
+        (1..=CLEAR_SAMPLES)
+            .flat_map(|k| {
+                let s = k as f32 / CLEAR_SAMPLES as f32;
+                let hips = start.lerp(end, smoothstep(s));
+                [LH, RH].into_iter().filter_map(move |hand| {
+                    let at = if hand == limb {
+                        Some(from.lerp(goal, smoothstep(s)) + self.wall.out * (HAND_ARC * (std::f32::consts::PI * s).sin().powi(2)))
+                    } else {
+                        limbs[hand].map(|_| self.limb_at(hand))
+                    };
+                    at.map(|at| self.against_pole(hand, at, hips))
+                })
+            })
+            .fold(-1.0, f32::max)
+    }
+
     /// Whether foot `side` reaches a hold at `at` from hips at `hips`: not
     /// too far, nor too high under them.
     fn foot_reaches(&self, side: usize, at: Vec3, hips: Vec3) -> bool {
@@ -541,7 +659,9 @@ impl FreeClimb {
                 let mut with = *limbs;
                 with[foot] = Some(*i);
                 let hips = self.hips_for(&with);
-                self.foot_reaches(side, self.wall.holds[*i].at, hips) && [LH, RH].iter().all(|&h| with[h].is_none_or(|j| self.hand_reaches(h, self.wall.holds[j].at, hips)))
+                self.foot_reaches(side, self.wall.holds[*i].at, hips)
+                    && [LH, RH].iter().all(|&h| with[h].is_none_or(|j| self.hand_reaches(h, self.wall.holds[j].at, hips)))
+                    && self.worst_against_pole(foot, *i, limbs) < ELBOW_CLEAR
             })
             .min_by(|(_, a), (_, b)| {
                 let cost = |hold: &Hold| (hold.at.y - wanted).abs() + (self.wall.place(hold.at).0.x - under_hip).abs();
@@ -576,7 +696,8 @@ impl FreeClimb {
         let pair_x = limbs[pair].map(|i| self.wall.place(self.wall.holds[i].at).0.x);
         let way = way.normalize_or_zero();
         let step = if hand { HAND_STEP } else { FOOT_STEP };
-        self.wall
+        self
+            .wall
             .holds
             .iter()
             .enumerate()
@@ -599,10 +720,18 @@ impl FreeClimb {
                 let hips = self.hips_for(&with);
                 let reached = [LH, RH].iter().all(|&h| with[h].is_none_or(|j| self.hand_reaches(h, self.wall.holds[j].at, hips)))
                     && [LF, RF].iter().all(|&f| with[f].is_none_or(|j| self.foot_reaches(f - LF, self.wall.holds[j].at, hips)));
+                if !reached {
+                    return None;
+                }
+                // An arm kept off pointing against its elbow's pole (for
+                // holds in reach only: for every hold, climbing cost 2.8
+                // times as much).
+                let against = self.worst_against_pole(limb, i, limbs);
                 // Each limb its own side of the hips: a foot under its hip,
                 // a hand over its shoulder.
                 let own = self.wall.place(hips).0.x + SIGN[side] * if hand { HAND_ASIDE } else { FOOT_ASIDE };
-                reached.then_some((i, (progress - step).abs() + 0.5 * across + 0.5 * (place.x - own).abs()))
+                let avoid = ((against - ELBOW_AVOID) / (ELBOW_CLEAR - ELBOW_AVOID)).max(0.0);
+                (against < ELBOW_CLEAR).then_some((i, (progress - step).abs() + 0.5 * across + 0.5 * (place.x - own).abs() + avoid))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
@@ -943,7 +1072,12 @@ impl FreeClimb {
                     let (from, to) = (self.body.hands[side] - shoulder, back * (hooked - root) - shoulder);
                     let swept = Quat::IDENTITY.slerp(Quat::from_rotation_arc(from.normalize(), to.normalize()), w) * from.normalize();
                     let reach = from.length() + (to.length() - from.length()) * w - 0.12 * (std::f32::consts::PI * w).sin();
-                    root + self.turn * (shoulder + swept * reach)
+                    // No nearer the face than the hooked wrist ends (round
+                    // the shoulder to a hold out to the side, the sweep went
+                    // 2.8 cm into the wall on a rough wall).
+                    let at = root + self.turn * (shoulder + swept * reach);
+                    let short = self.wall.place(hooked).1 - self.wall.place(at).1;
+                    at + self.wall.out * short.max(0.0)
                 }
                 None => hooked,
             }
@@ -1190,6 +1324,13 @@ mod tests {
                 flying = 0.0;
             }
             let now = world(climb);
+            // Taking the lip, the climb hands over to a hang, the feet off
+            // their holds (`it_steps_off_at_the_bottom_and_tops_out_into_a_
+            // hang` bounds that hand-over).
+            if climb.topping.is_some() {
+                frames.push(now);
+                continue;
+            }
             let (a, b) = (frames[frames.len() - 2], frames[frames.len() - 1]);
             m.fastest = m.fastest.max(Bone::ALL.iter().map(|&bone| ((now[bone] - now[Bone::Hips]) - (b[bone] - b[Bone::Hips])).length() / DT).fold(0.0, f32::max));
             m.kink = m.kink.max(Bone::ALL.iter().map(|&bone| (now[bone] - 2.0 * b[bone] + a[bone]).length()).fold(0.0, f32::max));
@@ -1326,5 +1467,86 @@ mod tests {
         let jump = Bone::ALL.iter().map(|&bone| (first[bone] - held[bone]).length()).fold(0.0, f32::max);
         eprintln!("{m:?}, topping out a joint moved {jump:.3}");
         assert!(jump < 0.05, "taking the lip, a joint moved {jump:.3} m in a frame");
+    }
+
+    /// A rough wall grows the same holds from the same seed, and others
+    /// from another; all on the patch, none nearer another than a fifth of
+    /// a cell; the rougher, the more holds and the more of them for hands.
+    #[test]
+    fn a_rough_wall_grows_the_same_holds_from_the_same_seed() {
+        let face = Vec3::new(1.0, 0.0, -0.6);
+        let wall = |roughness: f32, seed: u32| HoldWall::rough(face, Vec3::Z, 3.0, 6.0, roughness, seed);
+        assert_eq!(wall(0.5, 7), wall(0.5, 7), "the same seed grew other holds");
+        assert_ne!(wall(0.5, 7).holds, wall(0.5, 8).holds, "another seed grew the same holds");
+        for roughness in [0.0f32, 0.5, 1.0] {
+            let w = wall(roughness, 7);
+            let cell = 0.3 * (1.0 - 0.35 * roughness);
+            for (i, hold) in w.holds.iter().enumerate() {
+                let (at, out) = w.place(hold.at);
+                assert!(at.x.abs() <= 1.5 && (0.0..=6.0).contains(&at.y) && out.abs() < 1.0e-5, "a hold off the patch at {at}, {out} out");
+                let nearest = w.holds.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, other)| (other.at - hold.at).length()).fold(f32::MAX, f32::min);
+                assert!(nearest >= 0.2 * cell - 1.0e-4, "two holds {nearest:.3} apart at roughness {roughness}");
+            }
+        }
+        let count = |roughness: f32| {
+            let w = wall(roughness, 7);
+            (w.holds.len(), w.holds.iter().filter(|h| h.kind.hand()).count())
+        };
+        let ((smooth, smooth_hands), (rough, rough_hands)) = (count(0.0), count(1.0));
+        assert!(rough > 2 * smooth && rough_hands * smooth > smooth_hands * rough, "{smooth} holds ({smooth_hands} for hands) smooth, {rough} ({rough_hands}) rough");
+    }
+
+    /// Rough walls, 5 m, several seeds: got on from standing and climbed up
+    /// to the top into a hang; twice, the same climb (deterministic). Rough
+    /// enough to climb hold to hold (0.8 and up), as on a climbing wall:
+    /// held limbs on their holds, nothing in the wall, no joint whipping
+    /// round, no dyno, no step changing more than a moving arm's elbow
+    /// sweeping round over a hold placed anyhow (1.8-4.1 cm, over several
+    /// frames, where the grid's regular holds keep it under 3). Sparser
+    /// (0.3, 0.6), it still gets up, the hands within a centimetre of their
+    /// holds, by dynos (whose own feet and arms are bounded by none of
+    /// these: see the note).
+    #[test]
+    fn rough_walls_are_climbed_to_the_top() {
+        let (stood, rig) = real_stood();
+        let mut faults = Vec::new();
+        for roughness in [0.3f32, 0.6, 0.8, 1.0] {
+            let sparse = roughness < 0.7;
+            for seed in 1..=2u32 {
+                let name = format!("roughness {roughness}, seed {seed}");
+                let wall = HoldWall::rough(Vec3::new(0.0, 0.0, -0.6), Vec3::Z, 2.4, 5.0, roughness, seed);
+                let climbed = |m: &mut Climbed| {
+                    let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig)?;
+                    let mut frames = vec![world(&climb), world(&climb)];
+                    run(&mut climb, Some(Vec2::Y), 40.0, m, &mut frames);
+                    Some((climb.topped_out(), climb.hips))
+                };
+                let mut m = Climbed { fewest: 4, ..Default::default() };
+                // A sparse wall may have no two hand holds over the
+                // shoulders to get on by.
+                let Some((topped, hips)) = climbed(&mut m) else {
+                    if !sparse {
+                        faults.push(format!("{name}: never got on"));
+                    }
+                    continue;
+                };
+                // Climbed again (once a roughness: a climb is slow to run).
+                let again = if seed == 1 { climbed(&mut Climbed { fewest: 4, ..Default::default() }).map(|(_, hips)| hips) } else { Some(hips) };
+                eprintln!("{name}: {} holds, topped out {topped}, hips at {:.2}, {m:?}", wall.holds.len(), hips.y);
+                if !topped {
+                    faults.push(format!("{name}: stuck, the hips at {:.2}", hips.y));
+                }
+                if again != Some(hips) {
+                    faults.push(format!("{name}: climbed again, ended at {again:?}, not {hips}"));
+                }
+                if m.hand_off > if sparse { 0.01 } else { 1.0e-3 } {
+                    faults.push(format!("{name}: a held hand {:.4} off its hold", m.hand_off));
+                }
+                if !sparse && (m.dynos > 0 || m.foot_off > 0.01 || m.into > 0.005 || m.fastest > 14.0 || m.kink > 0.05) {
+                    faults.push(format!("{name}: {m:?}"));
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
     }
 }
