@@ -41,6 +41,46 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 9 finished: climbing a pole
+
+A vertical pole (`parkour::Pole`, `parkour::pole::Poling`) is jumped onto
+from standing, then climbed, slid down, gone round and let go of. Note:
+[a pole is climbed as an inchworm, hands over a leg
+clamp](docs/knowledge/character-animation/parkour/a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md).
+
+- **Holding:** the hands one above the other round it, the feet clamping
+  it, the hips 0.3 m off.
+- **Climbing:** 0.6 m cycles of 1.8 s, the arms pulling as the legs fold
+  up, then the clamped legs standing as the hands go up one over the
+  other. Down is the cycle reversed; at the top it stops, at the bottom it
+  lets go onto the floor.
+- **The rest:** a braked slide (to 2.5 m/s) into a landing; going round at
+  1.5 rad/s; letting go into a fall.
+- **The walker:** `Walker::pole`, `Walker::on_pole` (`PoleAsk`).
+- **The gallery:** `--pole`, `--pole-ask`. **The bench:** `--gait pole`.
+- **Fixed on the way:**
+  - it faced away from the pole, the arms reaching behind its back;
+  - a hand's straight path to the pole passed through its shoulder (the
+    elbow flipped 17 cm); it now sweeps round the shoulder with the elbow
+    bent;
+  - getting on, the hips outran the feet and stretched a leg straight;
+  - a 0.78 m stroke was more than the hands' 0.65 m range: the stroke is
+    now 0.6 m.
+- **Headless** (three headings; a 5 m and a 3.2 m pole):
+  - three cycles up, exact, and back down;
+  - slid at no more than 2.5 m/s and landed;
+  - a half turn round and back;
+  - stopped under the top; let go and landed clear;
+  - hands and feet on the pole within 0.6 µm, nothing into it;
+  - no joint over 4.5 m/s, no step change over 1.5 cm a frame.
+- **Live** (Xvfb, gizmos on and mesh off, Left and Back; mesh on; BRP):
+  walked to it, climbed to its top limit, went round, climbed down, slid
+  and stood.
+- **Cost:** 39 µs a character at p50 (`--gait pole --characters 100`).
+
+Step 9 is built. 1270 library tests pass; clippy is clean with and without
+`real_rig`, but for an older test warning in `hand.rs`.
+
 ### Parkour, step 9 (first part): swinging on a bar, and a lache
 
 A bar is a ledge 4 cm deep with nothing below (`Ledge::bar`), so its hang is

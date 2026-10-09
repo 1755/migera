@@ -1192,6 +1192,14 @@ fn steer_the_walker(
             walker.ledges = hangs.others.clone();
         }
         walker.catch = hangs.catch;
+        walker.pole = hangs.pole;
+        // An ask taken (let go, slid off) is dropped by the walker; asked
+        // again only by a later one.
+        let pole_ask = hangs.pole_ask(time.elapsed_secs());
+        if pole_ask != hangs.last_pole_ask {
+            walker.on_pole = pole_ask;
+            hangs.last_pole_ask = pole_ask;
+        }
         // A climb up or drop down already asked goes first: a later grab
         // keeps it.
         {
@@ -1455,6 +1463,12 @@ struct HangSchedule {
     lache_at: Option<f32>,
     lache_fired: bool,
     vault_fired: bool,
+    /// A pole to climb (`--pole X,Z,HEIGHT`), and what is asked of it
+    /// (`--pole-ask T,up|down|slide|left|right|letgo[,SECONDS]`: from T,
+    /// for SECONDS if given, else until taken).
+    pole: Option<migera::character::anim::parkour::Pole>,
+    pole_asks: Vec<(f32, migera::character::anim::parkour::pole::PoleAsk, f32)>,
+    last_pole_ask: Option<migera::character::anim::parkour::pole::PoleAsk>,
 }
 
 impl HangSchedule {
@@ -1500,6 +1514,30 @@ impl HangSchedule {
                             None => schedule.ledge = Some(bar),
                             Some(_) => schedule.others.push(bar),
                         }
+                    }
+                }
+                "--pole" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, height] = numbers[..] {
+                        schedule.pole = Some(migera::character::anim::parkour::Pole::new(Vec3::new(x, 0.0, z), height));
+                    }
+                }
+                "--pole-ask" => {
+                    use migera::character::anim::parkour::pole::{PoleAsk, Round};
+                    let given = args.next().unwrap_or_default();
+                    let parts: Vec<&str> = given.split(',').map(str::trim).collect();
+                    let ask = match parts.get(1).copied() {
+                        Some("up") => Some(PoleAsk::Up),
+                        Some("down") => Some(PoleAsk::Down),
+                        Some("slide") => Some(PoleAsk::Slide),
+                        Some("left") => Some(PoleAsk::Round(Round::Left)),
+                        Some("right") => Some(PoleAsk::Round(Round::Right)),
+                        Some("letgo") => Some(PoleAsk::LetGo),
+                        _ => None,
+                    };
+                    if let (Some(Ok(at)), Some(ask)) = (parts.first().map(|t| t.parse::<f32>()), ask) {
+                        let seconds = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                        schedule.pole_asks.push((at, ask, seconds));
                     }
                 }
                 "--swing-at" => schedule.swing_at = args.next().and_then(|t| t.trim().parse().ok()),
@@ -1555,6 +1593,13 @@ impl HangSchedule {
             schedule.ledge = Some(Ledge::wall(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 3.0, 2.25, 1.0));
         }
         schedule
+    }
+
+    /// What is asked of the pole at `elapsed` seconds: the latest ask begun,
+    /// unless its time is up.
+    fn pole_ask(&self, elapsed: f32) -> Option<migera::character::anim::parkour::pole::PoleAsk> {
+        let (at, ask, seconds) = self.pole_asks.iter().filter(|(at, _, _)| *at <= elapsed).max_by(|a, b| a.0.total_cmp(&b.0))?;
+        (*seconds <= 0.0 || elapsed < at + seconds).then_some(*ask)
     }
 
     /// The way to shimmy at `elapsed` seconds, if it is.
@@ -1624,6 +1669,24 @@ impl HangSchedule {
         self.fired = true;
         Some(HangAsk::Grab)
     }
+}
+
+/// The gallery's pole, as drawn.
+#[derive(Component)]
+struct GalleryPole;
+
+fn place_pole(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryPole>>) {
+    let Some(pole) = hangs.pole else { return };
+    if !drawn.is_empty() {
+        return;
+    }
+    let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    commands.spawn((
+        GalleryPole,
+        Mesh3d(meshes.add(Cylinder::new(pole.radius, pole.height))),
+        MeshMaterial3d(steel),
+        Transform::from_translation(pole.at(pole.foot.y + 0.5 * pole.height)),
+    ));
 }
 
 /// The gallery's ledges, as drawn: the one grabbed, then the others.
@@ -2596,7 +2659,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

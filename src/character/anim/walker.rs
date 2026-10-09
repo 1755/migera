@@ -155,6 +155,15 @@ pub struct Walker {
     /// along it hand over hand while asked (grabbing it first). Hanging,
     /// nothing else asked of it is done.
     pub hang: Option<super::parkour::hang::HangAsk>,
+    /// The pole to climb (`parkour::pole`).
+    pub pole: Option<super::parkour::Pole>,
+    /// Asked of [`Walker::pole`]: `Up` walks to it, gets on and climbs while
+    /// asked (to its top); on it, `Down` climbs down (letting go onto the
+    /// floor at the bottom), `Slide` slides to the floor, `Round` goes round
+    /// it while asked, `LetGo` lets go (reaching to catch a ledge if
+    /// [`Walker::catch`]). The asks that end on the floor are dropped once
+    /// taken. On it, nothing else asked of it is done.
+    pub on_pole: Option<super::parkour::pole::PoleAsk>,
 }
 
 impl Default for Walker {
@@ -182,6 +191,8 @@ impl Default for Walker {
             catch: false,
             ledges: Vec::new(),
             hang: None,
+            pole: None,
+            on_pole: None,
         }
     }
 }
@@ -450,6 +461,10 @@ pub struct WalkerState {
     pub fall_to: Option<f32>,
     /// Running up a wall (`parkour::wall`), until it lets go into a fall.
     pub wall_run: Option<super::parkour::wall::WallRun>,
+    /// On a pole ([`Walker::on_pole`]), until it lets go into a fall; and
+    /// the pole it walks to with the spot it gets on from.
+    pub poling: Option<super::parkour::Poling>,
+    pub pole_spot: Option<(super::parkour::Pole, Vec3)>,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -503,6 +518,8 @@ impl WalkerState {
             hanging: None,
             falling: None,
             wall_run: None,
+            poling: None,
+            pole_spot: None,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -516,7 +533,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some()
     }
 }
 
@@ -778,10 +795,48 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             && state.posture.is_standing()
             && !fallen;
         let mut at_ledge = false;
+        // Asked up a pole (`parkour::pole`): it walks to the spot in front of
+        // it, facing it, and gets on once stopped.
+        let pole_asked = !state.on_holds()
+            && walker.on_pole == Some(super::parkour::pole::PoleAsk::Up)
+            && walker.pole.is_some()
+            && walker.sit.is_none()
+            && state.posture.is_standing()
+            && !fallen;
+        let mut at_pole = false;
         match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
             _ if state.on_holds() => {
                 state.approach = approach::Approach::Idle;
                 (wanted_speed, steer) = (0.0, Steer::Straight);
+            }
+            (_, _, Some(rig)) if pole_asked => {
+                let pole = walker.pole.expect("asked up a pole");
+                let ahead = approach::heading_of(rig.forward());
+                if state.pole_spot.is_none_or(|(was, _)| was != pole) {
+                    let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
+                    state.pole_spot = Some((pole, super::parkour::Poling::spot(&pole, state.locomotion.position, &stood, rig)));
+                    state.approach = approach::Approach::Idle;
+                }
+                let (_, spot) = state.pole_spot.expect("a spot");
+                let facing = approach::heading_of((pole.foot - spot).with_y(0.0).normalize_or(rig.forward()));
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                placing = true;
+                let gait = approach_gait(state, cycle_of(&phase), &gait_rig);
+                let obstacles: Vec<_> = route_obstacles.map(|route| route.0.clone()).unwrap_or_default();
+                match state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, facing, speed, &obstacles) {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        (wanted_speed, steer, at_pole) = (0.0, Steer::Straight, true);
+                    }
+                }
+                if look_at.is_none() {
+                    look_at = Some(pole.at(1.8));
+                }
             }
             (_, _, Some(rig)) if hang_asked => {
                 let ledge = walker.ledge.expect("asked to grab a ledge");
@@ -1950,6 +2005,60 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.ladder_spot = None;
                     state.stood_hold = STOOD_HOLD;
                     phase.elapsed = 0.0;
+                }
+            }
+        }
+        // On a pole (`parkour::pole`): its pose instead, the root riding its
+        // hips, facing it; got on once stopped on the spot in front of it;
+        // let go, into a fall.
+        if let Some(rig) = foot_ik.rig.clone() {
+            let ready = at_pole && weight <= 0.0 && state.transition.is_at_rest() && state.crouching.is_standing() && state.jump.is_none();
+            if ready
+                && state.poling.is_none()
+                && let Some((pole, _)) = state.pole_spot
+            {
+                let mut poling = super::parkour::Poling::get_on(&pole, state.locomotion.position, &stood, &rig);
+                if let Some(hands) = hands.as_ref() {
+                    poling.set_grips(hands.grips);
+                }
+                state.poling = Some(poling);
+                state.approach = approach::Approach::Idle;
+            }
+            if let Some(poling) = state.poling.as_mut() {
+                poling.advance(walker.on_pole, dt);
+                target.pose = match springs {
+                    Some(springs) => poling.pose_led(&rig, &springs.0),
+                    None => poling.pose(&rig),
+                };
+                state.locomotion.position = poling.root();
+                state.facing.yaw = poling.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if look_at.is_none() {
+                    look_at = Some(poling.look());
+                }
+                if let Some(hands) = hands.as_mut() {
+                    let grips = poling.grips();
+                    if hands.grip != grips || hands.hook != [false; 2] {
+                        hands.grip = grips;
+                        hands.hook = [false; 2];
+                    }
+                }
+                // Let go (pushed off, at the bottom, or slid to the floor):
+                // a fall, reaching to catch a ledge if asked.
+                if poling.is_released() {
+                    let mut falling = poling.release(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height), &stood, &rig);
+                    falling.reach(walker.catch);
+                    state.falling = Some(falling);
+                    state.poling = None;
+                    state.pole_spot = None;
+                    walker.on_pole = None;
                 }
             }
         }

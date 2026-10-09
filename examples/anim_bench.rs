@@ -92,6 +92,8 @@ enum Gait {
     Slide,
     /// Swinging on a 2.3 m bar, pumped up.
     BarSwing,
+    /// Climbing a pole: a cycle of the climb up.
+    Pole,
     /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
     /// letting go to the catch, the catch tested each frame of the flight.
     Lache,
@@ -141,7 +143,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -331,6 +333,20 @@ fn main() {
     };
     // A drop (`parkour::fall`): the clock is how far from leaving the top to
     // standing below; posed led ahead of its springs, as the walker poses it.
+    // A pole (`parkour::pole`): the clock is a climbing cycle up, from its
+    // start.
+    let poling = match gait {
+        Gait::Pole => {
+            use migera::character::anim::parkour::pole::{PoleAsk, Pole, Poling};
+            let pole = Pole::new(Vec3::new(0.0, 0.0, -1.0), 6.0);
+            let root = Poling::spot(&pole, Vec3::ZERO, &stood, &rig);
+            let mut poling = Poling::get_on(&pole, root, &stood, &rig);
+            poling.advance(None, 1.5);
+            poling.advance(Some(PoleAsk::Up), DT);
+            Some(poling)
+        }
+        _ => None,
+    };
     let falling = match gait {
         Gait::Drop(roll) => {
             let velocity = rig.forward() * 1.4;
@@ -498,6 +514,11 @@ fn main() {
                 Some((now.pose_led(&rig, &springs), None))
             }
         }
+        _ if let Some(poling) = &poling => {
+            let mut now = poling.clone();
+            now.advance(Some(migera::character::anim::parkour::pole::PoleAsk::Up), cycle * migera::character::anim::parkour::pole::CYCLE);
+            Some((now.pose_led(&rig, &springs), None))
+        }
         _ if let Some(falling) = &falling => {
             let mut now = falling.clone();
             now.advance(cycle * falling.ends()[2]);
@@ -588,6 +609,7 @@ fn main() {
         Gait::RunAlong => "   running along a wall 0.55 m off at 4 m/s and running on".to_string(),
         Gait::Slide => "   sliding down a 4.5 m wall from a braced hang".to_string(),
         Gait::BarSwing => "   swinging on a 2.3 m bar, pumped up".to_string(),
+        Gait::Pole => "   climbing a pole, a cycle of the climb up".to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
@@ -721,6 +743,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("run-along") => Gait::RunAlong,
         Some("wall-slide") => Gait::Slide,
         Some("bar-swing") => Gait::BarSwing,
+        Some("pole") => Gait::Pole,
         Some("lache") => Gait::Lache,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),

@@ -266,8 +266,10 @@ its API, its tests, and when it is done.
 - **Tests.** Hands on the bar or rope throughout; energy only from the
   pump; the release ballistic.
 - **Built** 2026-10-09: [the bar's swing, pumped, and a lache to a bar
-  ahead](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md).
-  Ropes are out of scope.
+  ahead](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md), and
+  [the pole, climbed, slid down, gone round and let
+  go](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md). Ropes
+  are out of scope. Step 9 is built.
 
 ### Step 10: balance and tight spaces
 
@@ -360,7 +362,9 @@ its API, its tests, and when it is done.
 - **Step 9**, bars and poles: the bar's swing and a lache to a bar ahead
   built 2026-10-09 ([its
   note](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md)); the
-  pole not started; ropes out of scope.
+  pole the same day ([its
+  note](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md));
+  ropes out of scope. Built.
 - Step 10: not started.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,
