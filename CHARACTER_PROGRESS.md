@@ -41,6 +41,34 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 10 (first part): walking on a beam
+
+On a beam (`parkour::beam::Beam`, `Walker::beams`), the walk balances. Note:
+[a beam is walked with the feet near its line and the arms
+out](docs/knowledge/character-animation/parkour/a-beam-is-walked-with-the-feet-near-its-line-and-the-arms-out.md).
+
+- **The walk:** the feet at 0.4 of their step width (`GaitParams::feet_apart`,
+  new; part of the walk cycle's cache key), at most 0.7 m/s, steered back
+  onto the line, the arm swing gone.
+- **The balance** (`beam::balance`): the arms out 75°, the elbows bent
+  forward, swaying against a 0.08 rad trunk sway.
+- **The gallery:** `--beam`. **The bench:** `--gait beam`.
+- **Fixed on the way:** a walker beside the line walked the beam
+  straddling it (now taken from a step below and steered on); an elbow bent
+  up put the hand by the head; the arm swing under the lift sent one arm
+  forward.
+- **Headless:** on a beam the feet stay within 3.7 cm of the line (walking,
+  7.2), at least 5.4 cm apart; the hands held out past their shoulders,
+  the side swayed to raised.
+- **Live** (Xvfb, gizmos on and mesh off, Front and Left; mesh on; Top;
+  BRP): stepped onto a 0.25 m beam from beside it and walked it at about
+  0.7 m/s, the feet within 3.5 and 2 cm of its line, the hands out at
+  shoulder height.
+- **Cost:** 26.6 µs a character at p50 (a 0.7 m/s walk: 24.4).
+
+1273 library tests pass; clippy is clean with and without `real_rig`, but
+for an older test warning in `hand.rs`.
+
 ### Parkour, step 9 finished: climbing a pole
 
 A vertical pole (`parkour::Pole`, `parkour::pole::Poling`) is jumped onto

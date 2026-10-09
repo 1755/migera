@@ -169,6 +169,9 @@ pub struct GaitParams {
     pub curves: LegCurves,
     /// How a measured walk is crouched (`super::sneak`): none for a walk.
     pub crouch: CrouchAngles,
+    /// The share of a walk's step width (`stance::step_width`) the feet are
+    /// put apart: 1 walking, less on a beam (`parkour::beam`).
+    pub feet_apart: f32,
 }
 
 /// How a measured walk is crouched into a sneak (`super::sneak`), radians:
@@ -305,6 +308,7 @@ impl GaitParams {
             vertical_bob: 0.05 / 0.49,
             curves: LegCurves::Authored,
             crouch: CrouchAngles::NONE,
+            feet_apart: 1.0,
         }
     }
 
@@ -548,6 +552,7 @@ impl Default for GaitParams {
             // own, so the curves play back untimed.
             curves: LegCurves::Measured { amplitude: 1.0 },
             crouch: CrouchAngles::NONE,
+            feet_apart: 1.0,
         }
     }
 }
@@ -2670,6 +2675,7 @@ mod tests {
             // zero excursion, so identity is a property of the authored ones.
             curves: LegCurves::Authored,
             crouch: CrouchAngles::NONE,
+            feet_apart: 1.0,
         };
 
         for i in 0..20 {

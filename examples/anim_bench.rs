@@ -94,6 +94,8 @@ enum Gait {
     BarSwing,
     /// Climbing a pole: a cycle of the climb up.
     Pole,
+    /// Walking on a beam at its pace, balancing.
+    Beam,
     /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
     /// letting go to the catch, the catch tested each frame of the flight.
     Lache,
@@ -143,7 +145,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -535,6 +537,16 @@ fn main() {
             Some((now.pose_led(&rig, &springs), None))
         }
         _ if let Some(sneak) = &sneaking => Some((sneak.pose(cycle, &rig), Some(sneak.target().1))),
+        // On a beam: the walk with the feet narrowed and the arms out, as the
+        // walker poses it.
+        _ if let Gait::Beam = gait => {
+            use migera::character::anim::parkour::beam;
+            let walk = GaitParams::walking_on(beam::BEAM_SPEED, &rig);
+            let params = GaitParams { feet_apart: beam::BEAM_FEET, arm_swing: 0.0, ..walk };
+            let mut pose = walk_pose_on(cycle, &params, &stood, &rig);
+            beam::balance(&mut pose, &rig, 1.0, beam::sway_at(cycle * 4.0));
+            Some((pose, Some(params)))
+        }
         _ if let Gait::Crouch(depth, on_toes) = gait => {
             use migera::character::anim::sneak::{Footing, Sneak};
             let crouch = depth * 0.5 * (1.0 - (std::f32::consts::TAU * cycle).cos());
@@ -610,6 +622,7 @@ fn main() {
         Gait::Slide => "   sliding down a 4.5 m wall from a braced hang".to_string(),
         Gait::BarSwing => "   swinging on a 2.3 m bar, pumped up".to_string(),
         Gait::Pole => "   climbing a pole, a cycle of the climb up".to_string(),
+        Gait::Beam => "   walking on a beam, balancing".to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
@@ -744,6 +757,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("wall-slide") => Gait::Slide,
         Some("bar-swing") => Gait::BarSwing,
         Some("pole") => Gait::Pole,
+        Some("beam") => Gait::Beam,
         Some("lache") => Gait::Lache,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),

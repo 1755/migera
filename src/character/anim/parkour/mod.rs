@@ -3,6 +3,7 @@
 //! ledge, hanging from it and climbing up onto it ([`hang`]).
 
 pub mod along;
+pub mod beam;
 pub mod fall;
 pub mod geometry;
 pub mod hang;

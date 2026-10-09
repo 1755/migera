@@ -155,6 +155,9 @@ pub struct Walker {
     /// along it hand over hand while asked (grabbing it first). Hanging,
     /// nothing else asked of it is done.
     pub hang: Option<super::parkour::hang::HangAsk>,
+    /// Beams about it (`parkour::beam`): on one, it walks along its line at
+    /// a beam's pace, the feet nearly on the line, the arms out.
+    pub beams: Vec<super::parkour::beam::Beam>,
     /// The pole to climb (`parkour::pole`).
     pub pole: Option<super::parkour::Pole>,
     /// Asked of [`Walker::pole`]: `Up` walks to it, gets on and climbs while
@@ -191,6 +194,7 @@ impl Default for Walker {
             catch: false,
             ledges: Vec::new(),
             hang: None,
+            beams: Vec::new(),
             pole: None,
             on_pole: None,
         }
@@ -366,6 +370,8 @@ const STOOD_HOLD: f32 = 0.3;
 /// many ways round. It stops for a wall straight ahead this much further
 /// off, and as far as it goes in this long at its speed.
 pub const BODY_RADIUS: f32 = 0.2;
+/// On a beam, it turns back onto its line at this rate, rad/s.
+const BEAM_TURN: f32 = 2.0;
 /// It walks under anything wholly this far over what it stands on, metres
 /// (a bar to swing on, 2.3 m up).
 pub const HEADROOM: f32 = 2.0;
@@ -465,6 +471,10 @@ pub struct WalkerState {
     /// the pole it walks to with the spot it gets on from.
     pub poling: Option<super::parkour::Poling>,
     pub pole_spot: Option<(super::parkour::Pole, Vec3)>,
+    /// How far onto a beam's balance it is (0-1, `parkour::beam`), and how
+    /// long it has balanced, seconds (the sway's clock).
+    pub beam: f32,
+    pub beam_time: f32,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -520,6 +530,8 @@ impl WalkerState {
             wall_run: None,
             poling: None,
             pole_spot: None,
+            beam: 0.0,
+            beam_time: 0.0,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -1099,6 +1111,27 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             footing = Some(crouch_on);
         }
         let crouched = !state.crouching.is_standing();
+        // On a beam (`parkour::beam`): its balance eased in, walking along its
+        // line (back onto it if off) at no more than a beam's pace.
+        let on_beam = if state.on_holds() || !state.posture.is_standing() || placing {
+            None
+        } else {
+            walker.beams.iter().copied().find(|beam| beam.holds(state.locomotion.position))
+        };
+        let toward_beam = if on_beam.is_some() { 1.0 } else { 0.0 };
+        let eased = time.delta_secs() / super::parkour::beam::BEAM_EASE;
+        state.beam = (state.beam + (toward_beam - state.beam).clamp(-eased, eased)).clamp(0.0, 1.0);
+        state.beam_time = if state.beam > 0.0 { state.beam_time + time.delta_secs() } else { 0.0 };
+        if let (Some(beam), Some(rig)) = (on_beam, foot_ik.rig.as_ref()) {
+            let ahead = approach::heading_of(rig.forward());
+            let facing = Quat::from_rotation_y(state.facing.yaw) * rig.forward();
+            let along = approach::heading_of(beam.way_for(facing)) - ahead;
+            let (yaw, _) = back_to_line(state.locomotion.position, beam.a, along, rig.forward());
+            if wanted_speed > 0.0 {
+                steer = Steer::Toward { yaw, rate: BEAM_TURN };
+            }
+            wanted_speed = wanted_speed.min(super::parkour::beam::BEAM_SPEED);
+        }
         // A wall ahead within its stopping distance (`keep_off_walls`): it
         // turns off its way as little as is clear, keeps to that side along
         // the wall, and back onto its way past its end (`way_round`); with
@@ -1276,7 +1309,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         } else if placing {
             GaitParams::walking_with_steps(speed, leg, super::gait::SHORT_STEPS)
         } else {
-            GaitParams::walking_on(speed, &gait_rig)
+            // On a beam, the feet nearly on its line, the arms held out
+            // rather than swung (swung under the lift, one reached forward
+            // and the other hung back).
+            let walk = GaitParams::walking_on(speed, &gait_rig);
+            GaitParams { feet_apart: super::parkour::beam::feet_apart(state.beam), arm_swing: walk.arm_swing * (1.0 - state.beam), ..walk }
         };
         let run_params = GaitParams::running_for(speed, leg);
 
@@ -1548,6 +1585,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         #[allow(clippy::redundant_closure_call)]
         {
             target.pose = rendered(cycle);
+        }
+        // Balancing on a beam: the arms out, swaying against the trunk.
+        if state.beam > 0.0 {
+            let sway = super::parkour::beam::sway_at(state.beam_time);
+            super::parkour::beam::balance(&mut target.pose, &gait_rig, super::gait::smoothstep(state.beam), sway);
         }
         // Sitting, sitting down or standing up: the posture's pose instead
         // (`sitting`), its legs as solved on its own contacts, untouched by

@@ -125,7 +125,7 @@ impl WalkCycle {
         // A walk puts its feet closer together than a stance does (Winter
         // §11.3.1; see `stance::STEP_WIDTH`).
         let mut narrow = *base;
-        super::stance::narrow_feet(&mut narrow, rig, super::stance::step_width(base, rig));
+        super::stance::narrow_feet(&mut narrow, rig, super::stance::step_width(base, rig) * params.feet_apart);
         let narrowed = LEGS.map(|(_, hip, _, ankle)| [narrow.rotations[hip], narrow.rotations[ankle]]);
         let base_angles =
             [0, 1].map(|leg| gait::sagittal_angles(&narrow, rig, gait::leg_joints(LEGS[leg].3)));
@@ -722,7 +722,7 @@ pub fn walk_cycle(
 fn key_of(params: &GaitParams, amplitude: f32, base: &LocalPose, rig: &RigGeometry) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut feed = |values: &[f32]| values.iter().for_each(|v| v.to_bits().hash(&mut hasher));
-    feed(&[amplitude, params.duty_factor, params.crouch.thigh, params.crouch.knee, params.crouch.heel]);
+    feed(&[amplitude, params.duty_factor, params.crouch.thigh, params.crouch.knee, params.crouch.heel, params.feet_apart]);
     for q in base.rotations.0.iter().chain(rig.bind_rotations.0.iter()) {
         feed(&q.to_array());
     }

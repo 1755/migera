@@ -1193,6 +1193,9 @@ fn steer_the_walker(
         }
         walker.catch = hangs.catch;
         walker.pole = hangs.pole;
+        if walker.beams != hangs.beams {
+            walker.beams = hangs.beams.clone();
+        }
         // An ask taken (let go, slid off) is dropped by the walker; asked
         // again only by a later one.
         let pole_ask = hangs.pole_ask(time.elapsed_secs());
@@ -1469,6 +1472,9 @@ struct HangSchedule {
     pole: Option<migera::character::anim::parkour::Pole>,
     pole_asks: Vec<(f32, migera::character::anim::parkour::pole::PoleAsk, f32)>,
     last_pole_ask: Option<migera::character::anim::parkour::pole::PoleAsk>,
+    /// Beams to walk along (`--beam X0,Z0,X1,Z1,HEIGHT[,WIDTH]`), standing
+    /// on the floor.
+    beams: Vec<migera::character::anim::parkour::beam::Beam>,
 }
 
 impl HangSchedule {
@@ -1520,6 +1526,16 @@ impl HangSchedule {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x, z, height] = numbers[..] {
                         schedule.pole = Some(migera::character::anim::parkour::Pole::new(Vec3::new(x, 0.0, z), height));
+                    }
+                }
+                "--beam" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x0, z0, x1, z1, height, ref rest @ ..] = numbers[..] {
+                        let mut beam = migera::character::anim::parkour::beam::Beam::new(Vec3::new(x0, height, z0), Vec3::new(x1, height, z1));
+                        if let Some(&width) = rest.first() {
+                            beam.width = width;
+                        }
+                        schedule.beams.push(beam);
                     }
                 }
                 "--pole-ask" => {
@@ -1703,8 +1719,11 @@ fn place_ledge(
     drawn: Query<(Entity, &GalleryLedge)>,
     walkers: Query<Entity, With<Walker>>,
 ) {
-    let Some(ledge) = hangs.ledge else { return };
-    let ledges: Vec<_> = std::iter::once(ledge).chain(hangs.others.iter().copied()).collect();
+    // Beams' tops are ledges too, walked on.
+    let ledges: Vec<_> = hangs.ledge.into_iter().chain(hangs.others.iter().copied()).chain(hangs.beams.iter().map(|beam| beam.ledge())).collect();
+    if ledges.is_empty() {
+        return;
+    }
     if drawn.iter().next().is_some_and(|(_, GalleryLedge(was))| *was == ledges) {
         return;
     }
