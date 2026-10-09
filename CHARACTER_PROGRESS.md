@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 11 (second part): skid stops and plant-and-turns
+
+A fast run asked to stop skids, and asked to face back plants and turns
+round (`parkour::skid::Skid`, opt-in `Walker::skid`). Note: [a skid stop
+slides side-on and rises over stuck
+feet](docs/knowledge/character-animation/parkour/a-skid-stop-slides-side-on-and-rises-over-stuck-feet.md).
+
+- **The skid:** side-on, the feet sliding out ahead, braked at 0.5 g, the
+  centre of mass leant back `atan(μ)` (the feet solved for it at 17
+  facings); slowed, the feet stick and the hips come over them into the
+  stand.
+- **The plant-and-turn:** the body turned half round as it slides; it
+  stands facing back and runs again from the stand.
+- **The gallery:** `--skid`, `--steer-at T,DEGREES`. **The bench:**
+  `--gait skid`, `--gait plant-turn` (real rig).
+- **Fixed on the way:** feet out of reach (hips lower, trunk back); one
+  distance for every facing (leant 0.37-0.42 for 0.46); a sharp floor lift
+  (3.9 cm kink); the facing turned before the footfall (1.7 m off line).
+- **Headless:** braked at exactly 0.5 g; leant 0.4632-0.4640 (`atan` 0.4636);
+  stuck feet within 0.17 mm; toes 1.1 cm into the floor at most; no step
+  change over 3.1 cm; ends exactly standing.
+- **Live** (Xvfb, gizmos on and mesh off, Left; mesh on; BRP): stopped from
+  5 m/s; turned round from 5 m/s, slid 2.7 m on its line, stood, ran back.
+- **Cost:** 27 µs a character at p50 (stop), 26 (plant-and-turn).
+
 ### Parkour, step 11 (first part): leaning with a run's acceleration
 
 A running walker leans by its acceleration, `tan θ = a/g`

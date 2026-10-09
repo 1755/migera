@@ -182,7 +182,16 @@ pub struct Walker {
     /// [`Walker::catch`]). The asks that end on the floor are dropped once
     /// taken. On it, nothing else asked of it is done.
     pub on_pole: Option<super::parkour::pole::PoleAsk>,
+    /// Running fast (`parkour::skid::SKID_FROM`), asked to stop it skids to
+    /// a stop, and asked to face back (steered over [`SKID_BACK`] off its
+    /// facing) it plants and turns round, standing; otherwise it slows to a
+    /// walk first and turns at its facing's rate.
+    pub skid: bool,
 }
+
+/// Steered this far off its facing, radians, a skidding walker turns round
+/// on the spot ([`Walker::skid`]).
+pub const SKID_BACK: f32 = 2.4;
 
 impl Default for Walker {
     fn default() -> Self {
@@ -216,6 +225,7 @@ impl Default for Walker {
             free_climb: None,
             pole: None,
             on_pole: None,
+            skid: false,
         }
     }
 }
@@ -515,6 +525,8 @@ pub struct WalkerState {
     /// walks to to get on.
     pub free_climbing: Option<super::parkour::holds::FreeClimb>,
     pub holds_spot: Option<Vec3>,
+    /// Skidding to a stop or round from a run (`parkour::skid`).
+    pub skid: Option<super::parkour::skid::Skid>,
     /// Running, its lean with its acceleration (`parkour::lean`), and its
     /// facing last frame, for its turn's rate.
     pub lean: super::parkour::lean::Lean,
@@ -585,6 +597,7 @@ impl WalkerState {
             squeezed: 0.0,
             free_climbing: None,
             holds_spot: None,
+            skid: None,
             lean: Default::default(),
             lean_yaw: yaw,
             kick_chain: None,
@@ -600,7 +613,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some()
     }
 }
 
@@ -1978,6 +1991,28 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                 }
             }
+            // Skidding (`parkour::skid`), if it skids: running fast, asked to
+            // stop or to face back, off the foot that comes down.
+            let asked_back = matches!(walker.steer, Steer::Toward { yaw, .. } if facing::shortest_angle(yaw - state.facing.yaw).abs() > SKID_BACK);
+            if walker.skid && running && state.jump.is_none() && state.skid.is_none() && !state.on_holds() && rate > 0.0 && (walker.speed <= 0.0 || asked_back) {
+                // Not turned toward the way back before its foot comes down:
+                // turned first, it skidded on along the turned way, 1.7 m
+                // aside of where it ran.
+                if asked_back && speed >= super::parkour::skid::SKID_FROM {
+                    steer = Steer::Straight;
+                }
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down
+                    && let Some(skid) = super::parkour::skid::Skid::plan(state.locomotion.position, state.facing.yaw, speed, leg, asked_back, &target.pose, &stood, &rig)
+                {
+                    state.skid = Some(skid);
+                    state.stride.stepped = Vec3::ZERO;
+                    started = true;
+                }
+            }
             // Running along a wall (`parkour::along`): beside it, at the first
             // contact of the foot farther from it whose run along plans, a
             // leap held up by two steps on its face, landing and running on
@@ -2608,6 +2643,31 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.under_slide = None;
                     state.stood_hold = STOOD_HOLD;
                     phase.elapsed = 0.0;
+                }
+            }
+            // Skidding (`parkour::skid`): posed as planned, the root riding
+            // its hips; stood, it stands (and runs on from a stand if asked).
+            if let Some(skid) = state.skid.as_mut() {
+                skid.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => skid.pose_led(&springs.0),
+                    None => skid.pose(),
+                };
+                state.locomotion.position = skid.root();
+                state.facing.yaw = skid.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if skid.is_done() {
+                    state.skid = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
+                    let_go = true;
                 }
             }
         }

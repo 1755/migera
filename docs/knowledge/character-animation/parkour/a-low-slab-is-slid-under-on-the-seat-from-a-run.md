@@ -113,3 +113,4 @@ character at p50.
 - [A low obstacle is speed-vaulted as a reshaped running leap](./a-low-obstacle-is-speed-vaulted-as-a-reshaped-running-leap.md) — contrast: over an obstacle, the same take-off pacing.
 - [A near-straight leg is bent toward its kneecap](../ik-and-locomotion/a-near-straight-leg-bends-toward-its-kneecap.md) — same-trap: a leg past its reach straightens and its hinge flips.
 - [A drop is fallen ballistically and landed to the measured time and depth](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md) — context: led poses against springs.
+- [A skid stop slides side-on and rises over stuck feet](./a-skid-stop-slides-side-on-and-rises-over-stuck-feet.md) — contrast: the same entry from a run onto the feet, risen over them stuck.

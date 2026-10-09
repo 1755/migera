@@ -1234,7 +1234,12 @@ fn steer_the_walker(
                 None => {}
             }
         }
-        walker.steer = if idle.turn != 0.0 { Steer::Circle(idle.turn) } else { Steer::Straight };
+        walker.steer = match hangs.steer_at {
+            Some((at, yaw)) if time.elapsed_secs() >= at => Steer::Toward { yaw, rate: 2.0 },
+            _ if idle.turn != 0.0 => Steer::Circle(idle.turn),
+            _ => Steer::Straight,
+        };
+        walker.skid = hangs.skid;
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1506,6 +1511,11 @@ struct HangSchedule {
     holds: Option<migera::character::anim::parkour::holds::HoldWall>,
     free_climbs: Vec<(f32, bevy::math::Vec2, f32)>,
     last_free_climb: Option<bevy::math::Vec2>,
+    /// Skidding to a stop or round from a fast run (`--skid`).
+    skid: bool,
+    /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
+    /// rad/s.
+    steer_at: Option<(f32, f32)>,
 }
 
 impl HangSchedule {
@@ -1589,6 +1599,13 @@ impl HangSchedule {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, x, y, ref rest @ ..] = numbers[..] {
                         schedule.free_climbs.push((at, bevy::math::Vec2::new(x, y), rest.first().copied().unwrap_or(0.0)));
+                    }
+                }
+                "--skid" => schedule.skid = true,
+                "--steer-at" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, degrees] = numbers[..] {
+                        schedule.steer_at = Some((at, degrees.to_radians()));
                     }
                 }
                 "--squeeze" => {

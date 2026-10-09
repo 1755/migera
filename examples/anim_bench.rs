@@ -111,6 +111,9 @@ enum Gait {
     /// A 4 m/s run turning at 1 rad/s and gathering at 2 m/s², leant with
     /// its acceleration.
     RunLean,
+    /// A skid stop from 5 m/s (or, `true`, a plant-and-turn), from the
+    /// run's footfall to standing.
+    Skid(bool),
 }
 
 fn main() {
@@ -148,16 +151,18 @@ fn main() {
     // that.
     let rig = match gait {
         #[cfg(feature = "real_rig")]
-        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
         #[cfg(not(feature = "real_rig"))]
-        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder => panic!("--gait wall-run, wall-kick, run-along and slide-under need --features real_rig: only the real rig can plan them"),
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) => {
+            panic!("--gait wall-run, wall-kick, run-along, slide-under and plant-turn need --features real_rig: only the real rig can plan them")
+        }
         _ => migera::character::anim::rig::RigGeometry::default(),
     };
     let stood = migera::character::anim::stance::stance_on_rig(&poses::relaxed_stand(), migera::character::anim::stance::DEFAULT_KNEE_FLEX, &rig);
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -384,6 +389,16 @@ fn main() {
         }
         _ => None,
     };
+    // A skid (`parkour::skid`): the clock is its whole length, from the
+    // run's footfall.
+    let skidding = match gait {
+        Gait::Skid(round) => {
+            let run = GaitParams::running_on(5.0, &rig);
+            let from = walk_pose_on(0.0, &run, &stood, &rig);
+            Some(migera::character::anim::parkour::skid::Skid::plan(Vec3::ZERO, 0.0, 5.0, 0, round, &from, &stood, &rig).expect("a skid"))
+        }
+        _ => None,
+    };
     // Free climbing (`parkour::holds`): the clock is 3 s of climbing up a
     // wall of holds, from on it.
     let free_climbing = match gait {
@@ -573,6 +588,11 @@ fn main() {
             }
             Some((pose, Some(params)))
         }
+        _ if let Some(skid) = &skidding => {
+            let mut now = skid.clone();
+            now.advance(cycle * skid.end());
+            Some((now.pose_led(&springs), None))
+        }
         _ if let Some(climb) = &free_climbing => {
             let mut now = climb.clone();
             now.advance(Some(Vec2::Y), cycle * 3.0);
@@ -709,6 +729,7 @@ fn main() {
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::FreeClimb => "   free climbing up a wall of holds".to_string(),
         Gait::RunLean => "   a 4 m/s run turning and gathering, leant".to_string(),
+        Gait::Skid(round) => if round { "   a plant-and-turn from 5 m/s" } else { "   a skid stop from 5 m/s" }.to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
@@ -850,6 +871,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("lache") => Gait::Lache,
         Some("free-climb") => Gait::FreeClimb,
         Some("run-lean") => Gait::RunLean,
+        Some("skid") => Gait::Skid(false),
+        Some("plant-turn") => Gait::Skid(true),
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
