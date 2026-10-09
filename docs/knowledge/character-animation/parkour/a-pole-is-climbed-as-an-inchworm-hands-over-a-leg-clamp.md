@@ -76,6 +76,19 @@ in front of it (`Poling::spot`, from where it comes) and gets on. The rest
 are taken on it. A let go hands it to the fall, reaching to catch if
 `Walker::catch`, and drops the ask.
 
+**Caught from a fall** (step 12 of the [steps beyond the first
+ten](./parkour-moves-beyond-the-first-ten-steps.md), a jump to a pole,
+added 2026-10-09; `Poling::caught`): asked to catch, a fall whose hips come
+within 0.25 m of where they would hold is caught on it, if the holds
+there are under its top and over the floor. Over 0.3 s:
+- the hips go on from the fall's velocity to rest at the hold, on half
+  their speed's worth;
+- the facing turns to the pole;
+- the wrists go from where the fall had them, carried with the hips, to
+  their holds;
+- the fall's pose is eased out;
+- the hands close.
+
 ## Alternatives considered
 
 - **A 0.78 m stroke** (2 s cycles): each hand must rise a stroke per
@@ -106,6 +119,15 @@ are taken on it. A let go hands it to the fall, reaching to catch if
   and so the shoulder, still swung the elbow 2.07 cm.
 - **Let go from the slide at the holds it slid from**: the hips went back
   up 3 m in a frame.
+- **Caught with its hands put straight on the pole**, the holds out of
+  reach of hips still coming in straightened the arms. Blended in by turn,
+  a hand turning near half round to its grip flipped its way round. Solved
+  to wrists going from the fall's to the holds, with the arms blended from
+  the fall's, the first frame took the pole's elbow direction at once
+  (10 cm). The clamp out of reach flipped a knee (6.9 cm). The fall's
+  hips, dropped from standing, sat apart from where the pole roots the
+  hips. Now the arms are blended with moving wrists, the legs and arms are
+  kept within reach, and the fall's pose is re-rooted.
 
 ## Consequences
 
@@ -130,6 +152,11 @@ slid down and stood.
 
 **Cost**: `anim_bench --gait pole --characters 100`, 39 µs a character at
 p50 for a climbing cycle.
+
+**Caught** (headless; off a 2.4 m top at 1.5 and 2.5 m/s toward a pole
+1-1.2 m ahead): caught, holding, the hands on it within 1 µm, nothing
+into it, no step changing over 2.2 cm. Live, walking off a 2.4 m block, it
+caught a pole 1.1 m past the edge and held at 1.78 m.
 
 ## Revisit when
 

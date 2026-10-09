@@ -41,6 +41,26 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (fourth part): jumps to a bar or a pole
+
+A leap back from a hang catches a bar behind (a bar is a ledge), and a fall
+asked to catch is caught on a pole it comes by (`Poling::caught`). Notes
+(extended): [a hang is leapt from, up, aside or
+back](docs/knowledge/character-animation/parkour/a-hang-is-leapt-from-up-aside-or-back.md),
+[a pole is climbed as an
+inchworm](docs/knowledge/character-animation/parkour/a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md).
+
+- **The pole catch:** within 0.25 m of where the hips would hold, over
+  0.3 s the hips go on to rest at the hold, the facing turns, the wrists
+  go from the fall's to their holds, the fall's pose eases out.
+- **Fixed on the way:** a bar's plane kept the hands off (29 cm); out of
+  reach hands and clamp flipped an elbow and a knee; a hand blended by turn
+  flipped round; the fall's pose rooted apart.
+- **Headless:** back to a bar 2.5 m behind, caught; off a 2.4 m top at
+  1.5-2.5 m/s, a pole caught and held, the hands within 1 µm, no step
+  changing over 2.2 cm.
+- **Live** (BRP): walked off a 2.4 m block and caught a pole 1.1 m past.
+
 ### Parkour, step 12 (third part): the leap of faith
 
 Asked (`Walker::leap_of_faith`), from a high top the walker dives into a

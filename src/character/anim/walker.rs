@@ -2987,6 +2987,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     let hanging = super::parkour::Hanging::caught(&ledge, &ledges, falling.hips(), falling.hips_velocity(), &pose, falling.root(), square, foot_ik.pelvis_drop, grips, &stood, &rig);
                     state.hanging = Some(hanging);
                     state.falling = None;
+                } else if let Some(pole) = walker.pole.filter(|_| walker.catch && falling.airborne())
+                    && let Some(mut poling) = super::parkour::Poling::caught(&pole, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), falling.ground(), &stood, &rig)
+                {
+                    // Asked to catch, coming by its pole: caught on it
+                    // (`parkour::pole`, a jump to a pole).
+                    if let Some(hands) = hands.as_ref() {
+                        poling.set_grips(hands.grips);
+                    }
+                    state.poling = Some(poling);
+                    state.falling = None;
                 } else if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {
                     // Too far to land: at touchdown the body goes to the
                     // ragdoll, falling on with the velocity it hit with (a

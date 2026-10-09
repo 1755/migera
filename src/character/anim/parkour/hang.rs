@@ -2192,7 +2192,12 @@ mod tests {
         let up_aside = Ledge::wall(Vec3::new(1.8, 0.0, -0.5), Vec3::Z, 2.0, 3.1, 1.0);
         let farther_up_aside = Ledge::wall(Vec3::new(2.3, 0.0, -0.5), Vec3::Z, 2.0, 3.1, 1.0);
         let back_aside = Ledge::wall(Vec3::new(2.0, 0.0, 2.5), Vec3::NEG_Z, 2.0, 2.0, 1.0);
+        // A bar (step 12, a jump from a hang to a bar) 2.5 m behind. Not one
+        // over the lip: caught 0.5 m out from the wall, the free hang's swing
+        // took its legs 35 cm into the wall under it.
+        let bar_behind = Ledge::bar(Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 3.0, 2.3);
         let cases = [
+            ("back to a bar", wall, vec![bar_behind], Leap::Back, Some(bar_behind)),
             ("up and aside", wall, vec![up_aside], Leap::UpAside(Shimmy::Right), Some(up_aside)),
             ("up and aside, 1.5 m", wall, vec![farther_up_aside], Leap::UpAside(Shimmy::Right), Some(farther_up_aside)),
             ("back and aside", wall, vec![back_aside], Leap::BackAside(Shimmy::Right), Some(back_aside)),

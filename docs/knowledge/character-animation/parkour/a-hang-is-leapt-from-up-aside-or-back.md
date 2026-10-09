@@ -102,6 +102,11 @@ ten](./parkour-moves-beyond-the-first-ten-steps.md), added 2026-10-09):
   off to that side (the hang's own side), turning round in the air. It
   launches from the back push, swung along too.
 - The flight is aimed as any leap's, at the target's nearest grip.
+- **To a bar**: a bar is a ledge, so a leap back catches one behind into a
+  free hang. The fall no longer keeps the hands off a bar's plane (it has
+  no face; pushed onto its plane, the hands jumped 29 cm leaping up to
+  one). A bar caught near a wall is not leapt to: 0.5 m out, the free
+  hang's swing took the legs 35 cm into the wall under it.
 
 ## Alternatives considered
 

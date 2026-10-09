@@ -1505,7 +1505,9 @@ impl Falling {
         // lip, kept off it at once, they jumped 4-15 cm the frame it let go.
         // And the face of the ledge leapt at, below its lip (leaping up, the
         // hands reaching for it went 2.6 cm into the wall under it).
-        let target_wall = self.target.map(|ledge| (ledge.nearest(hips, 0.0), ledge.out, Some((ledge.a, ledge.b))));
+        // A bar has no face under it (kept off one, leaping up to a bar the
+        // hands were pushed out onto its plane, 29 cm the frame it let go).
+        let target_wall = self.target.filter(|ledge| !ledge.is_bar()).map(|ledge| (ledge.nearest(hips, 0.0), ledge.out, Some((ledge.a, ledge.b))));
         for (top, out, span) in self.wall.map(|(top, out)| (top, out, self.wall_span)).into_iter().chain(target_wall) {
             let at = forward_kinematics_on(&pose, rig);
             for chain in [ArmChain::LEFT, ArmChain::RIGHT] {

@@ -89,6 +89,14 @@ const SLIDE_OFF: f32 = 0.15;
 /// Going round: at this rate, rad/s, eased to and from over this long.
 const SPIN_RATE: f32 = 1.5;
 const SPIN_EASE: f32 = 0.3;
+/// Caught from a fall (step 12 of the steps beyond the first ten, a jump to
+/// a pole): the hips within this far of where they hold (level), metres;
+/// taken to their hold, braked to rest and turned to face the pole, over
+/// this long, seconds.
+const CATCH_REACH: f32 = 0.25;
+const CATCH: f32 = 0.3;
+/// A hand reaches no farther than this share of its arm.
+const ARM_REACH: f32 = 0.97;
 /// Letting go, pushed off it at this speed, m/s.
 const LET_GO_AWAY: f32 = 1.0;
 
@@ -205,6 +213,8 @@ impl Holds {
 enum Phase {
     /// Jumping on from standing, `t` seconds in.
     GettingOn { t: f32 },
+    /// Caught from a fall, `t` seconds in ([`Poling::caught`]).
+    Catching { t: f32 },
     /// Held, stood up on the clamped legs.
     Holding,
     /// A climbing cycle, up or down, `u` (0-1) through it, from `from`
@@ -283,6 +293,19 @@ pub struct Poling {
     ask: Option<PoleAsk>,
     /// The floor's height under it.
     floor: f32,
+    /// Caught from a fall ([`Self::caught`]).
+    caught: Option<Box<Caught>>,
+}
+
+/// What a fall caught on a pole came with: the hips and their velocity,
+/// the pose and the facing, and each wrist from the hips (the world's axes).
+#[derive(Debug, Clone)]
+struct Caught {
+    hips: Vec3,
+    velocity: Vec3,
+    pose: LocalPose,
+    yaw: f32,
+    wrists: [Vec3; 2],
 }
 
 impl Poling {
@@ -320,6 +343,56 @@ impl Poling {
             phase: Phase::GettingOn { t: 0.0 },
             ask: None,
             floor: root.y,
+            caught: None,
+        }
+    }
+
+    /// Caught from a fall (a jump at it): the hips at `hips` going at
+    /// `velocity`, posed `pose` and facing `yaw` (the walker's), over a
+    /// floor `floor` high. `None` unless the hips are within
+    /// [`CATCH_REACH`] of where they hold it, level, and where they come
+    /// to rest has the hands under its top and the feet over the floor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn caught(pole: &Pole, hips: Vec3, velocity: Vec3, pose: &LocalPose, yaw: f32, floor: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let off = (hips - pole.foot).with_y(0.0);
+        if (off.length() - HIPS_OFF).abs() > CATCH_REACH || off.length() < 1.0e-3 {
+            return None;
+        }
+        let body = Body::of(stood, rig);
+        // The fall's pose with its hips joint where the pole's poses have
+        // theirs (the root rides the hips as standing has them): its own,
+        // dropped from standing, moved the body 10 cm the frame it caught.
+        let mut pose = *pose;
+        pose.root_translation += body.hips - forward_kinematics_on(&pose, rig)[Bone::Hips];
+        let at = forward_kinematics_on(&pose, rig);
+        let wrists = ARMS.map(|arm| Quat::from_rotation_y(yaw) * (at[arm.wrist] - at[Bone::Hips]));
+        // Braked evenly to rest over the catch: on half its speed's worth.
+        let rest = hips.y + 0.5 * velocity.y * CATCH;
+        let holds = Holds::stood(rest, 0);
+        if holds.hands.iter().fold(f32::MIN, |a, &b| a.max(b)) > pole.top() - TOP_MARGIN || holds.feet - floor < BOTTOM_MARGIN {
+            return None;
+        }
+        Some(Self {
+            pole: *pole,
+            body,
+            rig: rig.clone(),
+            ahead: crate::character::anim::approach::heading_of(rig.forward()),
+            round: crate::character::anim::approach::heading_of(off.normalize()),
+            spin: 0.0,
+            stood_at: hips,
+            holds,
+            phase: Phase::Catching { t: 0.0 },
+            ask: None,
+            floor,
+            caught: Some(Box::new(Caught { hips, velocity, pose, yaw, wrists })),
+        })
+    }
+
+    /// Catching, how far through it (0-1, eased), if catching.
+    fn catching(&self) -> Option<f32> {
+        match self.phase {
+            Phase::Catching { t } => Some(smoothstep((t / CATCH).clamp(0.0, 1.0))),
+            _ => None,
         }
     }
 
@@ -353,6 +426,8 @@ impl Poling {
         self.phase = match self.phase {
             Phase::GettingOn { t } if t + dt >= GET_ON => Phase::Holding,
             Phase::GettingOn { t } => Phase::GettingOn { t: t + dt },
+            Phase::Catching { t } if t + dt >= CATCH => Phase::Holding,
+            Phase::Catching { t } => Phase::Catching { t: t + dt },
             Phase::Climbing { up, u, from } => {
                 let u = u + dt / CYCLE;
                 if u < 1.0 {
@@ -437,6 +512,14 @@ impl Poling {
                 let from = self.stood_at + self.turn() * self.body.hips;
                 from.lerp(on, s)
             }
+            // Caught: on from the fall's velocity to rest at the hold.
+            Phase::Catching { t } => {
+                let caught = self.caught.as_ref().expect("caught");
+                let (from, velocity) = (caught.hips, caught.velocity);
+                let s = (t / CATCH).clamp(0.0, 1.0);
+                let (s2, s3) = (s * s, s * s * s);
+                from * (2.0 * s3 - 3.0 * s2 + 1.0) + velocity * CATCH * (s3 - 2.0 * s2 + s) + on * (-2.0 * s3 + 3.0 * s2)
+            }
             _ => on,
         }
     }
@@ -473,6 +556,13 @@ impl Poling {
                     let off = target - hips;
                     (if off.length() > most { hips + off * (most / off.length()) } else { target }, s)
                 }
+                // Caught coming in, likewise no farther than clamped (the
+                // clamp out of reach, a knee flipped 6.9 cm in a frame).
+                None if self.catching().is_some() => {
+                    let most = LEGS_STOOD.hypot(HIPS_OFF);
+                    let off = clamp - hips;
+                    (if off.length() > most { hips + off * (most / off.length()) } else { clamp }, 1.0)
+                }
                 None => (clamp, 1.0),
             };
             place_ankle(&mut pose, rig, ankle_bone, back * (target - root) - self.body.hips);
@@ -505,11 +595,16 @@ impl Poling {
                     let reach = from.length() + (to.length() - from.length()) * s - SWEEP_BEND * (std::f32::consts::PI * s).sin();
                     root + turn * (shoulder + swept * reach)
                 }
-                None => on,
+                // Caught: from where the fall had them, carried with the
+                // hips, to their holds.
+                None => match (self.catching(), self.caught.as_ref()) {
+                    (Some(s), Some(caught)) => (hips + caught.wrists[side]).lerp(on, s),
+                    _ => on,
+                },
             };
             turns[side] = hand;
         }
-        let weight = getting_on.map_or(1.0, |t| smoothstep((t / (GET_ON * HANDS_ON)).clamp(0.0, 1.0)));
+        let weight = getting_on.map_or(self.catching().unwrap_or(1.0), |t| smoothstep((t / (GET_ON * HANDS_ON)).clamp(0.0, 1.0)));
         self.arms_to(&mut pose, rig, root, back, wrists, turns, weight);
         // Getting on, the standing pose eased out.
         if let Some(t) = getting_on {
@@ -517,6 +612,12 @@ impl Poling {
             for bone in Bone::ALL {
                 pose.rotations[bone] = self.body.stood.rotations[bone].slerp(pose.rotations[bone], s);
             }
+        }
+        // Caught, the fall's pose eased out; not the arms, solved to their
+        // wrists on the way (blended by turn, a hand turning near half
+        // round to its grip flipped its way round, 10 cm in a frame).
+        if let (Some(s), Some(caught)) = (self.catching(), self.caught.as_ref()) {
+            pose = crate::character::anim::clip::blend(&caught.pose, &pose, s);
         }
         pose
     }
@@ -537,7 +638,13 @@ impl Poling {
         for side in 0..2 {
             let chain = ARMS[side];
             let pole = (rig.left() * (SIGN[side] * 0.7) - Vec3::Y * 0.5 - rig.forward() * 0.2).normalize();
-            let (elbow, wrist) = solve_arm_toward_from(pose, &at, chain, targets[side], pole, rig);
+            // No farther than the arm reaches bent a little (caught coming
+            // in from a fall, the hands' holds out of reach straightened an
+            // arm and its elbow flipped 10 cm in a frame as they came in).
+            let off = targets[side] - at[chain.shoulder];
+            let most = ARM_REACH * self.body.arms[side];
+            let target = if off.length() > most { at[chain.shoulder] + off * (most / off.length()) } else { targets[side] };
+            let (elbow, wrist) = solve_arm_toward_from(pose, &at, chain, target, pole, rig);
             turn_hand(pose, rig, chain, self.body.hand_binds[side], back * turns[side], weight, (wrist - elbow).normalize_or_zero());
         }
     }
@@ -572,9 +679,14 @@ impl Poling {
         self.hips() - self.turn() * self.body.hips
     }
 
-    /// The walker's facing now: toward the pole.
+    /// The walker's facing now: toward the pole; caught, turned to it from
+    /// the facing it came with.
     pub fn facing(&self) -> f32 {
-        self.round + std::f32::consts::PI - self.ahead
+        let facing = self.round + std::f32::consts::PI - self.ahead;
+        match (self.catching(), self.caught.as_ref()) {
+            (Some(s), Some(caught)) => caught.yaw + crate::character::anim::facing::shortest_angle(facing - caught.yaw) * s,
+            _ => facing,
+        }
     }
 
     /// Where it looks: the pole above the upper hand.
@@ -589,6 +701,7 @@ impl Poling {
         let (_, off) = self.holds_now();
         let closing = match self.phase {
             Phase::GettingOn { t } => smoothstep(((t / (GET_ON * HANDS_ON) - 0.8) / 0.2).clamp(0.0, 1.0)),
+            Phase::Catching { t } => smoothstep((t / CATCH).clamp(0.0, 1.0)),
             Phase::Released { .. } => 0.0,
             _ => 1.0,
         };
@@ -604,7 +717,7 @@ impl Poling {
         [0, 1].map(|side| {
             let grip = &self.body.grips[side];
             let hand = frame_turn(grip.along, grip.palm, -left * SIGN[side], toward);
-            (self.pole.at(holds.hands[side]) - hand * grip.bar, off[side] == 0.0 && !matches!(self.phase, Phase::GettingOn { .. }))
+            (self.pole.at(holds.hands[side]) - hand * grip.bar, off[side] == 0.0 && !matches!(self.phase, Phase::GettingOn { .. } | Phase::Catching { .. }))
         })
     }
 
@@ -786,6 +899,52 @@ mod tests {
     /// Held on a pole, it goes round it a half turn either way, the hands
     /// on it; at the top it climbs no higher; let go, it falls clear and
     /// lands.
+    /// Off a 2.4 m top at 1.5 and 2.5 m/s toward a 5 m pole 1-1.2 m ahead
+    /// (step 12, a jump to a pole): the fall is caught on the pole as the
+    /// hips come by it, then held, the hands on it; the hand-off continuous
+    /// (no step changing over 3 cm in a frame), nothing into the pole.
+    #[test]
+    fn a_pole_is_caught_from_a_fall() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        for (speed, ahead) in [(1.5f32, 1.0f32), (2.5, 1.2)] {
+            let name = format!("{speed} m/s, {ahead} m ahead");
+            let pole = Pole::new(forward * ahead, 5.0);
+            let root = Vec3::Y * 2.4;
+            let mut falling = super::super::Falling::off(root, 0.0, forward * speed, &stood, 0.0, 0.0, &stood, &rig);
+            let mut frames = vec![world(&stood, root, 0.0, &rig), world(&stood, root, 0.0, &rig)];
+            let mut poling = None;
+            for _ in 0..120 {
+                falling.advance(DT);
+                frames.push(world(&falling.pose(&rig), falling.root(), falling.facing(), &rig));
+                if let Some(caught) = Poling::caught(&pole, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), 0.0, &stood, &rig) {
+                    poling = Some(caught);
+                    break;
+                }
+            }
+            let mut poling = poling.unwrap_or_else(|| panic!("{name}: never caught"));
+            let (mut kink, mut into, mut hand_off) = (0.0f32, 0.0f32, 0.0f32);
+            for _ in 0..(2.0 / DT) as usize {
+                poling.advance(None, DT);
+                let now = world(&poling.pose(&rig), poling.root(), poling.facing(), &rig);
+                let n = frames.len();
+                kink = Bone::ALL.iter().map(|&b| (now[b] - 2.0 * frames[n - 1][b] + frames[n - 2][b]).length()).fold(kink, f32::max);
+                into = Bone::ALL.iter().map(|&b| POLE_RADIUS - (now[b] - pole.foot).with_y(0.0).length()).fold(into, f32::max);
+                for (side, (wrist, on)) in poling.wrists().into_iter().enumerate() {
+                    if on {
+                        hand_off = hand_off.max((now[ARMS[side].wrist] - wrist).length());
+                    }
+                }
+                frames.push(now);
+            }
+            eprintln!("{name}: kink {kink:.4}, into {into:.4}, hand off {hand_off:.5}, holding {}", poling.is_holding());
+            assert!(poling.is_holding(), "{name}: not holding");
+            assert!(kink < 0.03, "{name}: a step changed {kink:.4} m in a frame");
+            assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the pole");
+            assert!(hand_off < 1.0e-3, "{name}: a held hand {hand_off:.4} m off the pole");
+        }
+    }
+
     #[test]
     fn a_pole_is_gone_round_climbed_to_its_top_and_let_go_of() {
         let (stood, rig) = real_stood();
