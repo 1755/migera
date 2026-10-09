@@ -61,6 +61,12 @@ const LEGS: [(Bone, Bone, Bone); 2] = [
 /// 2017, McInnis & Donahue 2024).
 pub const HIGHEST: f32 = 0.6;
 
+/// A jump onto a top ([`Jump::onto`]) tops out at least this far over the
+/// height it comes down at, metres; its feet land within this of the top's
+/// middle along the way (the fall shifts them the rest, both onto it).
+pub const ONTO_CLEAR: f32 = 0.15;
+const ONTO_TOLERANCE: f32 = 0.01;
+
 /// How deep the countermovement takes the COM, per metre of jump height:
 /// self-chosen depths are 0.31-0.36 m for 0.32-0.35 m jumps (McMahon et
 /// al. 2017; McHugh et al. 2024).
@@ -407,6 +413,66 @@ pub(super) fn com_of(pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry) -> 
 }
 
 impl Jump {
+    /// A standing jump onto a top whose middle is `ahead` metres forward of
+    /// the root (the rig's forward) and `rise` metres above the floor it
+    /// stands on (step 11 of the parkour steps beyond the first ten, a
+    /// precision landing): its centre of mass, flying on from the take-off
+    /// as a fall does (`parkour::Falling::from_jump`), comes down to the
+    /// height it touches down at plus `rise`, the feet as far ahead of it
+    /// as at its own touchdown, over the top's middle; topping out at least
+    /// [`ONTO_CLEAR`] over that. For a fall handed it at take-off to land
+    /// on the top (`Falling::land_on`). `None` out of a standing jump's
+    /// reach (the height or the distance clamped, or the top too low).
+    pub fn onto(ahead: f32, rise: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let forward = rig.forward();
+        let feet_ahead = |jump: &Jump, t: f32| {
+            let at = super::rig::forward_kinematics_on(&jump.pose_at(t, stood, rig), rig);
+            ((at[Bone::LeftFoot] + at[Bone::RightFoot]) * 0.5).dot(forward) + jump.travelled_at(t)
+        };
+        // Where the feet come down: the centre of mass's ballistic flight
+        // from the take-off to the landing height.
+        let lands_at = |jump: &Jump| -> Option<f32> {
+            let (leave, touch) = (jump.ends(JumpPhase::Push), jump.ends(JumpPhase::Flight));
+            let com = |t: f32| bevy::math::Vec2::new(jump.travelled_at(t) + jump.com_ahead_at(t), jump.com_height_at(t));
+            let h = 1.0e-3;
+            let (from, velocity) = (com(leave), (com(leave + h) - com(leave - h)) / (2.0 * h));
+            let landing = jump.com_height_at(touch) + rise;
+            // The descending root of from.y + v·t - g·t²/2 = landing.
+            let b = velocity.y * velocity.y + 2.0 * GRAVITY * (from.y - landing);
+            if b < 0.0 {
+                return None;
+            }
+            let t = (velocity.y + b.sqrt()) / GRAVITY;
+            // The feet as far from the centre of mass as at its own touchdown.
+            let offset = feet_ahead(jump, touch) - com(touch).x;
+            Some(from.x + velocity.x * t + offset)
+        };
+        let mut height = rise.max(0.0) + ONTO_CLEAR;
+        let mut distance = ahead.max(0.3);
+        for _ in 0..8 {
+            if height > HIGHEST {
+                return None;
+            }
+            let jump = Self::plan(JumpAsk::forward(height, distance), stood, rig);
+            let (leave, touch) = (jump.ends(JumpPhase::Push), jump.ends(JumpPhase::Flight));
+            let apex = (0..=60).map(|k| jump.com_height_at(leave + (touch - leave) * k as f32 / 60.0)).fold(f32::MIN, f32::max);
+            if apex < jump.com_height_at(jump.ends(JumpPhase::Flight)) + rise + ONTO_CLEAR {
+                height += 0.05;
+                continue;
+            }
+            let lands = lands_at(&jump)?;
+            if (lands - ahead).abs() < ONTO_TOLERANCE {
+                return Some(jump);
+            }
+            // Asked farther than leaving at `FASTEST` reaches: out of reach.
+            if jump.distance() + 1.0e-3 < distance {
+                return None;
+            }
+            distance += ahead - lands;
+        }
+        None
+    }
+
     /// A jump as `ask`ed, from standing in `stood`: its height clamped to
     /// [`HIGHEST`], and its distance to what leaving at [`FASTEST`] reaches.
     ///

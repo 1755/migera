@@ -182,6 +182,11 @@ pub struct Walker {
     /// [`Walker::catch`]). The asks that end on the floor are dropped once
     /// taken. On it, nothing else asked of it is done.
     pub on_pole: Option<super::parkour::pole::PoleAsk>,
+    /// A small top to jump onto from standing (`parkour::precision`), its
+    /// middle (the world): it turns to face it, jumps, lands on it and
+    /// balances there, its arms out; out of reach, the ask is dropped. Its
+    /// top must be among [`Walker::ledges`] for it to stand there.
+    pub onto: Option<Vec3>,
     /// Running fast (`parkour::skid::SKID_FROM`), asked to stop it skids to
     /// a stop, and asked to face back (steered over [`SKID_BACK`] off its
     /// facing) it plants and turns round, standing; otherwise it slows to a
@@ -192,6 +197,10 @@ pub struct Walker {
 /// Steered this far off its facing, radians, a skidding walker turns round
 /// on the spot ([`Walker::skid`]).
 pub const SKID_BACK: f32 = 2.4;
+
+/// Off a top it jumped onto by this far, metres, it no longer balances on
+/// it ([`Walker::onto`]).
+const PERCH_LEFT: f32 = 0.35;
 
 impl Default for Walker {
     fn default() -> Self {
@@ -225,6 +234,7 @@ impl Default for Walker {
             free_climb: None,
             pole: None,
             on_pole: None,
+            onto: None,
             skid: false,
         }
     }
@@ -527,6 +537,10 @@ pub struct WalkerState {
     pub holds_spot: Option<Vec3>,
     /// Skidding to a stop or round from a run (`parkour::skid`).
     pub skid: Option<super::parkour::skid::Skid>,
+    /// Jumping onto a small top (`parkour::precision`), and the top it
+    /// stands on after, balancing.
+    pub onto: Option<Vec3>,
+    pub perched: Option<Vec3>,
     /// Running, its lean with its acceleration (`parkour::lean`), and its
     /// facing last frame, for its turn's rate.
     pub lean: super::parkour::lean::Lean,
@@ -598,6 +612,8 @@ impl WalkerState {
             free_climbing: None,
             holds_spot: None,
             skid: None,
+            onto: None,
+            perched: None,
             lean: Default::default(),
             lean_yaw: yaw,
             kick_chain: None,
@@ -1255,7 +1271,15 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         } else {
             walker.beams.iter().copied().find(|beam| beam.holds(state.locomotion.position))
         };
-        let toward_beam = if on_beam.is_some() { 1.0 } else { 0.0 };
+        // Stood on a small top it jumped onto (`parkour::precision`), the
+        // beam's balance too, until it steps off it (judged standing: in the
+        // fall onto it, the root still short of it, the balance was given up
+        // before it landed).
+        if !state.on_holds() && state.perched.is_some_and(|top| (state.locomotion.position - top).with_y(0.0).length() > PERCH_LEFT) {
+            state.perched = None;
+        }
+        let perched = state.perched.is_some() && state.falling.as_ref().is_none_or(|falling| falling.is_landed());
+        let toward_beam = if on_beam.is_some() || perched { 1.0 } else { 0.0 };
         let eased = time.delta_secs() / super::parkour::beam::BEAM_EASE;
         state.beam = (state.beam + (toward_beam - state.beam).clamp(-eased, eased)).clamp(0.0, 1.0);
         state.beam_time = if state.beam > 0.0 { state.beam_time + time.delta_secs() } else { 0.0 };
@@ -1859,6 +1883,25 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.jump = Some(super::jump::Jump::plan(ask, &stood, &rig));
                 } else if running {
                     state.leap_asked = Some(ask);
+                }
+            }
+            // Asked onto a small top (`parkour::precision`), standing: turned
+            // to face it on the spot, then a standing jump onto it.
+            if let Some(top) = walker.onto
+                && standing
+                && state.jump.is_none()
+            {
+                use super::parkour::precision::{jump_onto, FACING};
+                let ahead = approach::heading_of(rig.forward());
+                let toward = approach::heading_of((top - state.locomotion.position).with_y(0.0).normalize_or(rig.forward())) - ahead;
+                if facing::shortest_angle(toward - state.facing.yaw).abs() > 0.5 * FACING {
+                    steer = Steer::Toward { yaw: toward, rate: 2.0 };
+                } else {
+                    if let Some(jump) = jump_onto(top, state.locomotion.position, state.facing.yaw, &stood, &rig) {
+                        state.jump = Some(jump);
+                        state.onto = Some(top);
+                    }
+                    walker.onto = None;
                 }
             }
             if !running {
@@ -2685,6 +2728,20 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if let Some(rig) = foot_ik.rig.clone() {
             // Started from this frame's pose, it moves on from the next.
             let mut started = leapt;
+            // Jumping onto a small top (`parkour::precision`): at the jump's
+            // top, a fall landing on the top, the hips at rest over its
+            // middle.
+            if let Some(top) = state.onto
+                && state.jump.as_ref().is_some_and(super::parkour::precision::hands_over)
+                && state.falling.is_none()
+                && let Some(jump) = state.jump.take()
+            {
+                let root = state.locomotion.position + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
+                state.falling = Some(super::parkour::precision::fall_onto(&jump, top, root, state.facing.yaw, foot_ik.pelvis_drop, &stood, &rig));
+                state.onto = None;
+                state.perched = Some(top);
+                started = true;
+            }
             if let Some(below) = state.fall_to.take()
                 && state.falling.is_none()
                 && !fallen

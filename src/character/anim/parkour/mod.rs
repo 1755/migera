@@ -11,6 +11,7 @@ pub mod hang;
 pub mod holds;
 pub mod lean;
 pub mod pole;
+pub mod precision;
 pub mod skid;
 pub mod squeeze;
 pub mod teeter;

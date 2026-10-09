@@ -41,6 +41,32 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 11 (fourth part): a precision jump onto a small top
+
+Asked onto a small top (`Walker::onto`), the walker turns to face it,
+jumps, lands on it and balances there (`parkour::precision`,
+`Jump::onto`). Note: [a precision jump is a standing jump handed to a fall
+at its
+top](docs/knowledge/character-animation/parkour/a-precision-jump-is-a-standing-jump-handed-to-a-fall-at-its-top.md).
+
+- **The plan:** a standing jump whose COM comes down over the top, the
+  feet over its middle within 1 cm, topping out 0.15 m over.
+- **The hand-off:** at the jump's apex, a fall landing on the top's
+  height, its hips at rest over the middle.
+- **Stood on it:** the beam's balance, arms out, until it steps off.
+- **The gallery:** `--post X,Z,HEIGHT[,SIZE]`, `--onto-at T,X,Y,Z`.
+  **The bench:** `--gait onto`.
+- **Fixed on the way:** handed over at take-off, the fall landed higher
+  than it left and went NaN (unseen by `<` checks at 60 fps; the test now
+  checks every pose is finite, at 30 fps too); the balance given up in the
+  air.
+- **Headless:** posts 0.4 m square, level to 0.4 m up, 0.7-1.8 m ahead:
+  both feet on the top, the COM 2.6 cm from its middle, nothing into it;
+  out of reach, not planned.
+- **Live** (30 fps step; Xvfb, gizmos on and mesh off, Left and Front;
+  mesh on; BRP): onto a 0.2 m post 1.6 m ahead, standing on it, arms out.
+- **Cost:** 44 µs a character at p50.
+
 ### Parkour, step 11 (third part): hopping a small obstacle in stride
 
 Asked to vault an obstacle up to 0.45 m high with the hop kind

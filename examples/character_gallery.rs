@@ -1240,6 +1240,13 @@ fn steer_the_walker(
             _ => Steer::Straight,
         };
         walker.skid = hangs.skid;
+        if !hangs.onto_fired
+            && let Some((at, top)) = hangs.onto
+            && time.elapsed_secs() >= at
+        {
+            walker.onto = Some(top);
+            hangs.onto_fired = true;
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1515,6 +1522,11 @@ struct HangSchedule {
     last_free_climb: Option<bevy::math::Vec2>,
     /// Skidding to a stop or round from a fast run (`--skid`).
     skid: bool,
+    /// Jumping onto a small top from T (`--onto-at T,X,Y,Z`, its middle);
+    /// posts for it (`--post X,Z,HEIGHT[,SIZE]`, their middles, 0.4 m square
+    /// unless SIZE).
+    onto: Option<(f32, Vec3)>,
+    onto_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1604,6 +1616,19 @@ impl HangSchedule {
                     }
                 }
                 "--skid" => schedule.skid = true,
+                "--onto-at" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, x, y, z] = numbers[..] {
+                        schedule.onto = Some((at, Vec3::new(x, y, z)));
+                    }
+                }
+                "--post" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, height, ref rest @ ..] = numbers[..] {
+                        let size = rest.first().copied().unwrap_or(0.4);
+                        schedule.others.extend(Ledge::block(Vec3::new(x, 0.0, z + 0.5 * size), Vec3::Z, size, size, height));
+                    }
+                }
                 "--steer-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, degrees] = numbers[..] {
