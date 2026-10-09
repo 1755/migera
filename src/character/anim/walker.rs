@@ -355,6 +355,9 @@ const STOOD_HOLD: f32 = 0.3;
 /// many ways round. It stops for a wall straight ahead this much further
 /// off, and as far as it goes in this long at its speed.
 pub const BODY_RADIUS: f32 = 0.2;
+/// It walks under anything wholly this far over what it stands on, metres
+/// (a bar to swing on, 2.3 m up).
+pub const HEADROOM: f32 = 2.0;
 const WALL_PROBES: usize = 32;
 const WALL_STOP_MARGIN: f32 = 0.15;
 const WALL_STOP_TIME: f32 = 0.3;
@@ -2038,6 +2041,19 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     Some(super::parkour::hang::HangAsk::Shimmy(way)) => Some(way),
                     _ => None,
                 });
+                // Swinging free: pumped while asked; a lache pumps until
+                // the swing comes round to let go (then flies as a leap
+                // does); braced, dropped.
+                match walker.hang {
+                    Some(super::parkour::hang::HangAsk::Swing) => hanging.pump(true),
+                    Some(super::parkour::hang::HangAsk::Lache) if hanging.is_hanging() && hanging.is_braced() => walker.hang = None,
+                    Some(super::parkour::hang::HangAsk::Lache) => {
+                        if hanging.is_hanging() && !hanging.is_climbing_up() && !hanging.is_shimmying() && hanging.lache(&rig) {
+                            walker.hang = None;
+                        }
+                    }
+                    _ => hanging.pump(false),
+                }
                 hanging.advance(dt);
                 // Each bone led ahead of its spring, so the body rendered is
                 // the grab's.
@@ -2364,9 +2380,10 @@ pub enum WayRound {
 /// steps of [`DETOUR_STEP`] up to a quarter turn, that is clear, trying
 /// `side` first (so it keeps to the side it chose and does not dither).
 /// Walking along the wall, past its end the way wanted is clear again: it
-/// goes round. A wall is ground (read from above) more than a step higher.
+/// goes round. A wall is something solid from a step higher than it stands
+/// up to its [`HEADROOM`] (`GroundProbe::blocks`).
 pub fn way_round(at: Vec3, wanted: f32, side: f32, reach: f32, forward: Vec3, ground: &dyn super::ground::GroundProbe) -> WayRound {
-    let wall = |point: Vec3| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > at.y + super::parkour::fall::STEP_DOWN);
+    let wall = |point: Vec3| ground.blocks(point, at.y + super::parkour::fall::STEP_DOWN, at.y + HEADROOM);
     // The body's width swept along it (a line from the middle cleared a
     // block's corner the body could not, and it stuck there).
     let clear = |yaw: f32, reach: f32| {
@@ -2406,11 +2423,11 @@ pub fn back_to_line(at: Vec3, from: Vec3, wanted: f32, forward: Vec3) -> (f32, f
 }
 
 /// The body standing at `at` (the root, on the ground) moved `moved`, kept
-/// out of walls: ground (read from above) more than a step higher than it
-/// stands on within [`BODY_RADIUS`] of the root. Into one, the move slides
-/// along it, or stops; and the wall's way out, if one held it.
+/// out of walls: something solid from a step higher than it stands on up
+/// to its [`HEADROOM`] within [`BODY_RADIUS`] of the root. Into one, the
+/// move slides along it, or stops; and the wall's way out, if one held it.
 pub fn keep_off_walls(at: Vec3, moved: Vec3, ground: &dyn super::ground::GroundProbe) -> (Vec3, Option<Vec3>) {
-    let wall = |point: Vec3| ground.sample(point + Vec3::Y * 100.0).is_some_and(|hit| hit.height > at.y + super::parkour::fall::STEP_DOWN);
+    let wall = |point: Vec3| ground.blocks(point, at.y + super::parkour::fall::STEP_DOWN, at.y + HEADROOM);
     // How near the nearest wall is standing at `centre` (`BODY_RADIUS` if
     // none within it), and which way: along each way round a wall is in,
     // where it starts. (Counted by the probes that hit, a corner's way out
@@ -2746,6 +2763,12 @@ mod tests {
         let right = Ledge::block(Vec3::new(0.8, 0.0, -0.5), Vec3::NEG_X, 3.0, 0.5, 3.0);
         let (_, _, stopped, into) = walk([ahead, left, right].concat(), 6.0);
         assert!(into == 0.0 && stopped, "in the dead end: stopped {stopped}");
+        // A bar 2.3 m up across the way: straight on under it; at 1.5 m,
+        // round it.
+        let (at, _, stopped, _) = walk(vec![Ledge::bar(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 8.0, 2.3)], 6.0);
+        assert!(!stopped && at.x.abs() < 1.0e-3 && at.z < -5.0, "under a 2.3 m bar, ended at {at:?}, stopped {stopped}");
+        let (at, _, _, _) = walk(vec![Ledge::bar(Vec3::new(0.0, 0.0, -2.0), Vec3::Z, 8.0, 1.5)], 6.0);
+        assert!(at.x.abs() > 1.0 || at.z > -2.0, "a 1.5 m bar walked through, ended at {at:?}");
     }
 
     /// Walking into a 3 m block's face from the floor the body stops

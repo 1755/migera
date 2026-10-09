@@ -726,7 +726,9 @@ mod tests {
         };
         let mut m = Vaulted::default();
         let (plant, contact) = planned.vaulting().expect("vaulting").plant();
-        let (mut last, mut last_leap): (Option<(BoneSet<Vec3>, Vec3)>, Option<(BoneSet<Vec3>, Vec3)>) = (None, None);
+        // The last frame's joints and the hips' velocity, overall and leaping.
+        type Frame = Option<(BoneSet<Vec3>, Vec3)>;
+        let (mut last, mut last_leap): (Frame, Frame) = (None, None);
         while !jump.is_done() && jump.resumes().is_some_and(|_| jump.elapsed() < jump.ends(JumpPhase::Flight) + 0.3) {
             jump.advance(DT);
             let t = jump.elapsed();

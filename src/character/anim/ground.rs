@@ -34,6 +34,18 @@ pub trait GroundProbe: Send + Sync + 'static {
     /// — over a ledge, say, where a foot should keep following the
     /// animation rather than being planted on empty space.
     fn sample(&self, world_position: Vec3) -> Option<GroundHit>;
+
+    /// Whether something solid stands at `point` (`x`, `z`) between heights
+    /// `low` and `high`: a wall a body standing on `low`, as tall as
+    /// `high`, walks into. By default the ground read from above higher
+    /// than `low`, so anything overhead counts; a probe that knows what is
+    /// overhead (`parkour::LedgeGround`'s bars) leaves out what the body
+    /// passes under. Read from above, a walker routed round a bar 2.3 m up
+    /// rather than under it to the spot to grab it.
+    fn blocks(&self, point: Vec3, low: f32, high: f32) -> bool {
+        let _ = high;
+        self.sample(point.with_y(100.0)).is_some_and(|hit| hit.height > low)
+    }
 }
 
 /// An infinite horizontal plane.

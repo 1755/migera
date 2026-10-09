@@ -265,6 +265,9 @@ its API, its tests, and when it is done.
   about 3 s a metre (unverified summary); no pole data.
 - **Tests.** Hands on the bar or rope throughout; energy only from the
   pump; the release ballistic.
+- **Built** 2026-10-09: [the bar's swing, pumped, and a lache to a bar
+  ahead](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md).
+  Ropes are out of scope.
 
 ### Step 10: balance and tight spaces
 
@@ -354,7 +357,11 @@ its API, its tests, and when it is done.
   down a wall, the same day ([its
   note](./a-wall-is-slid-down-as-a-braked-fall.md)); chained kicks the same
   day. Built.
-- Steps 9-10: not started.
+- **Step 9**, bars and poles: the bar's swing and a lache to a bar ahead
+  built 2026-10-09 ([its
+  note](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md)); the
+  pole not started; ropes out of scope.
+- Step 10: not started.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,
   perches, swinging fixtures, slides and long falls): designed in [their

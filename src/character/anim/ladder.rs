@@ -182,6 +182,15 @@ impl super::ground::GroundProbe for LadderGround {
         }
         self.under.sample(at)
     }
+
+    fn blocks(&self, point: Vec3, low: f32, high: f32) -> bool {
+        let landing = self.ladders.iter().filter_map(Ladder::landing_area).any(|(middle, onto, size)| {
+            let off = point - middle;
+            let across = onto.cross(Vec3::Y);
+            off.dot(onto).abs() <= 0.5 * size.y && off.dot(across).abs() <= 0.5 * size.x && middle.y > low
+        });
+        landing || self.under.blocks(point, low, high)
+    }
 }
 
 /// How far below a landing a point still stands on it, metres: a foot

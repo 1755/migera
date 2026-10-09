@@ -6,11 +6,12 @@ status: current
 tags:
   - locomotion
   - correctness
-updated: 2026-10-08
-verified: 2026-10-08
+updated: 2026-10-09
+verified: 2026-10-09
 code:
   - src/character/anim/walker.rs
   - src/character/anim/parkour/geometry.rs
+  - src/character/anim/ground.rs
 sources:
   - "tests walker::tests::{walking_is_kept_out_of_walls, walking_goes_round_a_wall}, parkour::geometry::tests::the_grid_finds_what_every_ledge_finds"
   - "anim_bench --gait walk --characters 100 --walls N [--walls-away]"
@@ -36,10 +37,14 @@ walls.
 
 ## Decision
 
-**A wall is ground more than a step higher** (`parkour::fall::STEP_DOWN`,
-0.3 m) than the ground the root stands on. The ground is read from far
-above each point, so the probe gives the highest top there, whatever its
-own reach below a top.
+**A wall is something solid from a step higher** (`parkour::fall::STEP_DOWN`,
+0.3 m) than the ground the root stands on **up to the body's headroom**
+(`HEADROOM`, 2 m): `GroundProbe::blocks`. By default that is the ground
+read from far above each point, so the highest top there, whatever its own
+reach below a top. `LedgeGround` answers from each block's own extent (its
+top down to its wall), so a bar 2.3 m up is walked under. Read from above,
+the walker routed round it instead of under it to the spot to grab it
+([a bar is swung on](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md)).
 
 **The body is a circle of 0.2 m round the root** (`BODY_RADIUS`, less than
 the 0.25 m the hips stand off a wall faced; `keep_off_walls`, in
@@ -117,6 +122,8 @@ ledges. Looking at every ledge, the wall checks cost grew with the level:
   (1-2 cm over the next 16 m). A ledge grab, the climb up, and standing on
   the top all still work.
 - A step up of 0.3 m or less is walked onto as before.
+- **Headless, overhead**: a bar 2.3 m up across the way is walked straight
+  under; one 1.5 m up is gone round.
 - **Cost** (`anim_bench --gait walk --characters 100 --walls N`, on top of
   the walk's 24 µs a character a frame): flat in the level's size through
   the grid.

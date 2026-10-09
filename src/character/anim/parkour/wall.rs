@@ -1269,12 +1269,13 @@ mod tests {
                     return Some(m);
                 }
                 // Across, met by the far wall: kicked off it back to the lip.
-                if leg == 0 && falling.airborne() {
-                    if let Some(next) = WallRun::kick_from_air(&far, KickTarget::Lip(near), &falling, 0.0, &stood, &rig) {
-                        run = next;
-                        m.kicks += 1;
-                        break;
-                    }
+                if leg == 0
+                    && falling.airborne()
+                    && let Some(next) = WallRun::kick_from_air(&far, KickTarget::Lip(near), &falling, 0.0, &stood, &rig)
+                {
+                    run = next;
+                    m.kicks += 1;
+                    break;
                 }
                 falling.advance(DT);
                 t += DT;

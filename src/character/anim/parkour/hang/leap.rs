@@ -99,6 +99,13 @@ const FASTEST: f32 = 3.0;
 const MOST_UP: f32 = 4.5;
 
 impl Launch {
+    /// A launch already under way as it starts: the hips going on from
+    /// `from` at `from_velocity` to let go at `to` at `velocity` after
+    /// `seconds` (a swing let go at its front, `swing`), at `target` if any.
+    pub(super) fn released(from: Vec3, from_velocity: Vec3, to: Vec3, velocity: Vec3, target: Option<Ledge>, seconds: f32) -> Self {
+        Self { t: 0.0, seconds, from, from_velocity, to, velocity, target, spin: 0.0 }
+    }
+
     /// The hips at `t` seconds in, and their velocity.
     fn hips_at(&self, t: f32) -> (Vec3, Vec3) {
         let s = (t / self.seconds).clamp(0.0, 1.0);
@@ -191,7 +198,7 @@ impl Hanging {
     }
 
     /// The shoulders' middle over the hips standing, in the world's axes.
-    fn shoulders_over_hips(&self, rig: &RigGeometry) -> Vec3 {
+    pub(super) fn shoulders_over_hips(&self, rig: &RigGeometry) -> Vec3 {
         let at = forward_kinematics_on(&self.body.stood, rig);
         let arms = crate::character::anim::armik::ArmChain::LEFT;
         let other = crate::character::anim::armik::ArmChain::RIGHT;

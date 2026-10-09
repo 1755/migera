@@ -90,6 +90,11 @@ enum Gait {
     RunAlong,
     /// Sliding down a 4.5 m wall from a braced hang, to standing.
     Slide,
+    /// Swinging on a 2.3 m bar, pumped up.
+    BarSwing,
+    /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
+    /// letting go to the catch, the catch tested each frame of the flight.
+    Lache,
 }
 
 fn main() {
@@ -136,7 +141,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -173,6 +178,18 @@ fn main() {
                 }
                 _ => Some((hanging, 3.5)),
             }
+        }
+        // Swinging on a 2.3 m bar, pumped up: a swing's period (2.4 s).
+        Gait::BarSwing => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let bar = Ledge::bar(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 3.0, 2.3);
+            let mut hanging = Hanging::hung(&bar, &[], Vec3::new(0.2, 0.0, 1.0), 0.0, [None; 2], &stood, &rig);
+            hanging.advance(1.0);
+            hanging.pump(true);
+            for _ in 0..(8.0 / DT) as usize {
+                hanging.advance(DT);
+            }
+            Some((hanging, 2.4))
         }
         // Mantling onto a 1.1 m wall from standing: its whole length (2.9 s).
         Gait::Mantle => {
@@ -278,6 +295,33 @@ fn main() {
             let (mut probe, mut flight) = (falling.clone(), 0.0);
             while probe.catches(&[target], &rig).is_none() {
                 assert!(probe.airborne() || flight == 0.0, "never caught the ledge leapt at");
+                probe.advance(DT);
+                flight += DT;
+            }
+            Some((hanging, launch, falling, flight, target))
+        }
+        // A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
+        // letting go to the catch.
+        Gait::Lache => {
+            use migera::character::anim::parkour::{Hanging, Ledge};
+            let (from, target) = (Ledge::bar(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 3.0, 2.3), Ledge::bar(Vec3::new(0.0, 0.0, -2.5), Vec3::Z, 3.0, 2.3));
+            let mut hanging = Hanging::hung(&from, &[target], Vec3::new(0.2, 0.0, 1.0), 0.0, [None; 2], &stood, &rig);
+            hanging.advance(1.0);
+            let mut waited = 0.0;
+            while !hanging.lache(&rig) {
+                assert!(waited < 20.0, "never let go at the bar ahead");
+                hanging.advance(DT);
+                waited += DT;
+            }
+            let (mut probe, mut launch) = (hanging.clone(), 0.0);
+            while !probe.is_released() {
+                probe.advance(DT);
+                launch += DT;
+            }
+            let falling = probe.release(&|_| Some(0.0), &[from, target], &stood, &rig);
+            let (mut probe, mut flight) = (falling.clone(), 0.0);
+            while probe.catches(&[target], &rig).is_none() {
+                assert!(probe.airborne() || flight == 0.0, "never caught the bar ahead");
                 probe.advance(DT);
                 flight += DT;
             }
@@ -543,6 +587,8 @@ fn main() {
         Gait::WallKick => "   kicking off a wall at 4 m/s, 0.75 rad off square, and catching a 2.5 m lip round the corner".to_string(),
         Gait::RunAlong => "   running along a wall 0.55 m off at 4 m/s and running on".to_string(),
         Gait::Slide => "   sliding down a 4.5 m wall from a braced hang".to_string(),
+        Gait::BarSwing => "   swinging on a 2.3 m bar, pumped up".to_string(),
+        Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
@@ -674,6 +720,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("wall-kick") => Gait::WallKick,
         Some("run-along") => Gait::RunAlong,
         Some("wall-slide") => Gait::Slide,
+        Some("bar-swing") => Gait::BarSwing,
+        Some("lache") => Gait::Lache,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),

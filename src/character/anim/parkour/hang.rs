@@ -38,6 +38,7 @@ use crate::character::skeleton::Bone;
 
 mod leap;
 mod shimmy;
+mod swing;
 mod up;
 
 pub use leap::Leap;
@@ -86,6 +87,13 @@ pub enum HangAsk {
     /// on the face, and land ([`Hanging::slide_down`]); hanging free, or
     /// over a step, let go instead.
     SlideDown,
+    /// Hanging free from it (a bar, or a ledge with no wall below), pump
+    /// the swing up while asked ([`Hanging::pump`]).
+    Swing,
+    /// Hanging free from it, pump the swing up and let go swinging forward
+    /// at the nearest bar or ledge ahead, catching it (a lache,
+    /// [`Hanging::lache`]); with none ahead, to land. Braced, dropped.
+    Lache,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.
@@ -306,6 +314,12 @@ pub struct Hanging {
     spread: f32,
     /// Launching a leap ([`Self::leap`]).
     launch: Option<leap::Launch>,
+    /// Hanging free, asked to swing ([`Self::pump`]), and how far into the
+    /// pumping shape the legs are, 0-1.
+    pumping: bool,
+    pump: f32,
+    /// How long it has pumped, seconds.
+    pumped_for: f32,
 }
 
 impl Hanging {
@@ -553,6 +567,9 @@ impl Hanging {
             others: Vec::new(),
             spread: 0.0,
             launch: None,
+            pumping: false,
+            pump: 0.0,
+            pumped_for: 0.0,
         }
     }
 
@@ -601,11 +618,13 @@ impl Hanging {
     fn hook_turn(&self, side: usize) -> Quat {
         let grip = &self.body.grips[side];
         let back = self.turn.inverse();
-        self.turn * frame_turn(grip.along, grip.palm, back * Vec3::Y, back * -self.hand_out(side))
+        let hooked = self.turn * frame_turn(grip.along, grip.palm, back * Vec3::Y, back * -self.hand_out(side));
+        self.bar_roll().map_or(hooked, |roll| roll * hooked)
     }
 
     /// Each wrist hooked over its lip point (shimmying, a moving hand's off
-    /// the lip on its way to the next).
+    /// the lip on its way to the next); on a bar, turned round it with
+    /// [`Self::hook_turn`].
     fn wrists(&self) -> [Vec3; 2] {
         [0, 1].map(|side| self.lip_now(side) - self.hook_turn(side) * hook_lip(&self.body.grips[side]))
     }
@@ -865,6 +884,7 @@ impl Hanging {
                     }
                     self.advance_shimmy(dt);
                     self.step_swing(dt);
+                    self.ease_pump(dt);
                     self.start_up();
                 }
             },
@@ -887,10 +907,12 @@ impl Hanging {
             let angular = if self.braced {
                 -BRACED_SETTLE * BRACED_SETTLE * (s.theta - rest_theta) - 2.0 * BRACED_SETTLE * s.dtheta
             } else {
-                // A compound pendulum about the grip, the hanger damping it.
+                // A compound pendulum about the grip, the hanger damping it;
+                // pumping, driving it to its swing instead (`swing`).
                 let d = s.r.max(0.1);
                 let omega = (GRAVITY * d / (d * d + GYRATION * GYRATION)).sqrt();
-                -omega * omega * s.theta.sin() - 2.0 * SWING_DAMPING * omega * s.dtheta
+                let held = if self.pumping { swing::pumped(s.theta, s.dtheta, omega, self.pumped_for) } else { -2.0 * SWING_DAMPING * omega * s.dtheta };
+                -omega * omega * s.theta.sin() + held
             };
             let sideways = -SIDEWAYS * SIDEWAYS * s.along - 2.0 * SIDEWAYS * s.dalong;
             s.dr += radial * h;
@@ -1045,7 +1067,9 @@ impl Hanging {
         let root = hips - self.turn * self.body.hips;
         let back = self.turn.inverse();
         let lean = self.lean_at(hips);
-        let mut pose = crate::character::anim::jump::upper(&self.body.stood, rig, lean, (0.0, 0.0));
+        // Free, the trunk turns whole about the hips, a line from the grip.
+        let share = if self.braced { crate::character::anim::jump::PELVIS_SHARE } else { 1.0 };
+        let mut pose = crate::character::anim::jump::upper_shared(&self.body.stood, rig, lean, share, (0.0, 0.0));
         let trunk = self.lean_turn(hips, rig);
         // The legs: from where they were caught to the wall, or hanging.
         let moved = smoothstep((self.since / if self.braced { FEET_TO_WALL } else { LEGS_HANG }).clamp(0.0, 1.0));
@@ -1054,9 +1078,10 @@ impl Hanging {
         for (side, &(_, _, ankle_bone, _)) in LEGS.iter().enumerate() {
             // Free: under the hips along the body, a little bent, the feet
             // leant with it.
+            // Swinging, piked ahead and arched back with it (`swing`).
             let hanging = || {
                 let socket = hips + trunk * self.body.sockets[side];
-                let down = (hips - self.grip).normalize_or(Vec3::NEG_Y);
+                let down = self.swung_legs((hips - self.grip).normalize_or(Vec3::NEG_Y));
                 (socket + down * (FREE_LEG * self.body.legs[side]), trunk * self.body.attitudes[side])
             };
             let (target, attitude) = if self.braced {
@@ -1453,6 +1478,157 @@ mod tests {
             assert!(into < 1.0e-3, "{name}: a joint {into:.4} m into the wall falling");
             assert!(from_standing < 0.01 && falling.root().y.abs() < 1.0e-3, "{name}: {from_standing:.4} m from standing, the root {:.4} m up", falling.root().y);
         }
+    }
+
+    /// What a swing on a bar measured.
+    #[derive(Debug, Default)]
+    struct Swung {
+        /// The swing's reach after pumping, radians; the most a hand strays
+        /// from its place on the bar; the fastest joint about the hips.
+        amplitude: f32,
+        hand_off: f32,
+        fastest: f32,
+        fastest_at: f32,
+        /// The most a joint's step changes the frame it lets go, metres;
+        /// the hips' flight off ballistic most, m/s².
+        release_kink: f32,
+        off_ballistic: f32,
+        /// Seconds from asking to letting go.
+        waited: f32,
+        /// Caught the bar ahead, a wrist this far off its hook 3 s on;
+        /// or landed.
+        caught_off: Option<f32>,
+        landed: bool,
+    }
+
+    /// Hung from a bar `height` up, it pumps for `pump` seconds, then lets
+    /// go swinging forward, at `next` (a bar ahead) if given.
+    fn swung(height: f32, pump: f32, next: Option<Ledge>) -> Swung {
+        let (stood, rig) = real_stood();
+        let bar = Ledge::bar(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 3.0, height);
+        let mut hanging = hung_from(&bar, &[]);
+        hanging.advance(1.0);
+        assert!(!hanging.is_braced(), "a bar's hang is free");
+        let mut m = Swung::default();
+        let world = |pose: &LocalPose, root: Vec3, yaw: f32| {
+            let at = forward_kinematics_on(pose, &rig);
+            BoneSet::from_fn(|bone| root + Quat::from_rotation_y(yaw) * at[bone])
+        };
+        // The last two frames' joints, for the step letting go.
+        let mut frames = [world(&hanging.pose(&rig), hanging.root(), hanging.facing()); 2];
+        hanging.pump(true);
+        let mut t = 0.0;
+        let step = |hanging: &mut Hanging, m: &mut Swung, frames: &mut [BoneSet<Vec3>; 2], t: &mut f32| {
+            hanging.advance(DT);
+            *t += DT;
+            let now = world(&hanging.pose(&rig), hanging.root(), hanging.facing());
+            let last = frames[1];
+            let speed = Bone::ALL.iter().map(|&bone| ((now[bone] - now[Bone::Hips]) - (last[bone] - last[Bone::Hips])).length() / DT).fold(0.0, f32::max);
+            if speed > m.fastest {
+                (m.fastest, m.fastest_at) = (speed, *t);
+            }
+            if !hanging.is_leaping() {
+                let wrists = hanging.wrists();
+                for (side, chain) in ARMS.iter().enumerate() {
+                    m.hand_off = m.hand_off.max((now[chain.wrist] - wrists[side]).length());
+                }
+            }
+            *frames = [last, now];
+        };
+        while t < pump {
+            step(&mut hanging, &mut m, &mut frames, &mut t);
+        }
+        m.amplitude = hanging.swing_amplitude();
+        let asked = t;
+        while !hanging.swing_release(next, &rig) {
+            step(&mut hanging, &mut m, &mut frames, &mut t);
+            if t > asked + 4.0 {
+                return m;
+            }
+        }
+        m.waited = t - asked;
+        while !hanging.is_released() {
+            step(&mut hanging, &mut m, &mut frames, &mut t);
+        }
+        let mut falling = hanging.release(&|_| Some(0.0), &[], &stood, &rig);
+        let [before, held] = frames;
+        falling.advance(DT);
+        let first = world(&falling.pose(&rig), falling.root(), falling.facing());
+        // Each joint's step letting go against its step before.
+        m.release_kink = Bone::ALL.iter().map(|&bone| (first[bone] - 2.0 * held[bone] + before[bone]).length()).fold(0.0, f32::max);
+        let mut flight = vec![held[Bone::Hips], first[Bone::Hips]];
+        while !falling.is_done() {
+            if let Some(next) = next
+                && falling.airborne()
+                && let Some(ledge) = falling.catches(&[next], &rig)
+            {
+                // Caught, the hands hold it.
+                let square = Hanging::square(&ledge, rig.forward());
+                let mut caught = Hanging::caught(&ledge, &[], falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.root(), square, 0.0, crate::character::anim::hand::puppet_grips(), &stood, &rig);
+                for _ in 0..(3.0 / DT) as usize {
+                    caught.advance(DT);
+                }
+                let at = world(&caught.pose(&rig), caught.root(), caught.facing());
+                m.caught_off = Some((0..2).map(|side| (at[ARMS[side].wrist] - caught.wrists()[side]).length()).fold(0.0, f32::max));
+                break;
+            }
+            falling.advance(DT);
+            if falling.airborne() {
+                flight.push(falling.hips());
+            }
+        }
+        m.landed = falling.is_done();
+        // Ballistic from letting go: the hips falling at g, nothing pushing.
+        m.off_ballistic = flight.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (DT * DT) + Vec3::Y * GRAVITY).length()).fold(0.0, f32::max);
+        m
+    }
+
+    /// Hung from bars 2.3-2.6 m up, it pumps the swing up toward its
+    /// amplitude in 8 s, the hands on the bar and no joint whipping round;
+    /// asked to let go, it does within a swing, the pose continuous, flying
+    /// ballistic, and lands; at a bar 1.5 or 2 m ahead as high, or 2.4 m
+    /// ahead and 0.5 m lower, it catches it and holds it. A bar 3.5 m
+    /// ahead it does not let go at.
+    #[test]
+    fn a_bar_swing_is_pumped_up_and_let_go_of() {
+        let mut faults = Vec::new();
+        for height in [2.3, 2.45, 2.6] {
+            let ahead = |gap: f32, lower: f32| Some(Ledge::bar(Vec3::new(0.0, 0.0, -0.5 - gap), Vec3::Z, 3.0, height - lower));
+            for (next, way) in [(None, "landing"), (ahead(1.5, 0.0), "at a bar 1.5 m ahead"), (ahead(2.0, 0.0), "at a bar 2 m ahead"), (ahead(2.4, 0.5), "at a bar 2.4 m ahead, lower")] {
+                let name = format!("a {height} m bar, {way}");
+                let m = swung(height, 8.0, next);
+                eprintln!("{name}: {m:?}");
+                if m.amplitude < 0.9 * swing::AMPLITUDE {
+                    faults.push(format!("{name}: pumped only to {:.2} rad", m.amplitude));
+                }
+                if m.hand_off >= 1.0e-3 {
+                    faults.push(format!("{name}: a hand {:.4} m off the bar", m.hand_off));
+                }
+                if m.fastest >= 14.0 {
+                    faults.push(format!("{name}: a joint at {:.1} m/s about the hips at {:.2} s", m.fastest, m.fastest_at));
+                }
+                if m.waited <= 0.0 || m.waited > 2.5 {
+                    faults.push(format!("{name}: let go {:.2} s after asked", m.waited));
+                }
+                if m.release_kink >= 0.02 {
+                    faults.push(format!("{name}: a joint's step changed {:.4} m the frame it let go", m.release_kink));
+                }
+                if m.off_ballistic >= 0.05 {
+                    faults.push(format!("{name}: the hips' flight off ballistic by {:.3} m/s²", m.off_ballistic));
+                }
+                match (next, m.caught_off) {
+                    (Some(_), Some(off)) if off >= 1.0e-3 => faults.push(format!("{name}: a caught wrist {off:.4} m off its hook")),
+                    (Some(_), None) => faults.push(format!("{name}: the bar ahead not caught")),
+                    (None, _) if !m.landed => faults.push(format!("{name}: not landed")),
+                    _ => {}
+                }
+            }
+            let m = swung(height, 8.0, ahead(3.5, 0.0));
+            if m.waited > 0.0 {
+                faults.push(format!("a {height} m bar: let go at a bar 3.5 m ahead"));
+            }
+        }
+        assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults.join("\n"));
     }
 
     /// Hung braced from walls 3, 4.5 and 6.5 m high, it slides down: the

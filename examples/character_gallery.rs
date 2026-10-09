@@ -1446,6 +1446,14 @@ struct HangSchedule {
     /// (`--slide-down-at T`, after `--hang-at`).
     slide_down_at: Option<f32>,
     slide_down_fired: bool,
+    /// Hanging free from a bar (`--bar X,Z,HEADING,HEIGHT[,LENGTH]`, the
+    /// first the one grabbed, the rest about it), pumping the swing up
+    /// (`--swing-at T`) and letting go at the next bar ahead (`--lache-at
+    /// T`).
+    swing_at: Option<f32>,
+    swing_fired: bool,
+    lache_at: Option<f32>,
+    lache_fired: bool,
     vault_fired: bool,
 }
 
@@ -1484,6 +1492,18 @@ impl HangSchedule {
                         schedule.others.extend(block);
                     }
                 }
+                "--bar" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, height, ref rest @ ..] = numbers[..] {
+                        let bar = Ledge::bar(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()), rest.first().copied().unwrap_or(3.0), height);
+                        match schedule.ledge {
+                            None => schedule.ledge = Some(bar),
+                            Some(_) => schedule.others.push(bar),
+                        }
+                    }
+                }
+                "--swing-at" => schedule.swing_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--lache-at" => schedule.lache_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--hang-at" => schedule.at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--climb-up-at" => schedule.up_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--let-go-at" => schedule.let_go_at = args.next().and_then(|t| t.trim().parse().ok()),
@@ -1553,6 +1573,14 @@ impl HangSchedule {
         if !self.slide_down_fired && self.slide_down_at.is_some_and(|at| elapsed >= at) {
             self.slide_down_fired = true;
             return Some(HangAsk::SlideDown);
+        }
+        if !self.lache_fired && self.lache_at.is_some_and(|at| elapsed >= at) {
+            self.lache_fired = true;
+            return Some(HangAsk::Lache);
+        }
+        if !self.swing_fired && self.swing_at.is_some_and(|at| elapsed >= at) {
+            self.swing_fired = true;
+            return Some(HangAsk::Swing);
         }
         if !self.drop_fired && self.drop_at.is_some_and(|at| elapsed >= at) {
             self.drop_fired = true;
@@ -1632,7 +1660,8 @@ fn place_ledge(
         // A block behind each face, from the edge down as far as the wall
         // goes (a slab at least 0.1 m thick), as deep as the top.
         let width = (ledge.b - ledge.a).length();
-        let thick = ledge.wall_below.max(0.1);
+        // A bar as thick as it is deep, on a post at each end.
+        let thick = if ledge.is_bar() { ledge.depth } else { ledge.wall_below.max(0.1) };
         let middle = 0.5 * (ledge.a + ledge.b) - ledge.out * (0.5 * ledge.depth) - Vec3::Y * (0.5 * thick);
         let mesh = meshes.add(Cuboid::new(width, thick, ledge.depth));
         commands.spawn((
@@ -1641,6 +1670,13 @@ fn place_ledge(
             MeshMaterial3d(stone.clone()),
             Transform::from_translation(middle).with_rotation(Quat::from_rotation_arc(Vec3::Z, ledge.out)),
         ));
+        if ledge.is_bar() {
+            let post = meshes.add(Cuboid::new(0.06, ledge.height(), 0.06));
+            for end in [ledge.a, ledge.b] {
+                let foot = (end - ledge.out * (0.5 * ledge.depth)).with_y(0.5 * ledge.height());
+                commands.spawn((GalleryLedge(ledges.clone()), Mesh3d(post.clone()), MeshMaterial3d(stone.clone()), Transform::from_translation(foot)));
+            }
+        }
     }
 }
 

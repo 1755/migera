@@ -927,10 +927,18 @@ impl Jump {
 /// `stood` with the trunk leaning `lean` (radians forward) and the arms
 /// swung `arms` (radians forward from hanging, and the elbows bent on top
 /// of the standing pose's).
-pub(super) fn upper(stood: &LocalPose, rig: &RigGeometry, lean: f32, (swing, elbow): (f32, f32)) -> LocalPose {
+pub(super) fn upper(stood: &LocalPose, rig: &RigGeometry, lean: f32, arms: (f32, f32)) -> LocalPose {
+    upper_shared(stood, rig, lean, PELVIS_SHARE, arms)
+}
+
+/// [`upper`], the pelvis taking `share` of the lean and the spine the rest
+/// about its own joint: all of it, the trunk turns whole about the hips,
+/// as a body swinging on a bar does (bent at the spine, it shortened 2.7 cm
+/// at a 0.8 rad lean and the arms stretched past their length).
+pub(super) fn upper_shared(stood: &LocalPose, rig: &RigGeometry, lean: f32, share: f32, (swing, elbow): (f32, f32)) -> LocalPose {
     let mut pose = *stood;
     let left = rig.left();
-    for (bone, angle) in [(Bone::Hips, lean * PELVIS_SHARE), (Bone::Spine, lean * (1.0 - PELVIS_SHARE)), (Bone::Neck, -0.6 * lean)] {
+    for (bone, angle) in [(Bone::Hips, lean * share), (Bone::Spine, lean * (1.0 - share)), (Bone::Neck, -0.6 * lean)] {
         pose.rotations[bone] = delta_after_world_turn(&pose, rig, bone, Quat::from_axis_angle(left, angle));
     }
     // The upper arm swung, then the forearm bent forward on it.

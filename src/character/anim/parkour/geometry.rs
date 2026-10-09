@@ -3,6 +3,10 @@
 
 use bevy::math::Vec3;
 
+/// A bar's thickness, metres ([`Ledge::bar`]): a gymnastics bar's 28 mm,
+/// a scaffold pipe's 48.
+pub const BAR_DEPTH: f32 = 0.04;
+
 /// A ledge: the top edge of a wall or block, level, that hands can hang
 /// from.
 ///
@@ -32,6 +36,19 @@ impl Ledge {
         let along = Vec3::Y.cross(out);
         let middle = foot + Vec3::Y * height;
         Self { a: middle - along * (0.5 * width), b: middle + along * (0.5 * width), out, depth, wall_below: height }
+    }
+
+    /// A horizontal bar over the floor at `foot` (under its middle),
+    /// `length` long and `height` up, hung from facing away from `out`
+    /// (step 9): an edge [`BAR_DEPTH`] deep with no wall below, so a hang
+    /// from it is free.
+    pub fn bar(foot: Vec3, out: Vec3, length: f32, height: f32) -> Self {
+        Self { wall_below: 0.0, depth: BAR_DEPTH, ..Self::wall(foot, out, length, height, BAR_DEPTH) }
+    }
+
+    /// Whether it is a bar ([`Self::bar`]): thin, nothing below.
+    pub fn is_bar(&self) -> bool {
+        self.wall_below <= 0.0 && self.depth <= BAR_DEPTH + 1.0e-4
     }
 
     /// The edge's height.
@@ -200,6 +217,20 @@ impl crate::character::anim::ground::GroundProbe for LedgeGround {
             Some(height) => Some(crate::character::anim::ground::GroundHit { height, normal: Vec3::Y }),
             None => self.under.sample(at),
         }
+    }
+
+    /// A ledge's block stands from its top down as far as its wall goes (a
+    /// bar's own thickness): one wholly over `high` is passed under.
+    fn blocks(&self, point: Vec3, low: f32, high: f32) -> bool {
+        let solid = self.cells.get(&Self::cell_of(point)).into_iter().flatten().map(|&index| &self.ledges[index as usize]).any(|ledge| {
+            let along = (point - ledge.a).dot(ledge.along());
+            let back = -ledge.out_of(point);
+            (0.0..=(ledge.b - ledge.a).length()).contains(&along)
+                && (0.0..=ledge.depth).contains(&back)
+                && ledge.height() > low
+                && ledge.height() - ledge.wall_below.max(BAR_DEPTH) < high
+        });
+        solid || self.under.blocks(point, low, high)
     }
 }
 

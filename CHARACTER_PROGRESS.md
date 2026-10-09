@@ -41,6 +41,59 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 9 (first part): swinging on a bar, and a lache
+
+A bar is a ledge 4 cm deep with nothing below (`Ledge::bar`), so its hang is
+free. Note: [a bar is swung on, pumped, and let go of at a bar
+ahead](docs/knowledge/character-animation/parkour/a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md).
+
+- **The swing** (`parkour/hang/swing.rs`):
+  - `Hanging::pump` drives the free hang's compound pendulum on its energy
+    to 1.2 rad, started from still by a push at the swing's own rate;
+  - the legs pike ahead through the bottom swinging forward and arch back
+    swinging back.
+- **The lache:**
+  - `Hanging::swing_release` lets go swinging forward through the leap's
+    launch;
+  - at a bar or ledge ahead, it lets go at the moment in the window needing
+    the least velocity change (at most 1.5 m/s) to bring the shoulders
+    within reach of its lip, falling;
+  - `Hanging::lache` picks the mark; with none, it lands from a pumped
+    swing.
+- **The walker:** `HangAsk::Swing` and `HangAsk::Lache`.
+- **The gallery:** `--bar`, `--swing-at`, `--lache-at`.
+- **The bench:** `--gait bar-swing`, `--gait lache`.
+- **Fixed on the way:**
+  - the hang's lean, shared between the pelvis and the spine
+    (`jump::upper`), bent and shortened the trunk 2.7 cm: arms 14 % past
+    their length, a hand 7.9 cm off the bar. A free hang now turns the
+    trunk whole about the hips (`jump::upper_shared`);
+  - hands hooked fixed on a bar now roll round it with the swing, about
+    the lip point (about the bar's middle, 7 mm off);
+  - the walker's wall probes read a bar 2.3 m up as a wall and routed round
+    it. They now ask `GroundProbe::blocks` up to a 2 m headroom, and
+    `LedgeGround` answers from each block's extent. With that check
+    removed, the new walk-under case fails.
+- **Headless** (bars 2.3-2.6 m):
+  - pumped to 1.1997 rad in 8 s;
+  - hands within 1.3 µm of the bar;
+  - no joint over 3.3 m/s about the hips;
+  - the release's step change at most 1.4 cm, the flight ballistic to
+    1 mm/s²;
+  - bars 1.5 and 2 m ahead, and 2.4 m ahead 0.5 m lower, caught and held;
+  - a bar 3.5 m ahead not let go at.
+- **Dead end:** a 0.8 rad swing. The gap sim found no bar level with it
+  within a 1.5 m/s change from 1.2 m ahead on.
+- **Live** (Xvfb, gizmos on and mesh off, Front and Left; mesh on; BRP):
+  - grabbed a 2.3 m bar and pumped to a near-horizontal swing;
+  - let go, flew piked with the arms reaching, caught the bar 2 m ahead
+    and swung still under it.
+- **Cost** (`--characters 100`, p50 a character): swing 63 µs, lache 32 µs
+  (a free hang 57 µs).
+
+1268 library tests pass; clippy is clean with and without `real_rig`, but
+for an older test warning in `hand.rs`.
+
 ### Parkour, step 8 finished: kicks chained wall to wall up a shaft
 
 A lip out of one kick's reach, with a wall facing across a 1.6-2.4 m gap,
