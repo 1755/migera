@@ -1271,6 +1271,13 @@ fn steer_the_walker(
             walker.springboard = Some(board);
             hangs.spring_fired = true;
         }
+        if !hangs.monkey_fired
+            && let (Some(at), Some(bars)) = (hangs.monkey_at, hangs.monkey)
+            && time.elapsed_secs() >= at
+        {
+            walker.monkey_bars = Some(bars);
+            hangs.monkey_fired = true;
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1570,6 +1577,12 @@ struct HangSchedule {
     springboard: Option<migera::character::anim::parkour::springboard::Springboard>,
     spring_at: Option<f32>,
     spring_fired: bool,
+    /// Monkey bars (`--monkey X,Z,HEADING,HEIGHT[,SPACING,BARS]`: the first
+    /// bar's middle at X,HEIGHT,Z, the line along HEADING as `--block`
+    /// faces, 0.4 m apart, 6 bars else), crossed from T (`--monkey-at T`).
+    monkey: Option<migera::character::anim::parkour::monkey::MonkeyBars>,
+    monkey_at: Option<f32>,
+    monkey_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1681,6 +1694,15 @@ impl HangSchedule {
                     }
                 }
                 "--springboard-at" => schedule.spring_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--monkey" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, height, ref rest @ ..] = numbers[..] {
+                        let spacing = rest.first().copied().unwrap_or(0.4);
+                        let bars = rest.get(1).map_or(6, |&bars| bars as usize);
+                        schedule.monkey = Some(migera::character::anim::parkour::monkey::MonkeyBars::new(Vec3::new(x, height, z), approach::direction_of(heading.to_radians()), spacing, bars));
+                    }
+                }
+                "--monkey-at" => schedule.monkey_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--spin-jump-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, ref rest @ ..] = numbers[..] {
@@ -1932,6 +1954,36 @@ struct GalleryPole;
 /// The gallery's haystack, as drawn.
 #[derive(Component)]
 struct GalleryHay;
+
+/// The gallery's monkey bars, as drawn: each bar this long, on a post
+/// under each end of the first and last.
+#[derive(Component)]
+struct GalleryMonkey;
+const MONKEY_BAR_LONG: f32 = 0.9;
+
+fn place_monkey(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryMonkey>>) {
+    let Some(bars) = hangs.monkey else { return };
+    if !drawn.is_empty() {
+        return;
+    }
+    let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    let across = bars.across();
+    let bar = meshes.add(Cylinder::new(migera::character::anim::parkour::monkey::BAR_RADIUS, MONKEY_BAR_LONG));
+    for k in 0..bars.bars {
+        commands.spawn((GalleryMonkey, Mesh3d(bar.clone()), MeshMaterial3d(steel.clone()), Transform::from_translation(bars.bar(k as f32)).with_rotation(Quat::from_rotation_arc(Vec3::Y, across))));
+    }
+    // The rails along the line over the bars' ends, and the posts.
+    let length = bars.spacing * bars.last() as f32;
+    let rail = meshes.add(Cylinder::new(0.025, length));
+    let post = meshes.add(Cylinder::new(0.03, bars.first.y));
+    for side in [-1.0f32, 1.0] {
+        let end = across * (side * 0.5 * MONKEY_BAR_LONG);
+        commands.spawn((GalleryMonkey, Mesh3d(rail.clone()), MeshMaterial3d(steel.clone()), Transform::from_translation(bars.bar(0.5 * bars.last() as f32) + end).with_rotation(Quat::from_rotation_arc(Vec3::Y, bars.way))));
+        for k in [0.0, bars.last() as f32] {
+            commands.spawn((GalleryMonkey, Mesh3d(post.clone()), MeshMaterial3d(steel.clone()), Transform::from_translation((bars.bar(k) + end).with_y(0.5 * bars.first.y))));
+        }
+    }
+}
 
 /// The gallery's springboard, as drawn: a plank this wide and thick,
 /// metres, bent about its fixed end as far as the walker leaping off it has
@@ -2972,7 +3024,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

@@ -211,6 +211,10 @@ pub struct Walker {
     /// catches (with [`Self::catch`]); the ask is dropped once taken, or run
     /// past.
     pub springboard: Option<super::parkour::springboard::Springboard>,
+    /// Monkey bars to cross (`parkour::monkey`): it walks under the first,
+    /// gets on, crosses hand over hand, lets go under the last and lands;
+    /// the ask is dropped once let go.
+    pub monkey_bars: Option<super::parkour::monkey::MonkeyBars>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -260,6 +264,7 @@ impl Default for Walker {
             leap_of_faith: None,
             skid: false,
             springboard: None,
+            monkey_bars: None,
         }
     }
 }
@@ -573,6 +578,10 @@ pub struct WalkerState {
     /// Leaping off a springboard, until handed to its fall
     /// (`parkour::springboard`); the board, as it is bent.
     pub springing: Option<super::parkour::springboard::Springboard>,
+    /// Crossing monkey bars (`parkour::monkey`), and the spot it walks to
+    /// under the first.
+    pub monkey: Option<super::parkour::monkey::Crossing>,
+    pub monkey_spot: Option<(super::parkour::monkey::MonkeyBars, Vec3)>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -659,6 +668,8 @@ impl WalkerState {
             spinning: None,
             faith: None,
             springing: None,
+            monkey: None,
+            monkey_spot: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -679,7 +690,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some()
     }
 
     /// Leaping off a springboard, the board and how far it is bent under the
@@ -958,6 +969,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             && state.posture.is_standing()
             && !fallen;
         let mut at_pole = false;
+        // Asked across monkey bars (`parkour::monkey`): it walks to the spot
+        // under the first, facing along them, and gets on once stopped.
+        let monkey_asked = !state.on_holds() && walker.monkey_bars.is_some() && walker.sit.is_none() && state.posture.is_standing() && !fallen;
+        let mut at_monkey = false;
         // Asked to squeeze along a passage (`parkour::squeeze`): to its mouth,
         // square to it; then in it, shuffling along (below).
         if walker.squeeze.is_none() {
@@ -1058,6 +1073,36 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
                 if look_at.is_none() {
                     look_at = Some(pole.at(1.8));
+                }
+            }
+            (_, _, Some(rig)) if monkey_asked => {
+                use super::parkour::monkey::Crossing;
+                let bars = walker.monkey_bars.expect("asked across monkey bars");
+                let ahead = approach::heading_of(rig.forward());
+                if state.monkey_spot.is_none_or(|(was, _)| was != bars) {
+                    let stood = stance_on_rig(&base, DEFAULT_KNEE_FLEX, rig);
+                    state.monkey_spot = Some((bars, Crossing::spot(&bars, state.locomotion.position.y, &stood, rig)));
+                    state.approach = approach::Approach::Idle;
+                }
+                let (_, spot) = state.monkey_spot.expect("a spot");
+                let facing = approach::heading_of(bars.way);
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                placing = true;
+                let gait = approach_gait(state, cycle_of(&phase), &gait_rig);
+                let obstacles: Vec<_> = route_obstacles.map(|route| route.0.clone()).unwrap_or_default();
+                match state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, facing, speed, &obstacles) {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        (wanted_speed, steer, at_monkey) = (0.0, Steer::Straight, true);
+                    }
+                }
+                if look_at.is_none() {
+                    look_at = Some(bars.first);
                 }
             }
             (_, _, Some(rig)) if hang_asked => {
@@ -2665,6 +2710,58 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.poling = None;
                     state.pole_spot = None;
                     walker.on_pole = None;
+                }
+            }
+        }
+        // Across monkey bars (`parkour::monkey`): got on once stopped under
+        // the first, its pose instead, the root riding its hips; let go at
+        // the far end, into a fall.
+        if let Some(rig) = foot_ik.rig.clone() {
+            let ready = at_monkey && weight <= 0.0 && state.transition.is_at_rest() && state.crouching.is_standing() && state.jump.is_none();
+            if ready
+                && state.monkey.is_none()
+                && let Some((bars, _)) = state.monkey_spot
+            {
+                let mut crossing = super::parkour::monkey::Crossing::get_on(&bars, state.locomotion.position, &stood, &rig);
+                if let Some(hands) = hands.as_ref() {
+                    crossing.set_grips(hands.grips, &rig);
+                }
+                state.monkey = Some(crossing);
+                state.approach = approach::Approach::Idle;
+            }
+            if let Some(crossing) = state.monkey.as_mut() {
+                crossing.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => crossing.pose_led(&rig, &springs.0),
+                    None => crossing.pose(&rig),
+                };
+                state.locomotion.position = crossing.root();
+                state.facing.yaw = crossing.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if look_at.is_none() {
+                    look_at = Some(crossing.look());
+                }
+                if let Some(hands) = hands.as_mut() {
+                    let grips = crossing.grips();
+                    if hands.grip != grips || hands.hook != [false; 2] {
+                        hands.grip = grips;
+                        hands.hook = [false; 2];
+                    }
+                }
+                if crossing.is_released() {
+                    let mut falling = crossing.release(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height), &stood, &rig);
+                    falling.reach(walker.catch);
+                    state.falling = Some(falling);
+                    state.monkey = None;
+                    state.monkey_spot = None;
+                    walker.monkey_bars = None;
                 }
             }
         }

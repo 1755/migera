@@ -41,6 +41,51 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Held hands bent the wrong way at the wrist (fix)
+
+Reported live: on the bars, the pole and before, wrists and palms bent the
+wrong way. Two faults. The pole, the free climb and the monkey bars took
+the rig's finger grips (in the hand bone's own frame) unturned by the
+wrist's bind, so each held hand was turned ~90° (1.64 rad measured); the
+ladder and the hang already turned them. And hands turned to an ideal
+(fingers up, level round a pole) ignored the solved forearm, bending wrists
+0.6-1.7 rad sideways or back. Now `hand::bound_grips` turns every grip,
+and each mover turns the hand toward its solved forearm within limits and
+solves again. The tests use the rig's real grips and check the wrist with
+`hand::wrist_bend` (read off the hand's own rotation: measured through
+`bound_grips`, the check passed with the turn disabled). Note: [a hand grip
+is measured in the hand's own
+frame](docs/knowledge/character-animation/rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md).
+
+- **After:** monkey bars 0.07 rad sideways, flexed 0-0.1; pole 0.20,
+  −0.20..0.17; free climb 0.46, −0.52..0.17. Live (mesh close-ups): hands
+  continue their forearms on the bars, the pole and the holds.
+
+### Parkour, step 17 (first part): monkey bars
+
+Asked (`Walker::monkey_bars`), the walker walks under the first of a line
+of bars, gets on, crosses hand over hand (each hand two bars on every
+0.9 s), hangs still under the last, lets go and lands
+(`parkour::monkey::Crossing`). Note: [monkey bars are crossed hand over
+hand](docs/knowledge/character-animation/parkour/monkey-bars-are-crossed-hand-over-hand-the-body-hung-from-the-hands-carrying-it.md).
+
+- **The motion:** the hips on a Hermite through the hand moves' ends
+  (midway between the hands, slow there), hung from the hands weighted by
+  what each carries (eased over a move), the trunk turned whole toward
+  that point and twisted toward the leading hand.
+- **Fixed on the way:** a grip let go at once (18 cm toe step); a cubic
+  ease's ends (2.3 cm); the get-on sweep's half-turn arc (2.7 cm elbow);
+  the clavicle lift's limit (2.3 cm shoulder); the hips rising after the
+  hands met the bar (2 cm elbow).
+- **The gallery:** `--monkey X,Z,HEADING,HEIGHT[,SPACING,BARS]`,
+  `--monkey-at T`. **The bench:** `--gait monkey`.
+- **Headless:** 5-8 bars 0.35-0.45 m apart: held hands within 1 µm,
+  nothing into a bar, no joint over 3.8 m/s, no step over 1.4 cm, landed
+  under the last.
+- **Live** (BRP; gizmos on and mesh off, Left and Back; mesh on): crossed
+  six bars 2 m, hands on the bars throughout, and stood under the last.
+- **Cost:** 41 µs a character at p50.
+
 ### Parkour, step 12 (sixth part): the springboard
 
 Asked (`Walker::springboard`), a run paces its last steps onto a sprung

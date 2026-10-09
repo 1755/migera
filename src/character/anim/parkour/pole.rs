@@ -97,6 +97,10 @@ const CATCH_REACH: f32 = 0.25;
 const CATCH: f32 = 0.3;
 /// A hand reaches no farther than this share of its arm.
 const ARM_REACH: f32 = 0.97;
+/// A hand's turn round the pole toward its forearm's way in, radians, and
+/// its tilt with the forearm's rise (the fingers then round it slantwise).
+const HAND_ROUND: f32 = 1.0;
+const HAND_TILT: f32 = 0.5;
 /// Letting go, pushed off it at this speed, m/s.
 const LET_GO_AWAY: f32 = 1.0;
 
@@ -399,7 +403,7 @@ impl Poling {
     /// Each hand placed so its own fingers close round the pole: their
     /// grips, measured on the hand's rest frame (`hand::grip_of`).
     pub fn set_grips(&mut self, grips: [Option<HandGrip>; 2]) {
-        for (side, grip) in grips.into_iter().enumerate() {
+        for (side, grip) in crate::character::anim::hand::bound_grips(grips, &self.rig).into_iter().enumerate() {
             if let Some(grip) = grip {
                 self.body.grips[side] = grip;
             }
@@ -527,6 +531,11 @@ impl Poling {
     /// The pose now, on `rig` (the one it was measured on), in the
     /// walker's pose frame at [`Self::root`] turned [`Self::facing`].
     pub fn pose(&self, rig: &RigGeometry) -> LocalPose {
+        self.posed(rig).0
+    }
+
+    /// [`Self::pose`], and where it put each wrist (the world).
+    fn posed(&self, rig: &RigGeometry) -> (LocalPose, [Vec3; 2]) {
         let (holds, off) = self.holds_now();
         let hips = self.hips();
         let turn = self.turn();
@@ -572,15 +581,21 @@ impl Poling {
             let now = accumulate_world_rotations(&pose, rig)[ankle_bone];
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
-        // The arms: each hand round the pole at its height, the fingers
-        // round it toward the other side, the palm toward its axis.
+        // The arms: each hand round the pole at its height, the palm toward
+        // its axis, the fingers round it toward the other side; then turned
+        // round the pole and tilted toward the forearm the arm solved to
+        // ([`Self::hand_turn`]): kept level and square, a forearm coming up
+        // from a low elbow bent the wrist 0.71 rad sideways and 0.6 back.
+        let unarmed = pose;
+        let mut forearms = [None; 2];
         let mut wrists = [Vec3::ZERO; 2];
+        for pass in 0..2 {
+        pose = unarmed;
         let mut turns = [Quat::IDENTITY; 2];
         for side in 0..2 {
             let grip = &self.body.grips[side];
-            let line = -left * SIGN[side];
-            let hand = frame_turn(grip.along, grip.palm, line, toward);
-            let on = self.pole.at(holds.hands[side]) - hand * grip.bar - toward * off[side];
+            let (hand, palm) = self.hand_turn(side, forearms[side], left, toward);
+            let on = self.pole.at(holds.hands[side]) - hand * grip.bar - palm * off[side];
             wrists[side] = match getting_on {
                 // Raised forward round the shoulder to the pole: straight
                 // there, the hand's path passed 5 cm from the shoulder, the
@@ -606,6 +621,11 @@ impl Poling {
         }
         let weight = getting_on.map_or(self.catching().unwrap_or(1.0), |t| smoothstep((t / (GET_ON * HANDS_ON)).clamp(0.0, 1.0)));
         self.arms_to(&mut pose, rig, root, back, wrists, turns, weight);
+        if pass == 0 {
+            let at = forward_kinematics_on(&pose, rig);
+            forearms = [0, 1].map(|side| Some(turn * (at[ARMS[side].wrist] - at[ARMS[side].elbow])));
+        }
+        }
         // Getting on, the standing pose eased out.
         if let Some(t) = getting_on {
             let s = smoothstep((t / GET_ON_EASE).clamp(0.0, 1.0));
@@ -619,7 +639,30 @@ impl Poling {
         if let (Some(s), Some(caught)) = (self.catching(), self.caught.as_ref()) {
             pose = crate::character::anim::clip::blend(&caught.pose, &pose, s);
         }
-        pose
+        (pose, wrists)
+    }
+
+    /// Hand `side`'s world turn round the pole and the way its palm faces:
+    /// the palm toward the axis, the fingers round it toward the other
+    /// side (`left` the body's, `toward` the pole from the hips); with its
+    /// forearm along `forearm` (the world), turned round the pole so the
+    /// fingers go on along it level, up to [`HAND_ROUND`], and tilted with
+    /// its rise, up to [`HAND_TILT`].
+    fn hand_turn(&self, side: usize, forearm: Option<Vec3>, left: Vec3, toward: Vec3) -> (Quat, Vec3) {
+        let grip = &self.body.grips[side];
+        let line = -left * SIGN[side];
+        let Some(forearm) = forearm else {
+            return (frame_turn(grip.along, grip.palm, line, toward), toward);
+        };
+        let level = forearm.with_y(0.0).normalize_or(line);
+        let round = (line.cross(level).y).atan2(line.dot(level)).clamp(-HAND_ROUND, HAND_ROUND);
+        let spin = Quat::from_rotation_y(round);
+        let (line, palm) = (spin * line, spin * toward);
+        let tilt = forearm.y.atan2(forearm.with_y(0.0).length()).clamp(-HAND_TILT, HAND_TILT);
+        // About the palm's normal, a turn of `palm × line`'s rise's sign
+        // takes the fingers up.
+        let along = Quat::from_axis_angle(palm, tilt * palm.cross(line).y.signum()) * line;
+        (frame_turn(grip.along, grip.palm, along, palm), palm)
     }
 
     /// Each arm to its wrist at `wrists` (the world), the hand turned to
@@ -711,14 +754,9 @@ impl Poling {
     /// Each wrist's place on the pole now (the world), and whether it is
     /// there (not on its way up, nor getting on).
     pub fn wrists(&self) -> [(Vec3, bool); 2] {
-        let (holds, off) = self.holds_now();
-        let toward = -self.away();
-        let left = self.turn() * self.rig.left();
-        [0, 1].map(|side| {
-            let grip = &self.body.grips[side];
-            let hand = frame_turn(grip.along, grip.palm, -left * SIGN[side], toward);
-            (self.pole.at(holds.hands[side]) - hand * grip.bar, off[side] == 0.0 && !matches!(self.phase, Phase::GettingOn { .. } | Phase::Catching { .. }))
-        })
+        let (_, off) = self.holds_now();
+        let (_, wrists) = self.posed(&self.rig);
+        [0, 1].map(|side| (wrists[side], off[side] == 0.0 && !matches!(self.phase, Phase::GettingOn { .. } | Phase::Catching { .. })))
     }
 
     /// The feet's clamp's height on the pole now.
@@ -793,6 +831,11 @@ mod tests {
         /// The most a joint's step changes in a frame.
         kink: f32,
         kink_at: (f32, Option<Bone>),
+        /// The most a held hand bends sideways at the wrist, and how far its
+        /// wrist flexes, least and most (negative bent back), radians (the
+        /// rig's own fingers' grips, `hand::wrist_bend`).
+        bend: f32,
+        flex: (f32, f32),
     }
 
     fn world(pose: &LocalPose, root: Vec3, yaw: f32, rig: &RigGeometry) -> BoneSet<Vec3> {
@@ -808,7 +851,15 @@ mod tests {
         while *t < end && !poling.is_released() {
             poling.advance(ask, DT);
             *t += DT;
-            let now = world(&poling.pose(&rig), poling.root(), poling.facing(), &rig);
+            let pose = poling.pose(&rig);
+            let now = world(&pose, poling.root(), poling.facing(), &rig);
+            let bends = crate::character::anim::hand::wrist_bend(&pose, &rig, &crate::character::anim::hand::puppet_grips());
+            for (side, (_, held)) in poling.wrists().into_iter().enumerate() {
+                if held {
+                    m.bend = m.bend.max(bends[side].0);
+                    m.flex = (m.flex.0.min(bends[side].1), m.flex.1.max(bends[side].1));
+                }
+            }
             if let Some(last) = frames.last() {
                 let speed = Bone::ALL.iter().map(|&bone| ((now[bone] - now[Bone::Hips]) - (last[bone] - last[Bone::Hips])).length() / DT).fold(0.0, f32::max);
                 if speed > m.fastest {
@@ -862,6 +913,7 @@ mod tests {
             let from = pole.foot + Quat::from_rotation_y(heading) * Vec3::Z * 2.0;
             let root = Poling::spot(&pole, from, &stood, &rig);
             let mut poling = Poling::get_on(&pole, root, &stood, &rig);
+            poling.set_grips(crate::character::anim::hand::puppet_grips());
             let (mut m, mut frames, mut t) = (Poled::default(), vec![world(&stood, root, poling.facing(), &rig)], 0.0);
             run(&mut poling, None, 1.5, &mut m, &mut frames, &mut t);
             assert!(poling.is_holding(), "{heading}: not holding after getting on");
@@ -889,6 +941,10 @@ mod tests {
             eprintln!("{heading}: {m:?}, landing kink {kink:.4}");
             assert!(falling.is_done(), "{heading}: never landed");
             assert!(m.hand_off < 1.0e-3, "{heading}: a held hand {:.4} m off the pole", m.hand_off);
+            // Each held hand on along its forearm: level round the pole
+            // whatever the forearm did, a wrist bent 0.71 rad sideways and
+            // 0.6 back.
+            assert!(m.bend < 0.4 && m.flex.0 > -0.4 && m.flex.1 < 1.0, "{heading}: a held hand bent {:.2} rad sideways, flexed {:.2}..{:.2}", m.bend, m.flex.0, m.flex.1);
             assert!(m.foot_off < 0.01, "{heading}: a foot {:.4} m off its clamp", m.foot_off);
             assert!(m.into < 1.0e-3, "{heading}: a joint {:.4} m into the pole", m.into);
             assert!(m.fastest < 14.0, "{heading}: a joint at {:.1} m/s about the hips at {:.2} s", m.fastest, m.fastest_at);

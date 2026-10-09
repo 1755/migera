@@ -122,6 +122,11 @@ const ARM_SOFT: (f32, f32) = (0.95, 0.99);
 /// the second this far below that. Out sideways, a hand held at the
 /// shoulder stuck its elbow straight out level with it.
 const LOCK_OFF: (f32, f32) = (0.2, 0.3);
+/// A hand's fingers turn with its forearm over a hold no farther than this
+/// off straight up, radians (a sidepull): kept straight up, a forearm
+/// reaching in from the side bent its wrist 1.7 rad.
+const HOOK_TILT: f32 = 1.4;
+const HOOK_INTO: f32 = 0.9;
 /// The feet under the hips, metres, braced.
 const FEET_BELOW: f32 = 0.75;
 /// A limb reaches this share of its length at most; a foot's hold no nearer
@@ -404,7 +409,7 @@ impl FreeClimb {
             wall.holds
                 .iter()
                 .enumerate()
-                .filter(|(i, hold)| hold.kind.hand() && Some(*i) != taken && hold.at.y > shoulder.y && (climb.wrist_for(side, hold.at) - shoulder).length() <= ARM_REACH * climb.body.arms[side])
+                .filter(|(i, hold)| hold.kind.hand() && Some(*i) != taken && hold.at.y > shoulder.y && (climb.wrist_for(side, hold.at, Vec3::Y) - shoulder).length() <= ARM_REACH * climb.body.arms[side])
                 .min_by(|(_, a), (_, b)| (a.at - shoulder).length().total_cmp(&(b.at - shoulder).length()))
                 .map(|(i, _)| i)
         };
@@ -430,10 +435,12 @@ impl FreeClimb {
         (wall.face + wall.along() * place.x + wall.out * GET_ON_OFF).with_y(from.y)
     }
 
-    /// Each hand placed so its own fingers hook its hold.
+    /// Each hand placed so its own fingers hook its hold: their grips as
+    /// the rig's fingers make them, in each hand's own frame (kept so, for
+    /// a hang it hands over to, which turns them itself).
     pub fn set_grips(&mut self, grips: [Option<HandGrip>; 2]) {
         self.grips = grips;
-        for (side, grip) in grips.into_iter().enumerate() {
+        for (side, grip) in crate::character::anim::hand::bound_grips(grips, &self.rig).into_iter().enumerate() {
             if let Some(grip) = grip {
                 self.body.grips[side] = grip;
             }
@@ -441,15 +448,31 @@ impl FreeClimb {
     }
 
     /// The hand's world turn hooked over a hold: the palm against the wall,
-    /// the fingers up over it.
-    fn hook_turn(&self, side: usize) -> Quat {
+    /// the fingers along `along` (in the wall's plane) over it.
+    fn hook_turn(&self, side: usize, along: Vec3) -> Quat {
         let grip = &self.body.grips[side];
-        frame_turn(grip.along, grip.palm, Vec3::Y, -self.wall.out)
+        frame_turn(grip.along, grip.palm, along, -self.wall.out)
     }
 
-    /// The wrist for hand `side` hooked on a hold at `at`.
-    fn wrist_for(&self, side: usize, at: Vec3) -> Vec3 {
-        at - self.hook_turn(side) * hook_lip(&self.body.grips[side])
+    /// Which way a hand's fingers go over its hold with its forearm along
+    /// `forearm` (the world): on along the forearm in the wall's plane, but
+    /// no farther than [`HOOK_TILT`] off straight up (a sidepull's); and
+    /// tipped into the wall as far as the forearm comes in toward it, up to
+    /// [`HOOK_INTO`], the heel of the hand off the face (laid flat on it,
+    /// a forearm coming in bent the wrist back 1.05 rad).
+    fn hook_along(&self, forearm: Vec3) -> Vec3 {
+        let on = forearm - self.wall.out * forearm.dot(self.wall.out);
+        let across = on.with_y(0.0);
+        let tilt = across.length().atan2(on.y).clamp(0.0, HOOK_TILT);
+        let level = Vec3::Y * tilt.cos() + across.normalize_or_zero() * tilt.sin();
+        let into = (-forearm.dot(self.wall.out)).atan2(on.length()).clamp(0.0, HOOK_INTO);
+        level * into.cos() - self.wall.out * into.sin()
+    }
+
+    /// The wrist for hand `side` hooked on a hold at `at`, its fingers
+    /// along `along` ([`Self::hook_along`]).
+    fn wrist_for(&self, side: usize, at: Vec3, along: Vec3) -> Vec3 {
+        at - self.hook_turn(side, along) * hook_lip(&self.body.grips[side])
     }
 
     /// The ankle for foot `side`, its ball on a hold at `at`, and its
@@ -482,7 +505,7 @@ impl FreeClimb {
     /// Whether hand `side` reaches a hold at `at` from hips at `hips`.
     fn hand_reaches(&self, side: usize, at: Vec3, hips: Vec3) -> bool {
         let shoulder = hips + self.turn * self.body.shoulders[side];
-        (self.wrist_for(side, at) - shoulder).length() <= ARM_REACH * self.body.arms[side]
+        (self.wrist_for(side, at, Vec3::Y) - shoulder).length() <= ARM_REACH * self.body.arms[side]
     }
 
     /// Whether foot `side` reaches a hold at `at` from hips at `hips`: not
@@ -856,11 +879,12 @@ impl FreeClimb {
             pose.root_translation = topping.from.root_translation.lerp(hang.root_translation, w);
             return pose;
         }
-        self.climbing_pose()
+        self.climbing_posed().0
     }
 
-    /// The climb's own pose ([`Self::pose`] but taking the lip).
-    fn climbing_pose(&self) -> LocalPose {
+    /// The climb's own pose ([`Self::pose`] but taking the lip), and which
+    /// way each hand's fingers go over its hold ([`Self::hook_along`]).
+    fn climbing_posed(&self) -> (LocalPose, [Vec3; 2]) {
         let rig = &self.rig;
         let hips = self.hips_now();
         let root = hips - self.turn * self.body.hips;
@@ -901,11 +925,18 @@ impl FreeClimb {
             let now = accumulate_world_rotations(&pose, rig)[ankle_bone];
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
-        // The arms: each hand hooked over its hold; getting on, raised
-        // forward round the shoulder to it.
+        // The arms: each hand hooked over its hold, its fingers on along
+        // its forearm ([`Self::hook_along`]); getting on, raised forward
+        // round the shoulder to it. First hooked fingers up, then turned
+        // toward the forearm the arm solved to: fingers up, an arm reaching
+        // in from the side bent its wrist 1.7 rad sideways.
+        let unarmed = pose;
+        let mut alongs = [Vec3::Y; 2];
+        for pass in 0..2 {
+        pose = unarmed;
         let at = forward_kinematics_on(&pose, rig);
         let wrists = [0, 1].map(|side| {
-            let hooked = self.wrist_for(side, targets[side].0);
+            let hooked = self.wrist_for(side, targets[side].0, alongs[side]);
             match getting_on {
                 Some(w) => {
                     let shoulder = at[ARMS[side].shoulder];
@@ -934,6 +965,7 @@ impl FreeClimb {
             let soft = knee + (most - knee) * ((length - knee) / (most - knee)).tanh();
             shoulder + off * (soft / length)
         });
+        let mut next = alongs;
         for side in 0..2 {
             // The elbow out and back from the wall, a little down, as a
             // hang's: the hands kept over the shoulders (a hand moving up
@@ -944,7 +976,12 @@ impl FreeClimb {
             let low = smoothstep(((at[ARMS[side].shoulder].y + LOCK_OFF.0 - targets_pose[side].y) / LOCK_OFF.1).clamp(0.0, 1.0));
             let pole = (rig.left() * (SIGN[side] * 0.7) - rig.forward() * 0.5 - Vec3::Y * (0.2 + 0.8 * low)).normalize();
             let (elbow, wrist) = solve_arm_toward_from(&mut pose, &at, ARMS[side], targets_pose[side], pole, rig);
-            turn_hand(&mut pose, rig, ARMS[side], self.body.hand_binds[side], back * self.hook_turn(side), getting_on.unwrap_or(1.0), (wrist - elbow).normalize_or_zero());
+            turn_hand(&mut pose, rig, ARMS[side], self.body.hand_binds[side], back * self.hook_turn(side, alongs[side]), getting_on.unwrap_or(1.0), (wrist - elbow).normalize_or_zero());
+            if pass == 0 {
+                next[side] = self.hook_along(self.turn * (wrist - elbow));
+            }
+        }
+        alongs = next;
         }
         if let Some(w) = getting_on {
             let s = smoothstep((w * GET_ON / GET_ON_EASE).clamp(0.0, 1.0));
@@ -990,7 +1027,7 @@ impl FreeClimb {
                 }
             }
         }
-        pose
+        (pose, alongs)
     }
 
     /// [`Self::pose`], each bone led ahead of its spring (`jump::lead_of`).
@@ -1069,9 +1106,10 @@ impl FreeClimb {
     /// where a held limb is meant to be.
     pub fn held_places(&self) -> [Option<Vec3>; 4] {
         let targets = self.targets();
+        let alongs = if self.topping.is_some() { [Vec3::Y; 2] } else { self.climbing_posed().1 };
         [0, 1, 2, 3].map(|limb| {
             let (at, held) = targets[limb];
-            held.then(|| if limb < LF { self.wrist_for(limb, at) } else { self.ankle_for(limb - LF, at).0 })
+            held.then(|| if limb < LF { self.wrist_for(limb, at, alongs[limb]) } else { self.ankle_for(limb - LF, at).0 })
         })
     }
 
@@ -1118,6 +1156,11 @@ mod tests {
         flight: f32,
         moves: usize,
         dynos: usize,
+        /// The most a held hand bends sideways at the wrist, and how far its
+        /// wrist flexes, least and most (negative bent back), radians (the
+        /// rig's own fingers' grips, `hand::wrist_bend`).
+        bend: f32,
+        flex: (f32, f32),
     }
 
     fn world(climb: &FreeClimb) -> BoneSet<Vec3> {
@@ -1156,9 +1199,12 @@ mod tests {
                 if matches!(climb.doing, Doing::Moving { limb, .. } if limb < LF) {
                     m.fewest = m.fewest.min(places.iter().filter(|p| p.is_some()).count());
                 }
+                let bends = crate::character::anim::hand::wrist_bend(&climb.pose(), &climb.rig, &crate::character::anim::hand::puppet_grips());
                 for (side, chain) in ARMS.iter().enumerate() {
                     if let Some(wrist) = places[side] {
                         m.hand_off = m.hand_off.max((now[chain.wrist] - wrist).length());
+                        m.bend = m.bend.max(bends[side].0);
+                        m.flex = (m.flex.0.min(bends[side].1), m.flex.1.max(bends[side].1));
                     }
                 }
                 for (side, &(_, _, ankle, _)) in LEGS.iter().enumerate() {
@@ -1184,6 +1230,7 @@ mod tests {
         let (stood, rig) = real_stood();
         let wall = HoldWall::grid(Vec3::new(0.0, 0.0, -0.6), Vec3::Z, 9, 18, 0.4, 0.3, 0.35);
         let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
+        climb.set_grips(crate::character::anim::hand::puppet_grips());
         let mut m = Climbed { fewest: 4, ..Default::default() };
         let mut frames = vec![world(&climb), world(&climb)];
         run(&mut climb, None, 1.5, &mut m, &mut frames);
@@ -1203,6 +1250,9 @@ mod tests {
         run(&mut climb, Some(-Vec2::Y), 9.0, &mut m, &mut frames);
         let down = mid.y - climb.hips.y;
         eprintln!("{m:?}; up {up:.2}, left {left:.2}, right {right:.2}, diagonal {diagonal:.2}, down {down:.2}");
+        // A held hand's fingers on along its forearm: kept straight up, a
+        // forearm reaching in from the side bent a wrist 1.7 rad.
+        assert!(m.bend < 0.6 && m.flex.0 > -0.9 && m.flex.1 < 1.3, "a held hand bent {:.2} rad sideways, flexed {:.2}..{:.2}", m.bend, m.flex.0, m.flex.1);
         assert!(up > 1.2, "climbed up only {up:.2} m in 9 s");
         assert!(left > 0.8 && right > 0.8, "aside only {left:.2} and {right:.2} m in 6 s");
         assert!(diagonal.y > 0.4 && wall.place(diagonal + wall.face).0.x > 0.3, "diagonally only {diagonal:.2}");

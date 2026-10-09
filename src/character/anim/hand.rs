@@ -337,6 +337,26 @@ pub struct HandGrip {
     pub along: Vec3,
 }
 
+impl HandGrip {
+    /// This grip, measured in its hand's own frame (as [`grip_of`] and
+    /// [`RelaxedHands::grips`] give it), turned into the hand's rest frame
+    /// as the arm IK's hand turn reads it (`armik::frame_turn`, `turn_hand`):
+    /// by the hand's accumulated bind rotation `bind`. Taken unturned, the
+    /// fingers ran along the hand bone's own `+Y`, a quarter turn off the
+    /// forearm, and every hand on a bar or pole bent 90° at the wrist.
+    pub fn bound(self, bind: Quat) -> Self {
+        Self { bar: bind * self.bar, palm: (bind * self.palm).normalize(), along: (bind * self.along).normalize() }
+    }
+}
+
+/// Both hands' grips ([`HandGrip::bound`]) on `rig`, in the rest frame:
+/// left, right.
+pub fn bound_grips(grips: [Option<HandGrip>; 2], rig: &super::rig::RigGeometry) -> [Option<HandGrip>; 2] {
+    let binds = super::rig::accumulate_bind_rotations(rig);
+    let wrists = [crate::character::skeleton::Bone::LeftHand, crate::character::skeleton::Bone::RightHand];
+    [0, 1].map(|side| grips[side].map(|grip| grip.bound(binds[wrists[side]])))
+}
+
 /// A hand's grip from its four fingers' binds (`palm` its normal): the bar
 /// they close round ([`gripped`]), at the middle of their four centres.
 /// `None` without all four.
@@ -533,6 +553,29 @@ pub fn relax_hands(
             commands.entity(root).insert(relaxed);
         }
     }
+}
+
+/// How each hand in `pose` bends at the wrist off its forearm's line, its
+/// fingers laid flat as `grips` has them (in each hand's own frame): left,
+/// right, each (sideways, toward the palm), radians. Sideways is the
+/// fingers' angle off the forearm in the palm's plane; toward the palm is
+/// the wrist's flexion (negative bent back). Read straight off the hand's
+/// world rotation, not through the bind turn the movers apply
+/// ([`bound_grips`]): through it, the check passed with that turn disabled.
+#[cfg(test)]
+pub(crate) fn wrist_bend(pose: &super::rig::LocalPose, rig: &super::rig::RigGeometry, grips: &[Option<HandGrip>; 2]) -> [(f32, f32); 2] {
+    use crate::character::skeleton::Bone;
+    let world = super::rig::accumulate_world_rotations(pose, rig);
+    let at = super::rig::forward_kinematics_on(pose, rig);
+    let arms = [(Bone::LeftForeArm, Bone::LeftHand), (Bone::RightForeArm, Bone::RightHand)];
+    [0, 1].map(|side| {
+        let Some(grip) = grips[side] else { return (0.0, 0.0) };
+        let (elbow, wrist) = arms[side];
+        let (fingers, palm) = (world[wrist] * grip.along, world[wrist] * grip.palm);
+        let forearm = (at[wrist] - at[elbow]).normalize();
+        let level = (forearm - palm * forearm.dot(palm)).normalize_or(fingers);
+        (fingers.angle_between(level), (-forearm.dot(palm)).clamp(-1.0, 1.0).asin())
+    })
 }
 
 /// `puppet_base`'s hands' grips ([`grip_of`]), from its glTF's finger

@@ -171,3 +171,4 @@ caught a pole 1.1 m past the edge and held at 1.78 m.
 - [A bar is swung on, pumped, and let go of at a bar ahead](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md) — contrast: step 9's horizontal bar.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — contrast: the hand grip and shoulder lift this reuses, on discrete holds.
 - [A near-straight leg is bent toward its kneecap](../ik-and-locomotion/a-near-straight-leg-bends-toward-its-kneecap.md) — same-trap: a two-bone solve's hinge near straight.
+- [A hand grip is measured in the hand's own frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md) — deeper (2026-10-09): the grips were taken unturned, and a hand kept level round the pole bent 0.71 rad sideways and 0.6 back; it now turns round the pole and tilts toward its forearm (`hand_turn`).

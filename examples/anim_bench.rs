@@ -135,6 +135,8 @@ enum Gait {
     /// A running leap off a springboard at 4 m/s: the leap to its top,
     /// then the fall landing.
     Springboard,
+    /// Crossing monkey bars hand over hand: two hand moves.
+    Monkey,
 }
 
 fn main() {
@@ -183,7 +185,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -400,6 +402,15 @@ fn main() {
     };
     // A pole (`parkour::pole`): the clock is a climbing cycle up, from its
     // start.
+    // Monkey bars (`parkour::monkey`): the clock is two hand moves, from
+    // the second.
+    let monkey = matches!(gait, Gait::Monkey).then(|| {
+        use migera::character::anim::parkour::monkey::{Crossing, MonkeyBars, STEP};
+        let bars = MonkeyBars::new(rig.forward() * 0.3 + Vec3::Y * 2.3, rig.forward(), 0.4, 8);
+        let mut crossing = Crossing::get_on(&bars, Crossing::spot(&bars, 0.0, &stood, &rig), &stood, &rig);
+        crossing.advance(0.8 + STEP);
+        crossing
+    });
     let poling = match gait {
         Gait::Pole => {
             use migera::character::anim::parkour::pole::{PoleAsk, Pole, Poling};
@@ -704,6 +715,11 @@ fn main() {
             now.advance(cycle * slide.end());
             Some((now.pose_led(&springs), None))
         }
+        _ if let Some(crossing) = &monkey => {
+            let mut now = crossing.clone();
+            now.advance(cycle * 2.0 * migera::character::anim::parkour::monkey::STEP);
+            Some((now.pose_led(&rig, &springs), None))
+        }
         _ if let Some(poling) = &poling => {
             let mut now = poling.clone();
             now.advance(Some(migera::character::anim::parkour::pole::PoleAsk::Up), cycle * migera::character::anim::parkour::pole::CYCLE);
@@ -854,6 +870,7 @@ fn main() {
         Gait::Faith => "   a leap of faith from 6 m into a pile".to_string(),
         Gait::Tuck => "   a standing jump tucking its knees over a 0.55 m post".to_string(),
         Gait::Springboard => "   a 4 m/s run's leap off a springboard".to_string(),
+        Gait::Monkey => "   crossing monkey bars hand over hand".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -1012,6 +1029,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
         Some("tuck") => Gait::Tuck,
         Some("springboard") => Gait::Springboard,
+        Some("monkey") => Gait::Monkey,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

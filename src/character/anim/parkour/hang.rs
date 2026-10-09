@@ -580,11 +580,9 @@ impl Hanging {
     /// The rig's own hand grips (each hand's own frame), turned by each
     /// hand's bind into the frame the hang uses.
     fn take_grips(&mut self, grips: [Option<HandGrip>; 2], rig: &RigGeometry) {
-        let binds = accumulate_bind_rotations(rig);
-        for side in 0..2 {
-            if let Some(grip) = grips[side] {
-                let bind = binds[ARMS[side].wrist];
-                self.body.grips[side] = HandGrip { bar: bind * grip.bar, palm: (bind * grip.palm).normalize(), along: (bind * grip.along).normalize() };
+        for (side, grip) in crate::character::anim::hand::bound_grips(grips, rig).into_iter().enumerate() {
+            if let Some(grip) = grip {
+                self.body.grips[side] = grip;
             }
         }
     }

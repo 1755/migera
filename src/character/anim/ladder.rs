@@ -1055,11 +1055,9 @@ impl Climbing {
     /// each hand's own frame, on `rig`): each hand placed so its fingers
     /// close round its rung. Without them, an estimate from the forearm.
     pub fn set_grips(&mut self, grips: [Option<super::hand::HandGrip>; 2], rig: &RigGeometry) {
-        let binds = accumulate_bind_rotations(rig);
-        for side in 0..2 {
-            if let Some(grip) = grips[side] {
-                let bind = binds[ARMS[side].wrist];
-                self.body.grips[side] = super::hand::HandGrip { bar: bind * grip.bar, palm: (bind * grip.palm).normalize(), along: (bind * grip.along).normalize() };
+        for (side, grip) in super::hand::bound_grips(grips, rig).into_iter().enumerate() {
+            if let Some(grip) = grip {
+                self.body.grips[side] = grip;
             }
         }
     }

@@ -160,3 +160,4 @@ a ladder's climb 53, a walk 23.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — prerequisite: the shoulder lift, hand turn and led pose this shares (`armik`).
 - [A jump is planned as its centre of mass's path](../ik-and-locomotion/a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the jump caught here, and its root motion (`travelled_at`).
 - [Parkour movement data](./parkour-movement-data.md) — context: why the catch and braced hang have no measured timings.
+- [A hand grip is measured in the hand's own frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md) — same-trap: the grips' frame again, in three later movers, and a held hand following its forearm.

@@ -188,3 +188,4 @@ the pole (39 µs), the bar swing (63) and the hang (58).
 - [A ledge is caught near the top of a jump and hung from](./a-ledge-is-caught-near-the-top-of-a-jump-and-hung-from.md) — prerequisite: the hang a top-out becomes.
 - [A pole is climbed as an inchworm, hands over a leg clamp](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md) — same-trap: a hand swept round the shoulder, and the cost of posing led clones.
 - [A near-straight leg is bent toward its kneecap](../ik-and-locomotion/a-near-straight-leg-bends-toward-its-kneecap.md) — same-trap: a two-bone solve's hinge near straight, here the arms.
+- [A hand grip is measured in the hand's own frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md) — deeper (2026-10-09): the grips were taken unturned, and the hooked hand, kept fingers up and palm flat, bent the wrist 1.7 rad sideways and 1.05 back; it now follows its forearm (`hook_along`).

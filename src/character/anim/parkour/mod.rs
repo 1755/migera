@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod hang;
 pub mod holds;
 pub mod lean;
+pub mod monkey;
 pub mod perch;
 pub mod pole;
 pub mod precision;
