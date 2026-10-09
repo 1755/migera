@@ -397,7 +397,7 @@ fn main() {
                 let origin = hit - forward * WallRun::kick_takeoff(start, slant, &stood, &rig);
                 WallRun::kick(&wall, &target, origin, yaw, start, 0.0, &stood, &rig).expect("a kick toward a 2.5 m lip")
             };
-            let wall = run.lip();
+            let wall = run.lip().expect("a lip to catch");
             let mut probe = run.clone();
             while !probe.is_released() {
                 probe.advance(DT);

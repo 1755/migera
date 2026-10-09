@@ -41,6 +41,41 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 8 finished: kicks chained wall to wall up a shaft
+
+A lip out of one kick's reach, with a wall facing across a 1.6-2.4 m gap,
+is reached by two kicks (note: [a wall is kicked off toward a lip round a
+corner](docs/knowledge/character-animation/parkour/a-wall-is-kicked-off-toward-a-lip-round-a-corner.md),
+"Chaining"):
+- `WallRun::kick_across` flies to the far wall's face (`KickTarget::Wall`),
+  rising 3 m/s and meeting it as it tops out;
+- `WallRun::kick_from_air`, met by that wall in the air, plans from the
+  fall advanced 0.2 s (the near foot coming onto the face meanwhile) and
+  kicks off it toward the lip.
+
+`plan_on` now builds a `Contact` (from a take-off or from the air), and
+`finish` plans the rest for both. The walker kicks across when the direct
+kick won't plan and `WallRun::across_from` finds a facing wall; it holds
+the chain (`kick_chain`) and tries the kick from the air each airborne
+frame.
+
+- **Fixed on the way:**
+  - a leave point above a near lip's catch (7 g) is now kept 0.1 m under
+    it;
+  - a kick's flight now lasts 0.3 s at least (a short one crossed at
+    3.9 m/s, 6 g); all 90 single kicks now plan;
+  - a foot on the wall at once (43-58 m/s) is now brought on over 0.2 s.
+- **Headless** (shafts 1.8-2.2 m wide, lips 3.0-3.4 m, 0.9-1.0 rad off
+  square, 3.5-4.5 m/s; 27 of 27): two kicks and a catch each; feet held
+  within 0.0008 mm; nothing into a wall; no joint over 12.4 m/s; braking
+  at most 2.9 g.
+- **Live**: up a 2 m shaft to a 3.2 m lip, across, off the far wall,
+  caught and hanging.
+- **Cost:** unchanged (`--gait wall-kick` 50 µs, `wall-run` 33 µs).
+
+Step 8 is built. 1267 library tests pass; clippy is clean with and without
+`real_rig`.
+
 ### The ladder's pattern no longer hangs on float noise
 
 Normalizing `rig::delta_after_world_turn` (a change under 1e-6) had failed

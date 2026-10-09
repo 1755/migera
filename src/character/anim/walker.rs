@@ -447,6 +447,9 @@ pub struct WalkerState {
     pub fall_to: Option<f32>,
     /// Running up a wall (`parkour::wall`), until it lets go into a fall.
     pub wall_run: Option<super::parkour::wall::WallRun>,
+    /// Kicked across to another wall to chain a kick off it: that wall and
+    /// the lip to kick to from it.
+    pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
     /// Going round a wall ([`way_round`]).
     pub detour: Option<Detour>,
     /// The ledge it walks under, the spot it jumps from, and whether it has
@@ -497,6 +500,7 @@ impl WalkerState {
             hanging: None,
             falling: None,
             wall_run: None,
+            kick_chain: None,
             fall_to: None,
             detour: None,
             ledge_spot: None,
@@ -1766,10 +1770,24 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         let within = |near: f32| (best - nearer..=best + farther).contains(&near);
                         let aim = best + 0.5 * (farther - nearer);
                         let next = face.near - 2.0 * step;
+                        // Straight to the lip; out of one kick's reach, across
+                        // to the wall facing this one, to kick off that in
+                        // turn (chaining).
+                        let across = WallRun::across_from(&walker.ledges, &wall, &target);
+                        let mut chained = None;
                         let kick = (leg == wanted && within(face.near))
-                            .then(|| WallRun::kick(&wall, &target, origin, state.facing.yaw, start, foot_ik.pelvis_drop, &stood, &rig))
+                            .then(|| {
+                                WallRun::kick(&wall, &target, origin, state.facing.yaw, start, foot_ik.pelvis_drop, &stood, &rig).or_else(|| {
+                                    let other = across?;
+                                    chained = Some((other, target));
+                                    WallRun::kick_across(&wall, &other, origin, state.facing.yaw, start, foot_ik.pelvis_drop, &stood, &rig)
+                                })
+                            })
                             .flatten()
                             .filter(|_| !within(next) || (face.near - aim).abs() <= (next - aim).abs());
+                        if kick.is_some() {
+                            state.kick_chain = chained;
+                        }
                         if let Some(mut run) = kick {
                             run.advance(since);
                             state.stride.stepped = Vec3::ZERO;
@@ -2124,6 +2142,29 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
                 falling.against(&ledges, &rig);
                 state.falling = Some(falling);
+            }
+            // Chaining kicks (`parkour::wall`): flying across from a kick,
+            // met by the wall kicked across to, it kicks off that from the
+            // air toward the lip; landed, the chain is given up.
+            if let Some((across, lip)) = state.kick_chain
+                && let Some(falling) = state.falling.as_ref()
+            {
+                use super::parkour::wall::{KickTarget, WallRun};
+                if !falling.airborne() {
+                    state.kick_chain = None;
+                } else if let Some(run) = WallRun::kick_from_air(&across, KickTarget::Lip(lip), falling, foot_ik.pelvis_drop, &stood, &rig) {
+                    target.pose = run.pose();
+                    state.locomotion.position = run.root();
+                    state.facing.yaw = run.facing();
+                    state.facing.target_yaw = state.facing.yaw;
+                    foot_ik.planted = [false; 2];
+                    foot_ik.landing = None;
+                    foot_ik.touchdown = None;
+                    legs_free = true;
+                    state.wall_run = Some(run);
+                    state.falling = None;
+                    state.kick_chain = None;
+                }
             }
             if let Some(falling) = state.falling.as_mut() {
                 if !started {

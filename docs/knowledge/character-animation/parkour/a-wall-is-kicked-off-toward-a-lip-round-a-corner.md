@@ -1,6 +1,6 @@
 ---
 title: A wall is kicked off toward a lip round a corner
-description: "Step 8, second part: a tic-tac is the run up's take-off and foot on the wall, the hips leaving where a steady push brings them, then a fall aimed at another wall's lip. It catches lips 2.3-2.7 m high from 0.6-0.9 rad off square, taken off up to 0.2 m near or 0.1 m far. Read before changing WallRun::kick."
+description: "Step 8, second part: a tic-tac is the run up's take-off and foot on the wall, the hips leaving where a steady push brings them, then a fall aimed at another wall's lip; chained wall to wall up a shaft by a kick from the air. Read before changing WallRun::kick, kick_across or kick_from_air."
 type: decision
 status: current
 tags:
@@ -87,6 +87,36 @@ hold. The walker:
   middle, one more or fewer for the right foot to land there (as a lazy
   vault forces its leg).
 
+## Chaining: wall to wall up a shaft
+
+A lip out of one kick's reach, with a wall facing across a 1.6-2.4 m gap,
+is reached by two kicks:
+- **`WallRun::kick_across`**: the first kick flies to the far wall's face
+  rather than to a lip (`KickTarget::Wall`), rising 3 m/s and meeting it
+  0.6 m out as the flight tops out, turned to face it.
+- **`WallRun::kick_from_air`**: in the air, met by the far wall, it kicks
+  off that toward the lip. It plans from the fall advanced `AIR_ONTO`
+  (0.2 s): the near foot comes onto the face, as high as the hips, while
+  the fall flies on. Then the wall phase, the flight and the catch are
+  the running kick's own (`WallRun::finish`, shared by every way a foot
+  meets a wall).
+
+The walker kicks across when the direct kick won't plan and
+`WallRun::across_from` finds a wall facing it. It holds the chain
+(`kick_chain`) and tries the kick from the air each airborne frame. The
+kicked wall may be the lip's own (`WallRun::kick_off` takes it when no
+other wall is ahead).
+
+Two plan rules came from the chain and apply to every kick:
+- **The leave point stays under the catch.** The longest push the leg
+  allowed left the hips 0.67 m up, above a lip not far over the far wall's
+  meeting. The flight then fell into its catch and the hips braked at 7 g.
+  The search now takes the longest push that also leaves at least 0.1 m
+  under the catch.
+- **A kick's flight lasts 0.3 s at least**, going over its top into the
+  catch if need be. Timed to its top alone, a lip 0.1 m above and 0.55 m
+  across was crossed at 3.9 m/s and the hips braked at 6 g.
+
 ## Alternatives considered
 
 - **The run up's leave point** (0.42 m out, as high as the leg reaches),
@@ -125,6 +155,13 @@ hold. The walker:
 - **The walker from a standstill 6 m away** accelerated through its last
   steps, mis-planned the foot, and dropped the ask at the wall. A kick
   wants a run-in long enough to settle the pace (9 m in the gallery).
+- **A kick from the air with the foot on the wall at once** jumped a toe
+  43-58 m/s in a frame. Over 0.15 s, the knee went 14-15 m/s; over 0.2 s,
+  within bounds.
+- **A shaft narrower than the run's take-off** put the run's start inside
+  the far wall (a toe 0.45 m in at the first frame): at 0.9 rad off square
+  the take-off is 1.3 m across from the near face. Up a shaft, the run in
+  goes along it.
 
 ## Consequences
 
@@ -137,7 +174,14 @@ the best; 89 of 90 planned, the one refused 0.2 m far at 3.1 g):
 - the hips brake at 1.6-2.9 g on the wall;
 - every one catches its lip.
 
-**Refused**: off the nearer foot, 1.2 rad off square, a 3.2 m lip.
+**Refused**: off the nearer foot, 1.2 rad off square, a 3.2 m lip. (With
+the 0.3 s floor on the flight, all 90 now plan.)
+
+**Chained** (shafts 1.8, 2.0 and 2.2 m wide; near lips 3.0, 3.2 and 3.4 m;
+0.9-1.0 rad off square at 3.5-4.5 m/s; 27 cases): every one kicks across
+and back and catches its lip; feet held within 0.0008 mm; nothing into
+either wall; no joint over 12.4 m/s; braked at most 2.9 g. Live: up a
+2 m shaft to a 3.2 m lip, across, off the far wall, caught and hanging.
 
 **Live**: at 4 m/s, 0.75 rad off square, at a 4 m wall, toward a 2.5 m lip
 at right angles to it. It adjusted its steps, put the near foot on the face
@@ -150,8 +194,8 @@ fall facing the target wall: its knee passes and the turn.
 
 ## Revisit when
 
-- **Kicking to a lip straight across a corridor**, or **chaining kicks**
-  (wall to wall): the catch point and the turn assume a lip to the side.
+- **Chains longer than two kicks**: the walker holds one chain; a lip two
+  kicks away needs the chain to kick across again.
 - **A kick off without a lip to catch** (onto a top, or just away): not
   built; the plan needs a catch.
 - **A run-in too short to set the pace**: the walker could fall back to a

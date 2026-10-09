@@ -251,7 +251,7 @@ its API, its tests, and when it is done.
   wall](./a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md) (two steps,
   then on), and [the slide down a wall from a braced
   hang](./a-wall-is-slid-down-as-a-braked-fall.md). Kicks chained wall to
-  wall are not built yet.
+  wall up a shaft followed (the kick's note). Step 8 is built.
 
 ### Step 9: bars, poles and ropes
 
@@ -352,8 +352,8 @@ its API, its tests, and when it is done.
   along a wall, the same day ([its
   note](./a-wall-is-run-along-on-two-steps-of-a-lifted-leap.md)); the slide
   down a wall, the same day ([its
-  note](./a-wall-is-slid-down-as-a-braked-fall.md)). Chained kicks: not
-  built.
+  note](./a-wall-is-slid-down-as-a-braked-fall.md)); chained kicks the same
+  day. Built.
 - Steps 9-10: not started.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,
