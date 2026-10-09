@@ -1288,6 +1288,9 @@ fn steer_the_walker(
         if walker.hooks != hangs.hooks {
             walker.hooks = hangs.hooks.clone();
         }
+        if walker.slopes != hangs.slopes {
+            walker.slopes = hangs.slopes.clone();
+        }
         if !hangs.corner_fired
             && let (Some(at), Some(corner)) = (hangs.corner_at, hangs.corner)
             && time.elapsed_secs() >= at
@@ -1622,6 +1625,12 @@ struct HangSchedule {
     /// walker and its ground read it through.
     platform: Option<(migera::character::anim::parkour::platform::Platform, f32, f32)>,
     platforms: migera::character::anim::parkour::platform::Platforms,
+    /// Slopes to slide down (`--roof X,Z,HEADING,TOP,WIDTH,RUN,DROP`: its
+    /// top edge's middle at X,Z, TOP high, falling away along HEADING,
+    /// WIDTH along its edge, RUN level and DROP down to its eave, over a
+    /// house as high as the eave whose wall is a ledge to catch;
+    /// `--steep` the same, a steep face slid down leant back).
+    slopes: Vec<migera::character::anim::parkour::slope::Slope>,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1757,6 +1766,19 @@ impl HangSchedule {
                     }
                 }
                 "--corner-at" => schedule.corner_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--roof" | "--steep" => {
+                    use migera::character::anim::parkour::slope::{Slope, SlopeKind};
+                    let kind = if arg == "--roof" { SlopeKind::Roof } else { SlopeKind::Face };
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, top, width, run, drop] = numbers[..] {
+                        let slope = Slope::new(Vec3::new(x, top, z), approach::direction_of(heading.to_radians()), width, run, drop, kind);
+                        // A house under a roof, its wall the eave's ledge.
+                        if kind == SlopeKind::Roof && slope.foot().y > 0.0 {
+                            schedule.others.push(Ledge { depth: slope.run, ..slope.eave(slope.foot().y) });
+                        }
+                        schedule.slopes.push(slope);
+                    }
+                }
                 "--platform" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x, z, heading, top, length, width, amplitude, period] = numbers[..] {
@@ -2087,6 +2109,25 @@ struct GallerySpringboard;
 const SPRINGBOARD_WIDE: f32 = 0.45;
 const SPRINGBOARD_THICK: f32 = 0.05;
 
+/// The gallery's slopes, as drawn: each a plank 0.1 m thick under its
+/// surface (a roof's house is drawn as its eave's block).
+#[derive(Component)]
+struct GallerySlope;
+
+fn place_slopes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GallerySlope>>) {
+    if hangs.slopes.is_empty() || !drawn.is_empty() {
+        return;
+    }
+    let tiles = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.3, 0.25), perceptual_roughness: 0.85, ..default() });
+    for slope in &hangs.slopes {
+        let length = (slope.run * slope.run + slope.drop * slope.drop).sqrt();
+        let pitch = slope.grade().atan();
+        let rotation = Quat::from_rotation_y(slope.down.x.atan2(slope.down.z)) * Quat::from_rotation_x(pitch);
+        let middle = slope.top + slope.down * (0.5 * slope.run) - Vec3::Y * (0.5 * slope.drop) - slope.normal() * 0.05;
+        commands.spawn((GallerySlope, Mesh3d(meshes.add(Cuboid::new(slope.width, 0.1, length))), MeshMaterial3d(tiles.clone()), Transform::from_translation(middle).with_rotation(rotation)));
+    }
+}
+
 /// The gallery's moving platform, as drawn: a slab this deep (no deeper
 /// than its top is high).
 #[derive(Component)]
@@ -2234,7 +2275,14 @@ fn place_ledge(
             Some(_) => Box::new(migera::character::anim::parkour::platform::PlatformGround { under, platforms: hangs.platforms.clone() }),
             None => under,
         };
-        commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround::new(under, ledges.clone()))));
+        let on_ledges: Box<dyn migera::character::anim::ground::GroundProbe> = Box::new(migera::character::anim::parkour::LedgeGround::new(under, ledges.clone()));
+        // With slopes, on them too, over the house under a roof.
+        let ground: Box<dyn migera::character::anim::ground::GroundProbe> = if hangs.slopes.is_empty() {
+            on_ledges
+        } else {
+            Box::new(migera::character::anim::parkour::slope::SlopeGround { under: on_ledges, slopes: hangs.slopes.clone() })
+        };
+        commands.entity(walker).insert(AnimGround(ground));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
     for ledge in ledges.iter().filter(|&&ledge| Some(ledge) != plank) {
@@ -3178,7 +3226,7 @@ fn main() {
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
         .add_systems(Update, move_platform.before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey, place_flagpole).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey, place_flagpole, place_slopes).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

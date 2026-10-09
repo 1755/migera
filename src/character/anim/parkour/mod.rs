@@ -19,6 +19,7 @@ pub mod platform;
 pub mod pole;
 pub mod precision;
 pub mod skid;
+pub mod slope;
 pub mod spin;
 pub mod springboard;
 pub mod squeeze;

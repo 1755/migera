@@ -236,11 +236,21 @@ pub struct Walker {
     /// carried with it; leaving it, it carries its velocity; falling onto
     /// one, it lands on it where it is.
     pub platforms: super::parkour::platform::Platforms,
+    /// Slopes too steep to walk (`parkour::slope`: roofs, steep faces), on
+    /// its ground too (`SlopeGround`): walked or run onto one down it, it
+    /// slides down it on its feet; run out at its foot, it stands; at a
+    /// drop, it goes over the edge falling (catching the eave if asked to
+    /// catch and it is among its ledges); asked to jump, it leaps off.
+    pub slopes: Vec<super::parkour::slope::Slope>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
 /// on the spot ([`Walker::skid`]).
 pub const SKID_BACK: f32 = 2.4;
+
+/// Going over a slope's edge to catch its eave, the turn round to face it
+/// takes this long, seconds (`parkour::slope`).
+const SLOPE_CATCH_TURN: f32 = 0.3;
 
 /// Off a top it jumped onto by this far, metres, it no longer balances on
 /// it ([`Walker::onto`]).
@@ -290,6 +300,7 @@ impl Default for Walker {
             corner: None,
             hooks: Vec::new(),
             platforms: Default::default(),
+            slopes: Vec::new(),
         }
     }
 }
@@ -591,6 +602,8 @@ pub struct WalkerState {
     pub holds_spot: Option<Vec3>,
     /// Skidding to a stop or round from a run (`parkour::skid`).
     pub skid: Option<super::parkour::skid::Skid>,
+    /// Sliding down a slope too steep to walk (`parkour::slope`).
+    pub sloping: Option<super::parkour::slope::SlopeSlide>,
     /// Jumping onto a small top (`parkour::precision`), and the top it
     /// stands on after, balancing.
     pub onto: Option<Vec3>,
@@ -699,6 +712,7 @@ impl WalkerState {
             free_climbing: None,
             holds_spot: None,
             skid: None,
+            sloping: None,
             onto: None,
             perched: None,
             spinning: None,
@@ -731,7 +745,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some() || self.flagging.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some() || self.monkey.is_some() || self.flagging.is_some() || self.sloping.is_some()
     }
 
     /// Leaping off a springboard, the board and how far it is bent under the
@@ -2077,6 +2091,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // reach them and the toe tips free; landing, each locks as it
         // touches.
         let asked_jump = if crouched { None } else { walker.jump.take() };
+        // Slid off a slope's edge this frame: its fall already moved on by
+        // the rest of the frame (`parkour::slope`).
+        let mut slid_off = false;
         let mut let_go = false;
         // Run up a wall from this frame's contact (below): posed from the
         // next.
@@ -2409,6 +2426,26 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 {
                     state.skid = Some(skid);
                     state.stride.stepped = Vec3::ZERO;
+                    started = true;
+                }
+            }
+            // A slope too steep to walk (`parkour::slope`): walked or run onto
+            // it down it, near its top edge, it slides from this frame's pose.
+            if !walker.slopes.is_empty() && state.jump.is_none() && state.skid.is_none() && !state.on_holds() {
+                let velocity = state.locomotion.root_velocity.with_y(0.0);
+                let root = state.locomotion.position + state.facing.rotation() * state.stride.stepped;
+                let sample = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                // Asked to catch, braking to come to a drop's edge slowly
+                // enough to catch its eave.
+                if let Some(slide) = walker
+                    .slopes
+                    .iter()
+                    .find_map(|slope| super::parkour::slope::SlopeSlide::begin(slope, root, state.facing.yaw, velocity, &target.pose, &sample, &stood, &rig))
+                    .map(|slide| if walker.catch { slide.braking_to_catch() } else { slide })
+                {
+                    state.locomotion.position = root;
+                    state.stride.stepped = Vec3::ZERO;
+                    state.sloping = Some(slide);
                     started = true;
                 }
             }
@@ -3217,13 +3254,64 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     let_go = true;
                 }
             }
+            // Sliding down a slope (`parkour::slope`): posed as planned, the
+            // root riding its hips. Run out, it stands. At a drop it goes
+            // over the edge as a fall at the hips' velocity, moved on by the
+            // rest of the frame: leaping up off it if a jump was asked while
+            // sliding; asked to catch, turning round in the air to face the
+            // eave and catch it (as any fall catches a ledge it is given).
+            if asked_jump.is_some()
+                && let Some(slide) = state.sloping.as_mut()
+            {
+                slide.leap();
+            }
+            if let Some(slide) = state.sloping.as_mut() {
+                let before = slide.elapsed();
+                slide.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => slide.pose_led(&springs.0),
+                    None => slide.pose(),
+                };
+                state.locomotion.position = slide.root();
+                state.facing.yaw = slide.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if slide.is_done() && slide.ends_at_drop() {
+                    let leftover = (before + dt - slide.end()).max(0.0);
+                    let root = slide.root();
+                    let sample = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                    let below = sample(root.with_y(slide.slope().foot().y - 0.05)).unwrap_or(0.0);
+                    let mut falling = super::parkour::Falling::off(root, slide.facing(), slide.velocity(), &slide.pose(), below, foot_ik.pelvis_drop, &stood, &rig);
+                    if walker.catch && !slide.leaps() {
+                        falling.spin_round(std::f32::consts::PI, SLOPE_CATCH_TURN, &rig);
+                    }
+                    falling.land_on(&sample);
+                    let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                    falling.against(&ledges, &rig);
+                    falling.advance(leftover);
+                    state.falling = Some(falling);
+                    state.sloping = None;
+                    slid_off = true;
+                } else if slide.is_done() {
+                    state.sloping = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
+                    let_go = true;
+                }
+            }
         }
         // Over an edge (`parkour::fall`): from the gait's pose and the root's
         // velocity it falls to the ground found below and lands, posed off
         // the floor, the root riding its hips; stood again, it walks on.
         if let Some(rig) = foot_ik.rig.clone() {
             // Started from this frame's pose, it moves on from the next.
-            let mut started = leapt;
+            let mut started = leapt || slid_off;
             // Walked off an edge: the fall begins where the root was before
             // this frame's travel, so it goes this frame's way at once (begun
             // still, the body stood still a frame: a 5.7 cm change of step).
@@ -3717,10 +3805,11 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<RiddenRig>) {
             // run, the run's clock goes on under it, and its velocity would
             // carry the body a second time.
             _ if state.jump.is_some() || std::mem::take(&mut state.stride.given) => Vec3::ZERO,
-            // Falling or running up a wall, where it is is the move's
-            // (`parkour::Falling::root`), set each frame: the gait's motion
-            // added on was a frame's lag.
-            _ if state.falling.is_some() || state.wall_run.is_some() => {
+            // Falling, running up a wall or sliding down a slope, where it is
+            // is the move's (`parkour::Falling::root`), set each frame: the
+            // gait's motion added on was a frame's lag (sliding, its first
+            // frame went 4.5 cm too far).
+            _ if state.falling.is_some() || state.wall_run.is_some() || state.sloping.is_some() => {
                 state.stride.stepped = Vec3::ZERO;
                 Vec3::ZERO
             }

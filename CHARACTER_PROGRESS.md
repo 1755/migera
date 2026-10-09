@@ -41,6 +41,46 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 18 (last part): roof and steep-face slides
+
+Walked or run onto a slope too steep to walk (`Walker::slopes`), it
+slides down on its feet (`parkour::slope`):
+- a roof low, a hand trailing;
+- a steep face leant back, the arms out.
+
+The speed is `g(sin θ − μ cos θ) − k w²`, integrated once at a fixed step,
+on a path rounded over the creases (the feet's never under the surface).
+At its foot:
+- run out, it brakes and stands;
+- at a drop, it goes over as a fall;
+- asked to jump, it is pushed up over the last 0.2 s;
+- asked to catch, it brakes to 1.2 m/s, turns in the air and hangs from
+  the eave.
+
+Step 18 is done. Note: [a steep slope is slid down on the feet as a
+block](docs/knowledge/character-animation/parkour/a-steep-slope-is-slid-down-on-the-feet-as-a-block-with-friction.md).
+
+- **Fixed on the way:**
+  - feet on the true surface (a 12 cm dive at the top edge);
+  - an impulsive leap (6 cm);
+  - catching at speed (1 m out);
+  - friction at the flat top edge;
+  - the reach clamp under standing's (8 cm);
+  - the gait's travel on the first frame (4.5 cm).
+- **Headless:**
+  - speed against the closed form to 0.01 m/s;
+  - feet on the surface to 4 mm;
+  - the roof's hand within 3.6 cm;
+  - changes of step within the gait's own plus 1 cm;
+  - the hand-off velocity to 5 cm/s.
+- **Live** (BRP; gizmos Left and Front, mesh):
+  - down a roof and off its eave, landed;
+  - leapt off it;
+  - with `--catch`, hung from the eave;
+  - down a 50° face, ran out and stood.
+- **Gallery:** `--roof` and `--steep X,Z,HEADING,TOP,WIDTH,RUN,DROP`.
+- **Bench:** `--gait roof-slide` 29 µs a character, `face-slide` 22 µs.
+
 ### Parkour, step 18 (second part): moving platforms
 
 A walker stands, walks and jumps on a moving platform, and walks or

@@ -239,9 +239,12 @@ climbing is the heart of the style; perches and agility make it feel right.
   [a corner swing](./a-corner-post-is-swung-round-as-a-running-leap-bent-round-it.md).
   Not built: a corner swing past a quarter turn, a flagpole's release
   aimed at a ledge.
-- **Step 18** under way (2026-10-09):
+- **Step 18** built (2026-10-09):
+  [roof and steep-face slides](./a-steep-slope-is-slid-down-on-the-feet-as-a-block-with-friction.md),
   [a long fall's loop](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md),
   [moving platforms](./a-moving-platform-is-ridden-in-its-own-frame.md).
+  Not built: landing on a slope from a fall, steering on a slope, a
+  turning platform.
 - Steps 14 and 15 not started.
 
 ## Related
