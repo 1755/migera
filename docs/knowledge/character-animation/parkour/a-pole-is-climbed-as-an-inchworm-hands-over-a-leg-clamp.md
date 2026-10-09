@@ -1,6 +1,6 @@
 ---
 title: A pole is climbed as an inchworm, hands over a leg clamp
-description: "Step 9, second part: a vertical pole is jumped onto, the hands one above the other and the feet clamping it, then climbed in 0.6 m cycles of 1.8 s (the arms pull as the legs fold up, the clamped legs stand as the hands go up one over the other). It is also climbed down, slid down braked, gone round, and let go of. The stroke is bounded by the hands' reach. Read before changing parkour/pole.rs."
+description: "Step 9, second part: a pole is jumped onto, hands one above the other and feet clamping, and climbed in 0.6 m cycles (arms pull as legs fold, legs stand as hands go up), the stroke bounded by the hands' reach; climbed down, slid, gone round, let go. Read before changing parkour/pole.rs."
 type: decision
 status: current
 tags:

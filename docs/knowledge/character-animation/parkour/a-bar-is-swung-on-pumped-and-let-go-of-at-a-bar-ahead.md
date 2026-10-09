@@ -1,6 +1,6 @@
 ---
 title: A bar is swung on, pumped, and let go of at a bar ahead
-description: "Step 9, first part: a bar is a ledge 4 cm deep with nothing below, so its hang is free. The swing is the free hang's compound pendulum with an energy pump to 1.2 rad (a resonant push starts it from still). The trunk turns whole about the hips, the hands roll round the bar, and the legs pike and arch. A lache waits in its window for the moment needing the least change to catch the bar ahead. Read before changing parkour/hang/swing.rs or a free hang's pose."
+description: "Step 9, first part: a bar is a free-hang ledge 4 cm deep. Its pendulum is pumped on its energy to 1.2 rad, the trunk turned whole, the hands rolling round it; a lache waits for the moment needing the least change to catch the bar ahead. Read before changing parkour/hang/swing.rs or a free hang's pose."
 type: decision
 status: current
 tags:
