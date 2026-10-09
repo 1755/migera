@@ -94,6 +94,10 @@ pub enum HangAsk {
     /// at the nearest bar or ledge ahead, catching it (a lache,
     /// [`Hanging::lache`]); with none ahead, to land. Braced, dropped.
     Lache,
+    /// Running at it, a slab overhead too low to run under, slide under it
+    /// on the seat and rise past it (`parkour::underslide`): taken from the
+    /// foot that comes down nearest the slide's start.
+    SlideUnder,
 }
 
 /// Each leg's socket, knee, ankle and toe: left, right.

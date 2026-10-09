@@ -41,6 +41,39 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 10 (third part): sliding under a slab from a run
+
+Running at a slab overhead too low to run under, the walker slides under it
+on its seat and rises past it (`parkour::underslide::UnderSlide`,
+`HangAsk::SlideUnder`). Note: [a low slab is slid under on the seat from a
+run](docs/knowledge/character-animation/parkour/a-low-slab-is-slid-under-on-the-seat-from-a-run.md).
+
+- **The slide:** braked at 0.3 g; started so the hips end 0.5 m past the
+  slab; a 0.42 s drop, legs first and hips after; leant back, the lead leg
+  out, a hand on the floor; rising on its legs, the feet planted.
+- **The plan** samples every frame against the slab.
+- **The walker:** paces a foot onto the start; waits while too slow; poses
+  the slide led ahead of its springs.
+- **The gallery:** `--slab`, `--slide-under-at`. **The bench:** `--gait
+  slide-under` (real rig).
+- **Fixed on the way:**
+  - a lead leg past its reach flipped its knee;
+  - feet went through the floor three ways (blended from the run, rising
+    on their own curve, posed unled against the springs);
+  - the ask was dropped while the run was still speeding up.
+- **Headless** (4.5-6 m/s; 0.85-1.1 m up, 0.5-1 m deep; from the run's
+  own poses):
+  - all plan, nothing touches the slab, it stands 0.86 m past;
+  - no joint over 6.5 m/s, no step change over 2.6 cm;
+  - the ankles at least 3 cm up and the toes at most 2 cm into the floor.
+- **Live** (Xvfb, gizmos on and mesh off, Left; mesh on; BRP): from 5 m/s
+  under a 0.9 m slab, the neck at 0.59 m, the lowest ankle 5.8 cm; rose
+  past it and ran on.
+- **Cost:** 30.5 µs a character at p50.
+
+1276 library tests pass; clippy is clean with and without `real_rig`, but
+for an older test warning in `hand.rs`.
+
 ### Parkour, step 10 (second part): teetering at an edge
 
 Brought to a stand with a drop just ahead, the walker teeters once a stop

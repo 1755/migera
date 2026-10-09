@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod hang;
 pub mod pole;
 pub mod teeter;
+pub mod underslide;
 pub mod vault;
 pub mod wall;
 

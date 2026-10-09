@@ -372,6 +372,9 @@ const STOOD_HOLD: f32 = 0.3;
 pub const BODY_RADIUS: f32 = 0.2;
 /// On a beam, it turns back onto its line at this rate, rad/s.
 const BEAM_TURN: f32 = 2.0;
+/// Asked to slide under a slab, too slow to yet, it gives up nearer than
+/// this, metres.
+const SLIDE_TOO_NEAR: f32 = 1.5;
 /// It walks under anything wholly this far over what it stands on, metres
 /// (a bar to swing on, 2.3 m up).
 pub const HEADROOM: f32 = 2.0;
@@ -479,6 +482,8 @@ pub struct WalkerState {
     /// and whether it has this stop (once a stop).
     pub teeter: Option<f32>,
     pub teetered: bool,
+    /// Sliding under a slab from a run (`parkour::underslide`).
+    pub under_slide: Option<super::parkour::underslide::UnderSlide>,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -538,6 +543,7 @@ impl WalkerState {
             beam_time: 0.0,
             teeter: None,
             teetered: false,
+            under_slide: None,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -551,7 +557,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some()
     }
 }
 
@@ -805,6 +811,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         | super::parkour::hang::HangAsk::WallRun
                         | super::parkour::hang::HangAsk::WallKick
                         | super::parkour::hang::HangAsk::RunAlong
+                        | super::parkour::hang::HangAsk::SlideUnder
                 )
             })
             && walker.ledge.is_some()
@@ -1155,6 +1162,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     | super::parkour::hang::HangAsk::WallRun
                     | super::parkour::hang::HangAsk::WallKick
                     | super::parkour::hang::HangAsk::RunAlong
+                    | super::parkour::hang::HangAsk::SlideUnder
             )
         ) && walker.ledge.is_some();
         if vaulting {
@@ -1785,6 +1793,48 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                 }
             }
+            // Sliding under a slab (`parkour::underslide`): off the foot that
+            // comes down at its start (the latest that clears it), the pace
+            // adjusted for one to.
+            if walker.hang == Some(super::parkour::hang::HangAsk::SlideUnder)
+                && let Some(slab) = walker.ledge
+                && running
+                && state.jump.is_none()
+                && state.under_slide.is_none()
+                && rate > 0.0
+            {
+                use super::parkour::underslide::UnderSlide;
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down
+                    && let Some(obstacle) = super::parkour::vault::Obstacle::ahead(&slab, state.locomotion.position, state.facing.rotation() * rig.forward(), 0.4)
+                {
+                    let step = speed / (2.0 * rate);
+                    match UnderSlide::start_distance(speed, obstacle.depth) {
+                        Some(best) if obstacle.near <= best => {
+                            if let Some(slide) = UnderSlide::plan(&slab, state.locomotion.position, state.facing.yaw, speed, leg, &target.pose, &stood, &rig) {
+                                state.under_slide = Some(slide);
+                                state.stride.stepped = Vec3::ZERO;
+                                started = true;
+                            }
+                            walker.hang = None;
+                        }
+                        Some(best) => {
+                            let to_go = obstacle.near - best;
+                            let steps = (to_go / step).round().max(1.0);
+                            state.vault_pace = (state.vault_pace * to_go / (steps * step)).clamp(1.0 - VAULT_PACE, 1.0 + VAULT_PACE);
+                        }
+                        // Too slow yet (still speeding up: at its first
+                        // footfall a 5 m/s run was at 2.7 and the ask was
+                        // dropped, and it ran round the slab): waits, unless
+                        // the slab is already too near to start.
+                        None if obstacle.near < SLIDE_TOO_NEAR => walker.hang = None,
+                        None => {}
+                    }
+                }
+            }
             // Running along a wall (`parkour::along`): beside it, at the first
             // contact of the foot farther from it whose run along plans, a
             // leap held up by two steps on its face, landing and running on
@@ -2304,6 +2354,30 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.falling = Some(falling);
                     state.wall_run = None;
                     leapt = true;
+                }
+            }
+            // Sliding under a slab (`parkour::underslide`): posed as planned,
+            // the root riding its hips; stood up past it, it walks on.
+            if let Some(slide) = state.under_slide.as_mut() {
+                slide.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => slide.pose_led(&springs.0),
+                    None => slide.pose(),
+                };
+                state.locomotion.position = slide.root();
+                state.facing.yaw = slide.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if slide.is_done() {
+                    state.under_slide = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
                 }
             }
         }

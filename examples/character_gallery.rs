@@ -1475,6 +1475,10 @@ struct HangSchedule {
     /// Beams to walk along (`--beam X0,Z0,X1,Z1,HEIGHT[,WIDTH]`), standing
     /// on the floor.
     beams: Vec<migera::character::anim::parkour::beam::Beam>,
+    /// Sliding under the ledge's slab (`--slab X,Z,HEADING,UNDERSIDE,DEPTH
+    /// [,WIDTH]`) from a run (`--slide-under-at T`).
+    slide_under_at: Option<f32>,
+    slide_under_fired: bool,
 }
 
 impl HangSchedule {
@@ -1528,6 +1532,15 @@ impl HangSchedule {
                         schedule.pole = Some(migera::character::anim::parkour::Pole::new(Vec3::new(x, 0.0, z), height));
                     }
                 }
+                "--slab" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, under, depth, ref rest @ ..] = numbers[..] {
+                        let thick = 0.2;
+                        let wall = Ledge::wall(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()), rest.first().copied().unwrap_or(3.0), under + thick, depth);
+                        schedule.ledge = Some(Ledge { wall_below: thick, ..wall });
+                    }
+                }
+                "--slide-under-at" => schedule.slide_under_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--beam" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x0, z0, x1, z1, height, ref rest @ ..] = numbers[..] {
@@ -1634,6 +1647,10 @@ impl HangSchedule {
         if !self.slide_down_fired && self.slide_down_at.is_some_and(|at| elapsed >= at) {
             self.slide_down_fired = true;
             return Some(HangAsk::SlideDown);
+        }
+        if !self.slide_under_fired && self.slide_under_at.is_some_and(|at| elapsed >= at) {
+            self.slide_under_fired = true;
+            return Some(HangAsk::SlideUnder);
         }
         if !self.lache_fired && self.lache_at.is_some_and(|at| elapsed >= at) {
             self.lache_fired = true;
