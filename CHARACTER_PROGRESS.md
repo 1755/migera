@@ -41,6 +41,59 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 15 (second part): overhangs, and hand over hand under a roof
+
+The last step of the plan. A wall may overhang (`HoldWall::leaning`), and
+the step-13 climber climbs it in the face's own frame. Heights are measured
+up the face, the body tilts with the face between its feet and hands, and
+the palms lie on it. On the lean the upright climb is turned whole. A
+dyno's catch under the overhang leaves the feet cut loose. The body swings
+on as a damped rod pendulum about the hands, set going by the flight's
+speed. After a swing and a half the feet are brought back onto the face. A
+line of jugs under a roof (`MonkeyBars::roof`) is crossed as monkey bars.
+
+Note: [an overhang is climbed as the upright climb turned with its
+face](docs/knowledge/character-animation/parkour/an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md).
+
+- **Fixed on the way:**
+  - heights in world height on the lean, which stuck the climb;
+  - an elbow pole left upright (70 cm flips);
+  - a held elbow 1.9 cm into the lean (tighter elbow limits there);
+  - in step 13's climber, the other hand of a matched pair jumping 9 cm
+    as its partner left.
+- **Dropped:**
+  - tilting the body alone, with the hooks and hips left upright;
+  - a cut-loose trigger that never fired;
+  - three elbow swivels out of the face, each of which flipped.
+- **Headless** (26°):
+  - with holds all the way: topped out with the feet on, tilted 0.450,
+    hands to 1.2 µm, nothing into the face, steps no larger than the
+    upright grid's (2.75 cm);
+  - over a 0.45 m gap: cut loose at the catch;
+  - held still, the swing's half periods were 1.10 and 1.08 s against
+    1.065 for a rod as long as the measured hands-to-toes, each turn 0.52
+    of the last;
+  - then the feet came back and it topped out.
+- **Under a roof**: crossed with nothing over a held wrist but the
+  fingers, 4 cm clear.
+- **Sabotaged**: a rod 0.4 m longer fails the period check (1.20 s), and
+  upright elbow limits fail the face check (1.9 cm).
+- **Live** (BRP; gizmos Left and Back, mesh): two swings under the lean,
+  the feet back, topped out, the trunk 0.05 rad upright and 0.35 on the
+  lean. The roof crossed to its sixth jug, the wrists 2.237 m under 2.4 m.
+- **Gallery:** `--overhang X,Z,HEADING,COLUMNS,LOWER,GAP,UPPER,LEAN` and
+  `--roof-jugs X,Z,HEADING,UNDERSIDE[,SPACING,JUGS]` (with
+  `--monkey-at T`).
+- **Bench:**
+  - `--gait overhang`, 0.184 ms a character from the catch;
+  - `--gait free-climb` 0.109 ms (0.108 before);
+  - the roof is `--gait monkey`'s crossing.
+- **Limits:** tested to 26° (at 40° a held foot strayed 15 cm, at 52° the
+  head met the crease); no high step after a dyno, so a 0.6 m gap ends
+  hanging.
+
+All eight steps of the plan beyond the first ten are built.
+
 ### Parkour, step 15 (first part): windows
 
 A window (`parkour::window::Window`) is climbed through by the climb-up's

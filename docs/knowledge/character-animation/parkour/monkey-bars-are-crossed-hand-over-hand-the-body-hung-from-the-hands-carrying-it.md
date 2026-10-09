@@ -7,15 +7,15 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-09
-verified: 2026-10-09
+updated: 2026-10-10
+verified: 2026-10-10
 code:
   - src/character/anim/parkour/monkey.rs
   - src/character/anim/walker.rs
   - examples/character_gallery.rs
   - examples/anim_bench.rs
 sources:
-  - "test parkour::monkey::tests::monkey_bars_are_crossed_hand_over_hand"
+  - "tests parkour::monkey::tests::{monkey_bars_are_crossed_hand_over_hand, a_line_of_jugs_under_a_roof_is_crossed_hand_over_hand}"
   - "live: character_gallery --step-seconds 0.0333333 --monkey 0,-2,0,2.3,0.4,6 --monkey-at 0.5, Xvfb, gizmos on/mesh off Left and Back, mesh on Left and Back; BRP pelvis, hands and feet"
   - "anim_bench --gait monkey --characters 100"
 aliases:
@@ -138,7 +138,18 @@ and the mesh off, and with the mesh: the hands on the bars, the body
 hanging between them.
 
 **Cost**: `anim_bench --gait monkey --characters 100`, 41 µs a character
-at p50 (a pole climb's 39).
+at p50 when built (a pole climb's 39). Re-measured 2026-10-10: 69-71 µs at
+commit fd84d28 (built in a worktree) and 68 µs with the roof added, so the
+rise came from commits in between, not the roof.
+
+**Under a roof** (step 15, hand over hand under a ceiling): a line of
+jugs on a roof's underside is these bars (`MonkeyBars::roof`), each held
+8 cm under it (`JUG_DROP`). Crossing six 0.4 m apart under a roof 2.4 m
+up, nothing rose over a held wrist (2.237 m) but the fingers round the
+jug, 4 cm clear of the roof
+(`a_line_of_jugs_under_a_roof_is_crossed_hand_over_hand`; the
+[overhang's note](./an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md)
+has the live check).
 
 ## Revisit when
 
@@ -155,4 +166,5 @@ at p50 (a pole climb's 39).
 - [A bar is swung on, pumped, and let go of at a bar ahead](./a-bar-is-swung-on-pumped-and-let-go-of-at-a-bar-ahead.md) — contrast: one bar, its pendulum driven; the hand's roll round a bar.
 - [A ledge is shimmied hand over hand and round corners](./a-ledge-is-shimmied-hand-over-hand-and-round-corners.md) — contrast: hand over hand along one ledge, not across bars.
 - [Parkour moves beyond the first ten steps](./parkour-moves-beyond-the-first-ten-steps.md) — prerequisite: step 17's design.
+- [An overhang is climbed as the upright climb turned with its face](./an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md) — applies (2026-10-10): these bars as jugs under a roof, crossed hand over hand.
 - [A hand grip is measured in the hand's own frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md) — deeper: why held hands bent the wrong way, and the wrist check.

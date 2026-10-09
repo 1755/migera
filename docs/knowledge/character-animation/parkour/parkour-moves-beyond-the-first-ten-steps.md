@@ -2,13 +2,13 @@
 title: Parkour moves beyond the first ten steps
 description: "Design for steps 11-18 of the parkour set, the moves an Assassin's-Creed-style traversal game has past steps 1-10: running agility, more jumps, free climbing on holds, climbing any wall, overhangs and windows, perches, swinging fixtures, slides and long falls. Read before starting any of them."
 type: design
-status: draft
+status: current
 tags:
   - character-animation
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-09
+updated: 2026-10-10
 code:
   - src/character/anim/parkour
   - src/character/anim/ladder.rs
@@ -249,8 +249,15 @@ climbing is the heart of the style; perches and agility make it feel right.
   [any wall climbed on holds grown from its roughness](./any-wall-is-climbed-on-holds-grown-from-its-roughness.md).
   Not built: the reach aimed with whole-body IK (Uncharted 4's); the
   step-13 climber's own choice of hold stands in for it.
-- **Step 15** under way (2026-10-10):
-  [windows, in and out](./a-window-is-climbed-through-crouched-on-its-sill.md).
+- **Step 15** built (2026-10-10):
+  [windows, in and out](./a-window-is-climbed-through-crouched-on-its-sill.md);
+  [overhangs, the feet cut loose and swinging, and hand over hand under a
+  roof](./an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md).
+  Not built: a French window, overhangs steeper than about 30°, a
+  cut-loose without a dyno, a roof of holds in two dimensions.
+
+All eight steps are built (2026-10-10). What each left unbuilt is listed
+above and in its notes.
 
 ## Related
 

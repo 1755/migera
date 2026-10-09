@@ -7,8 +7,8 @@ tags:
   - locomotion
   - ik
   - correctness
-updated: 2026-10-09
-verified: 2026-10-09
+updated: 2026-10-10
+verified: 2026-10-10
 code:
   - src/character/anim/parkour/holds.rs
   - src/character/anim/walker.rs
@@ -125,6 +125,9 @@ asked (zero holds still).
   hold. Sink only as far as the hands still reach.
 - **A matched hand let go from its hold's middle** jumped 9 cm; let go
   from where it is.
+- **The other hand of a matched pair** jumped 9 cm to the hold's middle as
+  its partner left (found 2026-10-10 under an overhang). It slides there
+  over its partner's move.
 - **The rising body under the dyno's turning arms** carried a hand 5.6 cm
   into the wall. Each arm is turned out about `arm × out`, by
   0.12·sin(πs).
@@ -189,4 +192,5 @@ the pole (39 µs), the bar swing (63) and the hang (58).
 - [A pole is climbed as an inchworm, hands over a leg clamp](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md) — same-trap: a hand swept round the shoulder, and the cost of posing led clones.
 - [A near-straight leg is bent toward its kneecap](../ik-and-locomotion/a-near-straight-leg-bends-toward-its-kneecap.md) — same-trap: a two-bone solve's hinge near straight, here the arms.
 - [A hand grip is measured in the hand's own frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md) — deeper (2026-10-09): the grips were taken unturned, and the hooked hand, kept fingers up and palm flat, bent the wrist 1.7 rad sideways and 1.05 back; it now follows its forearm (`hook_along`).
+- [An overhang is climbed as the upright climb turned with its face](./an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md) — deeper (2026-10-10): this climber on a leaning face (heights up the face, the body tilted with it, tighter elbow limits) and a dyno's catch under it swinging.
 - [Any wall is climbed on holds grown from its roughness](./any-wall-is-climbed-on-holds-grown-from-its-roughness.md) — deeper (2026-10-09): irregular holds found three faults this climber's grid never reached: an elbow flipping where its arm points against its pole (moves are now kept clear of it, `ELBOW_CLEAR`), the fingers' sideways flip (`HOOK_SOFT`), and the get-on sweep into the wall.

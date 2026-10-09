@@ -86,12 +86,28 @@ pub struct MonkeyBars {
     pub way: Vec3,
     pub spacing: f32,
     pub bars: usize,
+    /// Under a roof (step 15, hand over hand under a ceiling): the height
+    /// of its underside, the "bars" jugs bolted on it.
+    pub ceiling: Option<f32>,
 }
+
+/// Jugs under a roof are held this far under its underside, metres (the
+/// fingers round a jug reach 3.8 cm over its axis, [`BAR_RADIUS`] and a
+/// finger's thickness).
+pub const JUG_DROP: f32 = 0.08;
 
 impl MonkeyBars {
     /// `bars` bars `spacing` apart from `first` along `way`.
     pub fn new(first: Vec3, way: Vec3, spacing: f32, bars: usize) -> Self {
-        Self { first, way: Vec3::new(way.x, 0.0, way.z).normalize_or(Vec3::NEG_Z), spacing, bars: bars.max(2) }
+        Self { first, way: Vec3::new(way.x, 0.0, way.z).normalize_or(Vec3::NEG_Z), spacing, bars: bars.max(2), ceiling: None }
+    }
+
+    /// A line of `jugs` jugs `spacing` apart under a roof whose underside
+    /// is `underside` high, the first under `first` (its height aside),
+    /// along `way`: crossed hand over hand as bars are, each held
+    /// [`JUG_DROP`] under the roof.
+    pub fn roof(first: Vec3, way: Vec3, spacing: f32, jugs: usize, underside: f32) -> Self {
+        Self { ceiling: Some(underside), ..Self::new(first.with_y(underside - JUG_DROP), way, spacing, jugs) }
     }
 
     /// Bar `k`'s middle (`k` may be fractional, along the line).
@@ -674,6 +690,47 @@ mod tests {
     fn world(pose: &LocalPose, root: Vec3, yaw: f32, rig: &RigGeometry) -> BoneSet<Vec3> {
         let at = forward_kinematics_on(pose, rig);
         BoneSet::from_fn(|bone| root + Quat::from_rotation_y(yaw) * at[bone])
+    }
+
+    /// A line of six jugs 0.4 m apart under a roof 2.4 m up: got on and
+    /// crossed hand over hand to the last, let go and landed under it, as
+    /// bars are; nothing up into the roof: the fingers round a held jug
+    /// clear of it by 4 cm, no wrist (a hand on its way) higher than a held
+    /// one's, every other joint under the wrists.
+    #[test]
+    fn a_line_of_jugs_under_a_roof_is_crossed_hand_over_hand() {
+        let (stood, rig) = real_stood();
+        let underside = 2.4;
+        let line = MonkeyBars::roof(Vec3::new(0.3, 0.0, -0.5), Vec3::NEG_Z, 0.4, 6, underside);
+        let wrap = line.first.y + BAR_RADIUS + 2.0 * FINGER_HALF_THICKNESS;
+        assert!(underside - wrap >= 0.04, "the fingers round a jug {:.3} m under the roof", underside - wrap);
+        let spot = Crossing::spot(&line, 0.0, &stood, &rig);
+        let mut crossing = Crossing::get_on(&line, spot, &stood, &rig);
+        crossing.set_grips(crate::character::anim::hand::puppet_grips(), &rig);
+        let (mut held_wrist, mut wrist, mut other, mut hand_off) = (f32::MIN, f32::MIN, f32::MIN, 0.0f32);
+        let mut t = 0.0;
+        while !crossing.is_released() && t < 30.0 {
+            crossing.advance(DT);
+            t += DT;
+            let now = world(&crossing.pose(&rig), crossing.root(), crossing.facing(), &rig);
+            for (side, (at, held)) in crossing.wrists(&rig).into_iter().enumerate() {
+                if held {
+                    held_wrist = held_wrist.max(at.y);
+                    hand_off = hand_off.max((now[ARMS[side].wrist] - at).length());
+                }
+                wrist = wrist.max(now[ARMS[side].wrist].y);
+            }
+            other = Bone::ALL.iter().filter(|b| !matches!(b, Bone::LeftHand | Bone::RightHand)).map(|&b| now[b].y).fold(other, f32::max);
+        }
+        let mut falling = crossing.release(&|_| Some(0.0), &stood, &rig);
+        while !falling.is_done() {
+            falling.advance(DT);
+        }
+        let (landed, under) = (falling.root(), line.bar(line.last() as f32));
+        eprintln!("held wrists up to {held_wrist:.4}, any wrist {wrist:.4}, any other joint {other:.4}, under a roof at {underside}; hand off {hand_off:.5}; landed {landed:?} under {under:?}");
+        assert!(hand_off < 1.0e-3, "a held hand {hand_off:.4} off its jug");
+        assert!(wrist <= held_wrist + 1.0e-3 && other < held_wrist, "a wrist up to {wrist:.4}, a joint {other:.4}, over a held wrist's {held_wrist:.4}");
+        assert!(landed.y.abs() < 1.0e-3 && (landed - under).with_y(0.0).length() < 0.5, "landed at {landed:?}, the last jug at {under:?}");
     }
 
     /// Lines of 5 and 8 bars, 0.35 and 0.45 m apart, 2.3 m up, along -Z and

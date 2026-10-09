@@ -1718,6 +1718,31 @@ impl HangSchedule {
                         schedule.holds = Some(HoldWall::rough(face, out, width, height, roughness, seed as u32));
                     }
                 }
+                // An overhang (`HoldWall::leaning`): a grid COLUMNS wide,
+                // LOWER rows upright, a gap of GAP, UPPER rows on above, the
+                // face leaning out LEAN degrees from 0.15 m over the upright
+                // rows, its top a lip: `--overhang X,Z,HEADING,COLUMNS,
+                // LOWER,GAP,UPPER,LEAN`.
+                "--overhang" => {
+                    use migera::character::anim::parkour::holds::HoldWall;
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, columns, lower, gap, upper, lean] = numbers[..] {
+                        let face = Vec3::new(x, 0.0, z);
+                        let out = approach::direction_of(heading.to_radians());
+                        let mut wall = HoldWall::grid(face, out, columns as usize, lower as usize, 0.4, 0.3, 0.35);
+                        let top_row = 0.35 + (lower - 1.0) * 0.3;
+                        wall.holds.extend(HoldWall::grid(face, out, columns as usize, upper as usize, 0.4, 0.3, top_row + gap).holds);
+                        let width = columns * 0.4 + 0.4;
+                        let crease = top_row + 0.15;
+                        wall.top = Some(Ledge::wall(face, out, width, top_row + gap + upper * 0.3, 1.0));
+                        let wall = wall.leaning(crease, lean.to_radians());
+                        // The upright part a block to the crease; the top a
+                        // slab (the leaning face is drawn by `place_holds`).
+                        schedule.others.push(Ledge::wall(face, out, width, crease, 1.0));
+                        schedule.others.extend(wall.top.map(|top| Ledge { wall_below: 0.3, ..top }));
+                        schedule.holds = Some(wall);
+                    }
+                }
                 "--holds-wall" => {
                     use migera::character::anim::parkour::holds::HoldWall;
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
@@ -1770,6 +1795,17 @@ impl HangSchedule {
                         let spacing = rest.first().copied().unwrap_or(0.4);
                         let bars = rest.get(1).map_or(6, |&bars| bars as usize);
                         schedule.monkey = Some(migera::character::anim::parkour::monkey::MonkeyBars::new(Vec3::new(x, height, z), approach::direction_of(heading.to_radians()), spacing, bars));
+                    }
+                }
+                // A line of jugs under a roof (`MonkeyBars::roof`), crossed
+                // as monkey bars are from `--monkey-at T`: `--roof-jugs X,Z,
+                // HEADING,UNDERSIDE[,SPACING,JUGS]`.
+                "--roof-jugs" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, underside, ref rest @ ..] = numbers[..] {
+                        let spacing = rest.first().copied().unwrap_or(0.4);
+                        let jugs = rest.get(1).map_or(6, |&jugs| jugs as usize);
+                        schedule.monkey = Some(migera::character::anim::parkour::monkey::MonkeyBars::roof(Vec3::new(x, 0.0, z), approach::direction_of(heading.to_radians()), spacing, jugs, underside));
                     }
                 }
                 "--monkey-at" => schedule.monkey_at = args.next().and_then(|t| t.trim().parse().ok()),
@@ -2079,6 +2115,18 @@ fn place_holds(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let colour = materials.add(StandardMaterial { base_color: Color::srgb(0.85, 0.45, 0.2), perceptual_roughness: 0.7, ..default() });
     let mesh = meshes.add(Cuboid::new(0.12, 0.035, 0.05));
     let turn = Quat::from_rotation_arc(Vec3::Z, wall.out);
+    // An overhang's leaning face: a slab 0.3 m thick behind it, from the
+    // crease up to the top's underside.
+    if let (Some((from, lean)), Some(top)) = (wall.lean, wall.top) {
+        let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
+        let (width, thick) = ((top.b - top.a).length(), 0.3);
+        let length = (top.height() - 0.3 - from) / lean.cos();
+        let up = Vec3::Y * lean.cos() + wall.out * lean.sin();
+        let normal = wall.out * lean.cos() - Vec3::Y * lean.sin();
+        let middle = wall.face.with_y(from) + up * (0.5 * length) - normal * (0.5 * thick);
+        let rotation = Quat::from_axis_angle(wall.along(), -lean) * turn;
+        commands.spawn((GalleryHold, Mesh3d(meshes.add(Cuboid::new(width, length, thick))), MeshMaterial3d(stone), Transform::from_translation(middle).with_rotation(rotation)));
+    }
     for hold in &wall.holds {
         // Its top at the hold, standing out of the face.
         let at = hold.at + wall.out * 0.025 - Vec3::Y * 0.0175;
@@ -2133,6 +2181,24 @@ fn place_monkey(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     }
     let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
     let across = bars.across();
+    // Under a roof: a slab 0.3 m thick over the line, a metre past its
+    // ends, each jug a short bar on a block hung from it.
+    if let Some(underside) = bars.ceiling {
+        let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
+        let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.85, 0.45, 0.2), perceptual_roughness: 0.7, ..default() });
+        let length = bars.spacing * bars.last() as f32 + 2.0;
+        let middle = bars.bar(0.5 * bars.last() as f32).with_y(underside + 0.15);
+        commands.spawn((GalleryMonkey, Mesh3d(meshes.add(Cuboid::new(2.0, 0.3, length))), MeshMaterial3d(stone), Transform::from_translation(middle).with_rotation(Quat::from_rotation_arc(Vec3::Z, bars.way))));
+        let jug = meshes.add(Cylinder::new(migera::character::anim::parkour::monkey::BAR_RADIUS, 0.2));
+        let hanger = meshes.add(Cuboid::new(0.2, underside - bars.first.y, 0.03));
+        for k in 0..bars.bars {
+            let at = bars.bar(k as f32);
+            commands.spawn((GalleryMonkey, Mesh3d(jug.clone()), MeshMaterial3d(wood.clone()), Transform::from_translation(at).with_rotation(Quat::from_rotation_arc(Vec3::Y, across))));
+            let hung = at.with_y(0.5 * (underside + at.y)) + bars.way * 0.035;
+            commands.spawn((GalleryMonkey, Mesh3d(hanger.clone()), MeshMaterial3d(wood.clone()), Transform::from_translation(hung).with_rotation(Quat::from_rotation_arc(Vec3::Z, bars.way))));
+        }
+        return;
+    }
     let bar = meshes.add(Cylinder::new(migera::character::anim::parkour::monkey::BAR_RADIUS, MONKEY_BAR_LONG));
     for k in 0..bars.bars {
         commands.spawn((GalleryMonkey, Mesh3d(bar.clone()), MeshMaterial3d(steel.clone()), Transform::from_translation(bars.bar(k as f32)).with_rotation(Quat::from_rotation_arc(Vec3::Y, across))));

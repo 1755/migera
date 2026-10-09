@@ -108,6 +108,9 @@ enum Gait {
     Lache,
     /// Free climbing up a wall of holds: 3 s of it, limb by limb.
     FreeClimb,
+    /// Free climbing under a 26° overhang: 3 s from the catch of a dyno
+    /// onto it, the feet cut loose and the body swinging under the hands.
+    Overhang,
     /// A 4 m/s run turning at 1 rad/s and gathering at 2 m/s², leant with
     /// its acceleration.
     RunLean,
@@ -201,7 +204,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner | Gait::LongFall | Gait::SlopeSlide(..) | Gait::WindowIn => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::Overhang | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner | Gait::LongFall | Gait::SlopeSlide(..) | Gait::WindowIn => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -558,6 +561,21 @@ fn main() {
             let wall = HoldWall::grid(Vec3::new(0.0, 0.0, -0.6), Vec3::Z, 9, 18, 0.4, 0.3, 0.35);
             let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
             climb.advance(None, 1.5);
+            Some(climb)
+        }
+        // The overhang `parkour::holds`' tests climb: upright to 2.3 m, a
+        // gap of 0.45 m, leant 0.45 rad above; climbed up to the catch.
+        Gait::Overhang => {
+            use migera::character::anim::parkour::holds::{FreeClimb, HoldWall};
+            let face = Vec3::new(0.0, 0.0, -0.6);
+            let mut wall = HoldWall::grid(face, Vec3::Z, 9, 7, 0.4, 0.3, 0.35);
+            wall.holds.extend(HoldWall::grid(face, Vec3::Z, 9, 6, 0.4, 0.3, 2.6).holds);
+            wall.top = Some(migera::character::anim::parkour::Ledge::wall(face, Vec3::Z, 4.0, 4.4, 1.0));
+            let wall = wall.leaning(2.3, 0.45);
+            let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
+            for _ in 0..(12.6 * 60.0) as usize {
+                climb.advance(Some(Vec2::Y), 1.0 / 60.0);
+            }
             Some(climb)
         }
         _ => None,
@@ -954,6 +972,7 @@ fn main() {
         Gait::Squeeze(flat) => if flat { "   squeezing sideways, the arms flat" } else { "   the side shuffle" }.to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::FreeClimb => "   free climbing up a wall of holds".to_string(),
+        Gait::Overhang => "   free climbing under an overhang, swinging from a catch".to_string(),
         Gait::RunLean => "   a 4 m/s run turning and gathering, leant".to_string(),
         Gait::Skid(round) => if round { "   a plant-and-turn from 5 m/s" } else { "   a skid stop from 5 m/s" }.to_string(),
         Gait::Onto => "   a standing jump onto a 0.2 m post 1.2 m ahead".to_string(),
@@ -1116,6 +1135,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("shuffle") => Gait::Squeeze(false),
         Some("lache") => Gait::Lache,
         Some("free-climb") => Gait::FreeClimb,
+        Some("overhang") => Gait::Overhang,
         Some("run-lean") => Gait::RunLean,
         Some("skid") => Gait::Skid(false),
         Some("plant-turn") => Gait::Skid(true),
