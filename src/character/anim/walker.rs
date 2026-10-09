@@ -220,6 +220,12 @@ pub struct Walker {
     /// catches it, swings round and is let go on the way up; the ask is
     /// dropped once let go.
     pub flagpole: Option<super::parkour::flagpole::Flagpole>,
+    /// A post at a corner to swing round (`parkour::corner`), and how far
+    /// round, radians (positive to the left): running past it, the last
+    /// steps paced, it leaps, its near hand on the post, the way it goes
+    /// bent round it, and runs on; the ask is dropped once taken, or run
+    /// past.
+    pub corner: Option<(super::parkour::Pole, f32)>,
     /// Hooks or pots hung up to swing on (`parkour::flagpole`, a hook):
     /// falling by one, it reaches for it, catches it one-handed, swings
     /// forward and lets go; on to the next it falls by.
@@ -275,6 +281,7 @@ impl Default for Walker {
             springboard: None,
             monkey_bars: None,
             flagpole: None,
+            corner: None,
             hooks: Vec::new(),
         }
     }
@@ -597,6 +604,8 @@ pub struct WalkerState {
     /// the hook last let go of (not caught again falling from it).
     pub flagging: Option<super::parkour::flagpole::Swinging>,
     pub last_hook: Option<Vec3>,
+    /// Swinging round a corner post in a leap (`parkour::corner`).
+    pub cornering: Option<super::parkour::corner::CornerSwing>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -687,6 +696,7 @@ impl WalkerState {
             monkey_spot: None,
             flagging: None,
             last_hook: None,
+            cornering: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -1436,7 +1446,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     | super::parkour::hang::HangAsk::SlideUnder
             )
         ) && walker.ledge.is_some()
-            || walker.springboard.is_some();
+            || walker.springboard.is_some()
+            || walker.corner.is_some();
         if vaulting {
             wanted_speed *= state.vault_pace;
         } else {
@@ -2256,6 +2267,53 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                 }
             }
+            // A corner post (`parkour::corner`): running past it, at each
+            // foot's contact it leaps round it if the flight would begin
+            // with the post beside the hips and the next would not be
+            // nearer; otherwise the pace is stretched or shortened to bring
+            // a foot down there. Off its side or run past, the ask is
+            // dropped.
+            if let Some((post, turn)) = walker.corner
+                && running
+                && state.jump.is_none()
+                && rate > 0.0
+            {
+                use super::parkour::corner::{plan, takeoff_ahead, ABEAM, FARTHEST, NEAREST};
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down {
+                    let since = (cycle - 0.5 * leg as f32).rem_euclid(1.0) / rate;
+                    let run_part = (time.delta_secs() - since).max(0.0) * speed;
+                    let origin = state.locomotion.position + state.facing.rotation() * (state.stride.stepped + rig.forward() * run_part);
+                    let (way, left) = (state.facing.rotation() * rig.forward(), state.facing.rotation() * rig.left());
+                    let to = (post.foot - origin).with_y(0.0);
+                    let (along, aside) = (to.dot(way), to.dot(left));
+                    let start = super::jump::RunStart { leg, speed };
+                    let leaves = takeoff_ahead(start, turn, aside, &stood, &rig);
+                    let to_go = along - leaves;
+                    let step = speed / (2.0 * rate);
+                    if aside.signum() != turn.signum() || !(NEAREST - 0.1..=FARTHEST + 0.1).contains(&aside.abs()) || to_go < -ABEAM {
+                        walker.corner = None;
+                    } else if to_go.abs() <= ABEAM && (to_go - step < -ABEAM || to_go.abs() <= (to_go - step).abs()) {
+                        if let Some((mut jump, mut swing)) = plan(&post, origin, state.facing.yaw, start, turn, &stood, &rig) {
+                            if let Some(hands) = hands.as_ref() {
+                                swing.set_grips(hands.grips, &rig);
+                            }
+                            jump.advance(since);
+                            state.stride.stepped += rig.forward() * (run_part + jump.travelled());
+                            state.jump = Some(jump);
+                            state.cornering = Some(swing);
+                            started = true;
+                        }
+                        walker.corner = None;
+                    } else {
+                        let steps = (to_go / step).round().max(1.0);
+                        state.vault_pace = (state.vault_pace * to_go / (steps * step)).clamp(1.0 - VAULT_PACE, 1.0 + VAULT_PACE);
+                    }
+                }
+            }
             // Sliding under a slab (`parkour::underslide`): off the foot that
             // comes down at its start (the latest that clears it), the pace
             // adjusted for one to.
@@ -2512,8 +2570,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 // The COM's way forward moves the character, like root
                 // motion; the pose keeps it over the root.
                 if !started {
-                    let before = jump.travelled();
+                    let (before, was) = (jump.travelled(), jump.elapsed());
                     jump.advance(time.delta_secs());
+                    // Round a corner post (`parkour::corner`): the facing
+                    // turned through the flight, the way it goes bent round
+                    // the post with it.
+                    if let Some(swing) = state.cornering {
+                        let turned = swing.turned_at(jump, jump.elapsed()) - swing.turned_at(jump, was);
+                        state.facing.yaw += turned;
+                        state.facing.target_yaw += turned;
+                    }
                     state.stride.stepped += rig.forward() * (jump.travelled() - before);
                 }
                 // Each bone led ahead of its spring, so the body rendered
@@ -2522,6 +2588,21 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     Some(springs) => jump.pose_now_led(&stood, &rig, &springs.0),
                     None => jump.pose(&stood, &rig),
                 };
+                // Its near hand on the post, the body banked toward it.
+                if let Some(swing) = state.cornering {
+                    let root = state.locomotion.position + state.facing.rotation() * state.stride.stepped;
+                    target.pose = swing.hold(&target.pose, jump, root, state.facing.yaw, &rig);
+                    if let Some(hands) = hands.as_mut() {
+                        let mut grips = hands.grip;
+                        grips[swing.side] = swing.holding(jump);
+                        if hands.grip != grips {
+                            hands.grip = grips;
+                        }
+                    }
+                    if swing.is_done(jump) {
+                        state.cornering = None;
+                    }
+                }
                 // From a run, a foot at a time, and each held where the plan
                 // has it all the while it is down; standing, both feet, held
                 // as they land.
@@ -3159,6 +3240,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             }
             if state.jump.is_none() {
                 state.springing = None;
+                state.cornering = None;
             }
             if let Some(below) = state.fall_to.take()
                 && state.falling.is_none()

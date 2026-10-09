@@ -23,7 +23,7 @@
 
 use std::time::Instant;
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::{Quat, Vec2, Vec3};
 use migera::character::anim::dho::DhoState;
 use migera::character::anim::gait::{walk_pose_on, GaitParams};
 use migera::character::anim::phase::{GaitPhase, PhaseLayer};
@@ -141,6 +141,9 @@ enum Gait {
     Flagpole,
     /// Swinging one-handed on a hook, from the catch to letting go.
     Hook,
+    /// A 4 m/s run's leap swung a quarter turn round a corner post on one
+    /// arm: the leap's whole length, held.
+    Corner,
 }
 
 fn main() {
@@ -189,7 +192,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -440,6 +443,16 @@ fn main() {
             seconds += DT;
         }
         (caught, seconds)
+    });
+    // A corner swing (`parkour::corner`): the clock is the leap's whole
+    // length, the hand on the post through its hold.
+    let cornering = matches!(gait, Gait::Corner).then(|| {
+        use migera::character::anim::jump::RunStart;
+        use migera::character::anim::parkour::{corner, Pole};
+        let (start, turn, aside) = (RunStart { leg: 0, speed: 4.0 }, std::f32::consts::FRAC_PI_2, 0.6);
+        let ahead = corner::takeoff_ahead(start, turn, aside, &stood, &rig);
+        let post = Pole::new(rig.forward() * ahead + rig.left() * aside, 3.0);
+        corner::plan(&post, Vec3::ZERO, 0.0, start, turn, &stood, &rig).expect("a corner post in reach")
     });
     let poling = match gait {
         Gait::Pole => {
@@ -745,6 +758,15 @@ fn main() {
             now.advance(cycle * slide.end());
             Some((now.pose_led(&springs), None))
         }
+        // Held as the walker holds it: the facing turned as far as the swing
+        // has it, the root carried along the leap's travel.
+        _ if let Some((jump, swing)) = &cornering => {
+            let mut now = jump.clone();
+            now.advance(cycle * jump.duration());
+            let yaw = swing.turned_at(&now, now.elapsed());
+            let root = Quat::from_rotation_y(yaw) * rig.forward() * now.travelled();
+            Some((swing.hold(&now.pose_led(now.elapsed(), &stood, &rig, &springs), &now, root, yaw, &rig), None))
+        }
         _ if let Some((swinging, seconds)) = &flagging => {
             let mut now = swinging.clone();
             now.advance(cycle * seconds);
@@ -908,6 +930,7 @@ fn main() {
         Gait::Monkey => "   crossing monkey bars hand over hand".to_string(),
         Gait::Flagpole => "   swinging round a flagpole".to_string(),
         Gait::Hook => "   swinging one-handed on a hook".to_string(),
+        Gait::Corner => "   a 4 m/s run swung a quarter turn round a corner post".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -1069,6 +1092,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("monkey") => Gait::Monkey,
         Some("flagpole") => Gait::Flagpole,
         Some("hook") => Gait::Hook,
+        Some("corner") => Gait::Corner,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

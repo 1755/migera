@@ -1678,7 +1678,7 @@ fn hermite(p0: Vec3, v0: Vec3, p1: Vec3, v1: Vec3, span: f32, s: f32) -> Vec3 {
 /// `a` to `b` along the great arc between them as given (the longer one if
 /// they are more than a quarter apart as quaternions), at `t` (0-1): no
 /// shortest-path choice, so no flip as either drifts across the boundary.
-fn arc(a: Quat, b: Quat, t: f32) -> Quat {
+pub(super) fn arc(a: Quat, b: Quat, t: f32) -> Quat {
     let dot = a.dot(b).clamp(-1.0, 1.0);
     let theta = dot.acos();
     if theta.sin().abs() < 1.0e-4 {

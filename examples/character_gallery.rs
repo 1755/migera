@@ -1288,6 +1288,13 @@ fn steer_the_walker(
         if walker.hooks != hangs.hooks {
             walker.hooks = hangs.hooks.clone();
         }
+        if !hangs.corner_fired
+            && let (Some(at), Some(corner)) = (hangs.corner_at, hangs.corner)
+            && time.elapsed_secs() >= at
+        {
+            walker.corner = Some(corner);
+            hangs.corner_fired = true;
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1602,6 +1609,12 @@ struct HangSchedule {
     flagpole_fired: bool,
     /// Hooks to swing on (`--hook X,Y,Z`, each), asked from the start.
     hooks: Vec<Vec3>,
+    /// A corner post (`--corner X,Z,DEGREES`: a 3 m post at X,Z, swung
+    /// round that far, positive to the left), run round from T
+    /// (`--corner-at T`).
+    corner: Option<(migera::character::anim::parkour::Pole, f32)>,
+    corner_at: Option<f32>,
+    corner_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1730,6 +1743,13 @@ impl HangSchedule {
                     }
                 }
                 "--flagpole-at" => schedule.flagpole_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--corner" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, degrees] = numbers[..] {
+                        schedule.corner = Some((migera::character::anim::parkour::Pole::new(Vec3::new(x, 0.0, z), 3.0), degrees.to_radians()));
+                    }
+                }
+                "--corner-at" => schedule.corner_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--hook" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x, y, z] = numbers[..] {
@@ -1993,10 +2013,13 @@ struct GalleryHay;
 struct GalleryFlagpole;
 
 fn place_flagpole(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryFlagpole>>) {
-    if !drawn.is_empty() || (hangs.flagpole.is_none() && hangs.hooks.is_empty()) {
+    if !drawn.is_empty() || (hangs.flagpole.is_none() && hangs.hooks.is_empty() && hangs.corner.is_none()) {
         return;
     }
     let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    if let Some((post, _)) = hangs.corner {
+        commands.spawn((GalleryFlagpole, Mesh3d(meshes.add(Cylinder::new(post.radius, post.height))), MeshMaterial3d(steel.clone()), Transform::from_translation(post.at(0.5 * post.height))));
+    }
     // Each hook a ring hung on a short chain from above.
     for &hook in &hangs.hooks {
         commands.spawn((GalleryFlagpole, Mesh3d(meshes.add(Torus::new(0.03, 0.05))), MeshMaterial3d(steel.clone()), Transform::from_translation(hook).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))));

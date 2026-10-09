@@ -41,6 +41,36 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 17 (last part): a corner swing
+
+Asked (`Walker::corner`), a run past a post at a corner paces its last
+strides, leaps, catches the post with the near hand and swings a quarter
+or sixth turn round it, landing running on the new way
+(`parkour::corner`). It is a running leap whose facing turns through the
+flight, eased, so its path is an arc about the post. The arm is IK'd to
+the post and the body banks toward it. Step 17 is done. Note: [a corner
+post is swung round as a running leap bent round
+it](docs/knowledge/character-animation/parkour/a-corner-post-is-swung-round-as-a-running-leap-bent-round-it.md).
+
+- **Fixed on the way:**
+  - a constant turn rate overshooting the turn;
+  - fingers along the arm flipping;
+  - the elbow flipping at the let-go (now a fixed-sign `arc` blend);
+  - a clamped bank (now `sin²` with tanh saturation);
+  - a straight arm's elbow swinging 25 cm (now a 0.97 reach clamp).
+- **Headless:** 3.5-4.5 m/s, both ways, quarter and sixth turns:
+  - turned exactly the turn asked;
+  - the hips 0.55-0.73 m from the post;
+  - the hand within 1 µm;
+  - ran on at 3.0-4.2 m/s;
+  - the largest step change is the leap's own, plus at most 6 cm from the
+    turn.
+- **Live** (BRP; gizmos Top, mesh Front): `--corner -0.6,-8,90
+  --corner-at 0.5`. The left hand reached the post, the body swung round
+  at 0.64 m and ran on along −X at 4 m/s.
+- **Bench:** `--gait corner`, 76 µs a character, replaying the leap from
+  its start every frame.
+
 ### Parkour, step 17 (third part): hooks
 
 Asked (`Walker::hooks`), a fall reaches for hooks or pots it comes by,

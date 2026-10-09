@@ -4,6 +4,7 @@
 
 pub mod along;
 pub mod beam;
+pub mod corner;
 pub mod crawl;
 pub mod faith;
 pub mod fall;
