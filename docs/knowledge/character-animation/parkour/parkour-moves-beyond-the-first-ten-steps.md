@@ -223,7 +223,17 @@ climbing is the heart of the style; perches and agility make it feel right.
   and looking round. Not built: onto a perch from a hang below, a leap
   out of the crouch itself (it rises first), a drop from a perch to a
   hang.
-- Steps 12, 14, 15, 17 and 18 not started.
+- **Step 12** built (2026-10-09): diagonal ejects and jumps to a bar
+  ([leaps from a hang](./a-hang-is-leapt-from-up-aside-or-back.md)), a
+  jump to a pole ([the pole's
+  catch](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md)),
+  [a turning jump](./a-turning-jump-is-a-standing-jump-handed-to-a-spinning-fall.md),
+  [the leap of faith](./a-leap-of-faith-is-a-ballistic-swan-dive-flipped-onto-the-back.md),
+  [a tuck over an obstacle](./a-small-obstacle-is-hopped-as-a-running-leap-its-feet-lifted.md)
+  and [a springboard](./a-springboard-is-a-running-leap-whose-foot-rides-the-board-down.md).
+  Not built: a jump from a standing top to a bar (a leap from a hang
+  only), a springboard's leap running on after it lands.
+- Steps 14, 15, 17 and 18 not started.
 
 ## Related
 
@@ -231,3 +241,4 @@ climbing is the heart of the style; perches and agility make it feel right.
 - [Parkour movement data](./parkour-movement-data.md) — deeper: measured numbers each step takes its timings from, and the gaps.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — prerequisite: the holds model step 13 generalises from rungs to holds.
 - [A wall of holds is free climbed limb by limb, a gap jumped for](./a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md) — deeper: step 13 as built.
+- [A springboard is a running leap whose take-off foot rides the board down](./a-springboard-is-a-running-leap-whose-foot-rides-the-board-down.md) — deeper: step 12's last part as built.

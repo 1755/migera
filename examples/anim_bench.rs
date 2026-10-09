@@ -132,6 +132,9 @@ enum Gait {
     /// A standing jump tucking its knees over a 0.55 m post: posed through
     /// its whole length, as a jump.
     Tuck,
+    /// A running leap off a springboard at 4 m/s: the leap to its top,
+    /// then the fall landing.
+    Springboard,
 }
 
 fn main() {
@@ -180,7 +183,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -412,6 +415,18 @@ fn main() {
     // A jump onto a post (`parkour::precision`): the clock is the jump to
     // its hand-off, then the fall to standing on the post.
     let onto = match gait {
+        Gait::Springboard => {
+            use migera::character::anim::jump::RunStart;
+            use migera::character::anim::parkour::springboard::{hands_over, spring_fall, spring_leap, Springboard};
+            let board = Springboard::plank(rig.forward() * 0.5, rig.forward(), 1.2);
+            let mut jump = spring_leap(&board, RunStart { leg: 0, speed: 4.0 }, &stood, &rig);
+            let full = jump.clone();
+            while !hands_over(&jump) {
+                jump.advance(DT);
+            }
+            let falling = spring_fall(&jump, rig.forward() * jump.travelled(), 0.0, 0.0, &|_| None, 0.0, &stood, &rig);
+            Some((full, jump.elapsed(), falling))
+        }
         Gait::SpinJump => {
             use migera::character::anim::parkour::spin;
             let mut jump = spin::spin_jump(&stood, &rig);
@@ -838,6 +853,7 @@ fn main() {
         Gait::SpinJump => "   a standing jump turning round in the air".to_string(),
         Gait::Faith => "   a leap of faith from 6 m into a pile".to_string(),
         Gait::Tuck => "   a standing jump tucking its knees over a 0.55 m post".to_string(),
+        Gait::Springboard => "   a 4 m/s run's leap off a springboard".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -995,6 +1011,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
         Some("tuck") => Gait::Tuck,
+        Some("springboard") => Gait::Springboard,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

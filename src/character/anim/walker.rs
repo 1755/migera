@@ -205,6 +205,12 @@ pub struct Walker {
     /// facing) it plants and turns round, standing; otherwise it slows to a
     /// walk first and turns at its facing's rate.
     pub skid: bool,
+    /// Running at this springboard (`parkour::springboard`): its last steps
+    /// paced to bring a foot down on its end, it leaps off it as much
+    /// higher as the board gives, and lands on what it comes down on, or
+    /// catches (with [`Self::catch`]); the ask is dropped once taken, or run
+    /// past.
+    pub springboard: Option<super::parkour::springboard::Springboard>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -253,6 +259,7 @@ impl Default for Walker {
             spin_jump: None,
             leap_of_faith: None,
             skid: false,
+            springboard: None,
         }
     }
 }
@@ -563,6 +570,9 @@ pub struct WalkerState {
     pub spinning: Option<f32>,
     /// A leap of faith under way (`parkour::faith`).
     pub faith: Option<super::parkour::faith::LeapOfFaith>,
+    /// Leaping off a springboard, until handed to its fall
+    /// (`parkour::springboard`); the board, as it is bent.
+    pub springing: Option<super::parkour::springboard::Springboard>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -648,6 +658,7 @@ impl WalkerState {
             perched: None,
             spinning: None,
             faith: None,
+            springing: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -669,6 +680,13 @@ impl WalkerState {
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
         self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some()
+    }
+
+    /// Leaping off a springboard, the board and how far it is bent under the
+    /// take-off foot now, metres.
+    pub fn springboard_bent(&self) -> Option<(super::parkour::springboard::Springboard, f32)> {
+        let board = self.springing?;
+        Some((board, self.jump.as_ref().map_or(0.0, |jump| jump.board_sunk())))
     }
 }
 
@@ -1355,7 +1373,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     | super::parkour::hang::HangAsk::RunAlong
                     | super::parkour::hang::HangAsk::SlideUnder
             )
-        ) && walker.ledge.is_some();
+        ) && walker.ledge.is_some()
+            || walker.springboard.is_some();
         if vaulting {
             wanted_speed *= state.vault_pace;
         } else {
@@ -2133,6 +2152,48 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     }
                 }
             }
+            // A springboard (`parkour::springboard`): running at it, at each
+            // foot's contact it leaps off it if the take-off ankle came down
+            // on its end and the next would come down no nearer; otherwise
+            // the pace is stretched or shortened to bring one down there.
+            // Off its line, or come down past it, the ask is dropped.
+            if let Some(board) = walker.springboard
+                && running
+                && state.jump.is_none()
+                && rate > 0.0
+            {
+                use super::parkour::springboard::{spring_leap, takeoff_ahead, ON_BOARD};
+                let came_down = (0..2).find(|&leg| {
+                    let contact = 0.5 * leg as f32;
+                    (cycle - contact).rem_euclid(1.0) < (state.stride.cycle - contact).rem_euclid(1.0)
+                });
+                if let Some(leg) = came_down {
+                    let since = (cycle - 0.5 * leg as f32).rem_euclid(1.0) / rate;
+                    let run_part = (time.delta_secs() - since).max(0.0) * speed;
+                    let origin = state.locomotion.position + state.facing.rotation() * (state.stride.stepped + rig.forward() * run_part);
+                    let way = state.facing.rotation() * rig.forward();
+                    let start = super::jump::RunStart { leg, speed };
+                    let ahead = takeoff_ahead(&board, start, &stood, &rig);
+                    // How far past where this foot came down its end is.
+                    let (short, across) = board.off(origin + way * ahead);
+                    let to_go = -short;
+                    let step = speed / (2.0 * rate);
+                    if across.abs() > ON_BOARD || to_go < -ON_BOARD {
+                        walker.springboard = None;
+                    } else if to_go.abs() <= ON_BOARD && (to_go - step < -ON_BOARD || to_go.abs() <= (to_go - step).abs()) {
+                        let mut jump = spring_leap(&board, start, &stood, &rig);
+                        jump.advance(since);
+                        state.stride.stepped += rig.forward() * (run_part + jump.travelled());
+                        state.jump = Some(jump);
+                        state.springing = Some(board);
+                        started = true;
+                        walker.springboard = None;
+                    } else {
+                        let steps = (to_go / step).round().max(1.0);
+                        state.vault_pace = (state.vault_pace * to_go / (steps * step)).clamp(1.0 - VAULT_PACE, 1.0 + VAULT_PACE);
+                    }
+                }
+            }
             // Sliding under a slab (`parkour::underslide`): off the foot that
             // comes down at its start (the latest that clears it), the pace
             // adjusted for one to.
@@ -2412,7 +2473,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 foot_ik.gait_swing = Some(down.map(|down| !down));
                 foot_ik.gait_bearing = Some(down);
                 foot_ik.landing = None;
-                legs_free = false;
+                // Off a springboard, the take-off foot sinks with the board
+                // under the ground the foot IK holds a foot on: the plan's
+                // legs as posed (held, the ankle rose as the plain leap's).
+                legs_free = state.springing.is_some();
                 // Standing, done once it has stood; from a run, the run picks
                 // up next frame (above).
                 // Stood up: the standing pose this frame, the root moved to
@@ -2913,6 +2977,30 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.spinning = None;
                 started = true;
             }
+            // Off a springboard (`parkour::springboard`): a little into its
+            // flight, a fall landing on the first top along it (or the floor
+            // it left), held off the walls it faces; caught as any fall.
+            if state.springing.is_some()
+                && state.jump.as_ref().is_some_and(super::parkour::springboard::hands_over)
+                && state.falling.is_none()
+                && let Some(jump) = state.jump.take()
+            {
+                let root = state.locomotion.position + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
+                // The ground under it no higher than it left (a top higher
+                // is landed on along the flight).
+                let floor = state.locomotion.position.y;
+                let top = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                let below = top(root.with_y(floor + 0.05)).map_or(floor, |height| height.min(floor));
+                let mut falling = super::parkour::springboard::spring_fall(&jump, root, state.facing.yaw, below, &top, foot_ik.pelvis_drop, &stood, &rig);
+                let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
+                falling.against(&ledges, &rig);
+                state.falling = Some(falling);
+                state.springing = None;
+                started = true;
+            }
+            if state.jump.is_none() {
+                state.springing = None;
+            }
             if let Some(below) = state.fall_to.take()
                 && state.falling.is_none()
                 && !fallen
@@ -3028,7 +3116,8 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         }
         // Landed from a fall, on the floor again: the sprung pose kept clear
         // of it (left off it, the feet went 0.18 m through landing from 3 m).
-        let off_floor = state.on_holds() && !state.falling.as_ref().is_some_and(|falling| falling.is_landed());
+        // Off a springboard, its foot sunk under the floor with the board.
+        let off_floor = (state.on_holds() && !state.falling.as_ref().is_some_and(|falling| falling.is_landed())) || state.springing.is_some();
         if foot_ik.off_floor != off_floor {
             foot_ik.off_floor = off_floor;
         }
@@ -3367,7 +3456,10 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
                 let lands = root.translation + state.facing.rotation() * rig.forward() * left;
                 ground.0.sample(lands.with_y(height_before)).is_some_and(|hit| hit.height >= height_before - super::parkour::fall::STEP_DOWN)
             });
-            if drops && state.jump.as_ref().is_some_and(|jump| clears || (!jump.airborne() && jump.elapsed() < jump.ends(super::jump::JumpPhase::Flight))) {
+            // Leaping off a springboard, its own fall takes it at the top of
+            // its flight (handed one rising toward a higher top, a fall's
+            // landing went NaN).
+            if drops && state.jump.as_ref().is_some_and(|jump| clears || state.springing.is_some() || (!jump.airborne() && jump.elapsed() < jump.ends(super::jump::JumpPhase::Flight))) {
                 root.translation.y = height_before;
                 state.locomotion.position.y = height_before;
             } else if drops && state.jump.as_ref().is_none_or(|jump| jump.airborne()) {

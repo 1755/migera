@@ -16,6 +16,7 @@ pub mod pole;
 pub mod precision;
 pub mod skid;
 pub mod spin;
+pub mod springboard;
 pub mod squeeze;
 pub mod teeter;
 pub mod underslide;

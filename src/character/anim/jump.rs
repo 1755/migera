@@ -44,7 +44,7 @@ use super::stance::place_ankle;
 use crate::character::skeleton::Bone;
 
 mod leap;
-pub use leap::{Lift, Resume, RunStart};
+pub use leap::{Board, Lift, Resume, RunStart};
 
 /// Gravity, m/s².
 pub const GRAVITY: f32 = 9.81;
@@ -744,6 +744,12 @@ impl Jump {
     /// Whether both feet are in the air.
     pub fn airborne(&self) -> bool {
         self.phase() == JumpPhase::Flight
+    }
+
+    /// Off a springboard ([`Jump::from_board`]), how far it is bent under
+    /// the take-off foot now, metres.
+    pub fn board_sunk(&self) -> f32 {
+        self.run.as_ref().map_or(0.0, |run| run.board_sunk(self, self.t))
     }
 
     /// How far into the phase at `t` it is, 0-1.

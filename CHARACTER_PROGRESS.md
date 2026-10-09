@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (sixth part): the springboard
+
+Asked (`Walker::springboard`), a run paces its last steps onto a sprung
+plank's end and leaps off it 0.4 m higher than a leap may
+(`Jump::from_board`), the take-off ankle sinking 4 cm with the board in
+step with the push, the COM's path the leap's own; at its top a fall lands
+it on what it comes down on. Step 12 is done. Note: [a springboard is a
+running leap whose take-off foot rides the board
+down](docs/knowledge/character-animation/parkour/a-springboard-is-a-running-leap-whose-foot-rides-the-board-down.md).
+
+- **Fixed on the way:** a fall handed over rising toward a higher top went
+  NaN (the hand-over now waits for the top); the walker's over-an-edge
+  fall took the leap first; aimed at the plank's very end the foot came
+  down past it; the foot IK held the sunk foot up, twice.
+- **The gallery:** `--springboard X,Z,HEADING,TOP[,LENGTH]`,
+  `--springboard-at T`; the plank drawn bending. **The bench:**
+  `--gait springboard`.
+- **Headless:** 4 and 5 m/s, either foot, onto the floor or tops 0.4-0.6 m
+  up: the ankle on the bent board within 0.1 mm, the COM up 0.700 m, the
+  fall ballistic, landed where asked, no step over 3.6 cm at the hand-over.
+- **Live** (BRP; gizmos on and mesh off, Left and Front; mesh on, Left):
+  off a plank past a 1 m block's edge onto a 1.6 m top, the ankle 2.3 cm
+  down at the push's peak, the pelvis up to 2.66 m, stood on the top.
+- **Cost:** 21 µs a character at p50.
+
 ### Parkour, step 12 (fifth part): a tuck over an obstacle
 
 A standing jump asked with a ledge in its path tucks its knees over it

@@ -1264,6 +1264,13 @@ fn steer_the_walker(
             walker.onto = Some(top);
             hangs.onto_fired = true;
         }
+        if !hangs.spring_fired
+            && let (Some(at), Some(board)) = (hangs.spring_at, hangs.springboard)
+            && time.elapsed_secs() >= at
+        {
+            walker.springboard = Some(board);
+            hangs.spring_fired = true;
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1557,6 +1564,12 @@ struct HangSchedule {
     hay: Option<migera::character::anim::parkour::faith::Haystack>,
     faith_at: Option<f32>,
     faith_fired: bool,
+    /// A springboard (`--springboard X,Z,HEADING,TOP[,LENGTH]`: its free
+    /// end's top at X,TOP,Z, launching along HEADING as `--block` faces,
+    /// LENGTH long, 1.2 m else), run at from T (`--springboard-at T`).
+    springboard: Option<migera::character::anim::parkour::springboard::Springboard>,
+    spring_at: Option<f32>,
+    spring_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1659,6 +1672,15 @@ impl HangSchedule {
                     }
                 }
                 "--faith-at" => schedule.faith_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--springboard" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, top, ref rest @ ..] = numbers[..] {
+                        let way = approach::direction_of(heading.to_radians());
+                        let length = rest.first().copied().unwrap_or(1.2);
+                        schedule.springboard = Some(migera::character::anim::parkour::springboard::Springboard::plank(Vec3::new(x, top, z), way, length));
+                    }
+                }
+                "--springboard-at" => schedule.spring_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--spin-jump-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, ref rest @ ..] = numbers[..] {
@@ -1911,6 +1933,38 @@ struct GalleryPole;
 #[derive(Component)]
 struct GalleryHay;
 
+/// The gallery's springboard, as drawn: a plank this wide and thick,
+/// metres, bent about its fixed end as far as the walker leaping off it has
+/// it.
+#[derive(Component)]
+struct GallerySpringboard;
+const SPRINGBOARD_WIDE: f32 = 0.45;
+const SPRINGBOARD_THICK: f32 = 0.05;
+
+fn bend_springboard(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    hangs: Res<HangSchedule>,
+    walkers: Query<&walker::WalkerState>,
+    mut drawn: Query<&mut Transform, With<GallerySpringboard>>,
+) {
+    let Some(board) = hangs.springboard else { return };
+    let bent = walkers.iter().find_map(|state| state.springboard_bent()).map_or(0.0, |(_, bent)| bent);
+    // Turned about its fixed end's top edge, the free end down `bent`.
+    let across = board.way.cross(Vec3::Y).normalize();
+    let tilt = Quat::from_axis_angle(across, -(bent / board.length).clamp(-1.0, 1.0).asin());
+    let turn = tilt * Quat::from_rotation_arc(Vec3::Z, board.way);
+    let middle = board.root() + tilt * (board.way * (0.5 * board.length)) - turn * (Vec3::Y * (0.5 * SPRINGBOARD_THICK));
+    let placed = Transform::from_translation(middle).with_rotation(turn);
+    if let Ok(mut transform) = drawn.single_mut() {
+        *transform = placed;
+        return;
+    }
+    let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.38, 0.22), perceptual_roughness: 0.8, ..default() });
+    commands.spawn((GallerySpringboard, Mesh3d(meshes.add(Cuboid::new(SPRINGBOARD_WIDE, SPRINGBOARD_THICK, board.length))), MeshMaterial3d(wood), placed));
+}
+
 fn place_hay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryHay>>) {
     let Some(hay) = hangs.hay else { return };
     if !drawn.is_empty() {
@@ -1955,6 +2009,12 @@ fn place_ledge(
 ) {
     // Beams' tops are ledges too, walked on.
     let ledges: Vec<_> = hangs.ledge.into_iter().chain(hangs.others.iter().copied()).chain(hangs.beams.iter().map(|beam| beam.ledge())).collect();
+    // So is a springboard's (drawn bending by `bend_springboard`).
+    let plank = hangs.springboard.map(|board| migera::character::anim::parkour::Ledge {
+        wall_below: SPRINGBOARD_THICK,
+        ..migera::character::anim::parkour::Ledge::wall(board.at.with_y(0.0), board.way, SPRINGBOARD_WIDE, board.at.y, board.length)
+    });
+    let ledges: Vec<_> = ledges.into_iter().chain(plank).collect();
     if ledges.is_empty() {
         return;
     }
@@ -1972,7 +2032,7 @@ fn place_ledge(
         commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround::new(under, ledges.clone()))));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
-    for ledge in &ledges {
+    for ledge in ledges.iter().filter(|&&ledge| Some(ledge) != plank) {
         // A block behind each face, from the edge down as far as the wall
         // goes (a slab at least 0.1 m thick), as deep as the top.
         let width = (ledge.b - ledge.a).length();
@@ -2912,7 +2972,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

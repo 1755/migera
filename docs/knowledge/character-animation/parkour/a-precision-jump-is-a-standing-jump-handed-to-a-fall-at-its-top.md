@@ -121,3 +121,4 @@ p50 over the jump and the fall.
 - [A jump is planned as its centre of mass's path](../ik-and-locomotion/a-jump-is-planned-as-its-centre-of-mass-path.md) — prerequisite: the standing jump `Jump::onto` plans.
 - [A hang is dropped into, let go of, and caught from a fall](./a-hang-is-dropped-into-let-go-of-and-caught-from-a-fall.md) — prerequisite: a jump going on as a fall, the hand-off this times at the apex.
 - [A beam is walked with the feet near its line and the arms out](./a-beam-is-walked-with-the-feet-near-its-line-and-the-arms-out.md) — context: the balance it stands in.
+- [A springboard is a running leap whose take-off foot rides the board down](./a-springboard-is-a-running-leap-whose-foot-rides-the-board-down.md) — same-trap: the same NaN met again by a fall handed over rising toward a higher top, and why fixing it in the fall moved other jumps.

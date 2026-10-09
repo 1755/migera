@@ -113,9 +113,24 @@ struct Stance {
     offsets: (f32, f32),
     /// How far the free leg drives up and the arms swing harder, by the end.
     drive: f32,
+    /// Off a springboard, the most the planted foot sinks with the board
+    /// bending under it, metres ([`Self::sunk`]); 0 on the floor.
+    sink: f32,
 }
 
 impl Stance {
+    /// How far the planted foot has sunk with a springboard `q` into the
+    /// stance, metres: the board bends as hard as the foot pushes on it,
+    /// most where the floor's push is ([`pushed_height`]), squared so the
+    /// foot meets and leaves it at the board's rest speed (by the push alone
+    /// the foot left 2.2 m/s up of its flight's, a 3.7 cm change of step).
+    fn sunk(&self, q: f32) -> f32 {
+        if self.sink <= 0.0 {
+            return 0.0;
+        }
+        self.sink * push_share(self.from.1, self.from_rate.1, self.to.1, self.to_rate.1, self.seconds, q).powi(2)
+    }
+
     /// The hips forward and the COM up `s` seconds in.
     fn hips_at(&self, s: f32) -> (f32, f32) {
         let u = (s / self.seconds).clamp(0.0, 1.0);
@@ -149,7 +164,7 @@ impl Stance {
     /// given the run's pose there: the run's own, carried as far as the body
     /// has gone over the foot.
     fn ankle(&self, q: f32, pose: &LocalPose, stood: &LocalPose, rig: &RigGeometry) -> Vec3 {
-        ankle_in_frame(pose, stood, rig, self.leg) + self.carried(q) + self.anchor
+        ankle_in_frame(pose, stood, rig, self.leg) + self.carried(q) + self.anchor - Vec3::Y * self.sunk(q)
     }
 
     /// How far the body has gone over the foot `q` into the stance.
@@ -400,6 +415,15 @@ impl FromRun {
         }
     }
 
+    /// How far a springboard under the take-off foot is bent `t` seconds
+    /// in, metres: 0 off its stance or off the floor.
+    pub fn board_sunk(&self, jump: &Jump, t: f32) -> f32 {
+        match jump.phase_at(t) {
+            JumpPhase::Down | JumpPhase::Push => self.takeoff.sunk(t / self.takeoff.seconds),
+            _ => 0.0,
+        }
+    }
+
     /// Which feet are down `t` seconds in: the take-off foot, none, then
     /// the landing foot, or both.
     pub fn feet_down(&self, jump: &Jump, t: f32) -> [bool; 2] {
@@ -412,12 +436,28 @@ impl FromRun {
     }
 }
 
+/// A springboard under a running leap's take-off foot: the COM rise it adds,
+/// metres, over what a leap may ask ([`super::HIGHEST`]); and the most it
+/// bends under the foot, metres.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Board {
+    pub give: f32,
+    pub dip: f32,
+}
+
 impl Jump {
     /// A jump as `ask`ed from a run at `start.speed`, the foot of
     /// `start.leg` having just come down (the run's clock at its contact):
     /// it takes off from that foot, lands on the other and runs on.
     pub fn from_run(ask: JumpAsk, start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> Self {
-        let height = ask.height.clamp(0.02, super::HIGHEST);
+        Self::from_board(ask, start, Board::default(), stood, rig)
+    }
+
+    /// [`Self::from_run`], taking off from `board`: as high as asked up to
+    /// its give more than a leap may, the planted foot sinking with the
+    /// board as it pushes ([`Stance::sunk`]), the COM's path the push's.
+    pub fn from_board(ask: JumpAsk, start: RunStart, board: Board, stood: &LocalPose, rig: &RigGeometry) -> Self {
+        let height = ask.height.clamp(0.02, super::HIGHEST + board.give);
         let up = (2.0 * GRAVITY * height).sqrt();
         let forward = rig.forward();
         let mut jump = Self::plan(JumpAsk::up(height), stood, rig);
@@ -464,6 +504,7 @@ impl Jump {
             to_rate: (0.0, up),
             offsets: (0.0, 0.0),
             drive,
+            sink: board.dip,
         };
         takeoff.carries(stood, rig);
         let hips = |pose: &LocalPose| hips_of(pose, stood).dot(forward);
@@ -548,6 +589,7 @@ impl Jump {
                 to_rate: (speed, rate_at(&after, speed, after_cycle, lands_at + duty - 0.002).1),
                 offsets: (0.0, 0.0),
                 drive: 0.0,
+                sink: 0.0,
             };
             stance.carries(stood, rig);
             let over = stance.carried(1.0).dot(forward);
@@ -735,6 +777,21 @@ pub(super) fn pushed_height(from: f32, from_rate: f32, to: f32, to_rate: f32, se
         let back = 1.0 - u;
         to - to_rate * t * back + t * t * (-0.5 * GRAVITY * back * back + size(p) * twice(p, back))
     }
+}
+
+/// The floor's push `u` (0-1) through the stance [`pushed_height`] plans,
+/// over its most: the bump `u^p(1-u)` it shapes the push with (from the end
+/// back if early). Planned as a cubic Hermite instead, a `sin²` bump.
+fn push_share(from: f32, from_rate: f32, to: f32, to_rate: f32, seconds: f32, u: f32) -> f32 {
+    let t = seconds;
+    let whole = (to_rate - from_rate) / t + GRAVITY;
+    let early = ((to - from - from_rate * t) / (t * t) + 0.5 * GRAVITY) / whole;
+    if !(whole > 0.0 && (0.05..0.95).contains(&early)) {
+        return (std::f32::consts::PI * u).sin().powi(2);
+    }
+    let (p, v) = if early <= 0.5 { (2.0 / early - 3.0, u) } else { (2.0 / (1.0 - early) - 3.0, 1.0 - u) };
+    let most = (p / (p + 1.0)).powf(p) / (p + 1.0);
+    (v.clamp(0.0, 1.0).powf(p) * (1.0 - v.clamp(0.0, 1.0)) / most).clamp(0.0, 1.0)
 }
 
 /// `leg`'s ankle in the jump's frame (the standing hips').
