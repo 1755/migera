@@ -41,6 +41,30 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 11 finished: a hand on a wall beside the body
+
+Standing or walking beside a tall wall within reach of a shoulder, that
+hand rests on it (`parkour::wallhand`). Note: [a hand rests on a wall
+beside the body](docs/knowledge/character-animation/parkour/a-hand-rests-on-a-wall-beside-the-body.md).
+
+- **The wall:** probed out from each shoulder to 0.62 m, its face narrowed
+  by bisection; on fully by 0.45 m.
+- **The hand:** ahead of and under the shoulder, 3 cm off the face, palm
+  flat, fingers up; eased over 0.3 s in the walker; walking, it goes along
+  the face with the shoulder.
+- **The bench:** `--gait wall-hand`.
+- **Headless:** walls 0.3-0.55 m from either shoulder found within 1 mm;
+  the wrist 3 cm off the face; nothing through it; out of reach or
+  waist-high walls not leant on.
+- **Live** (Xvfb, gizmos on and mesh off, Front, Back, Left; mesh on):
+  standing beside a wall, the hand on it; walking along one, the hand on
+  it through the stride.
+- **Cost:** 44 µs a character at p50, the walk's 24.
+
+Step 11 is built: leaning, skids, hops, precision jumps, a hand on a wall.
+1289 library tests pass; clippy is clean, but for an older test warning in
+`hand.rs`.
+
 ### Parkour, step 11 (fourth part): a precision jump onto a small top
 
 Asked onto a small top (`Walker::onto`), the walker turns to face it,

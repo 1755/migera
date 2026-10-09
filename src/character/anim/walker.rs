@@ -541,6 +541,10 @@ pub struct WalkerState {
     /// stands on after, balancing.
     pub onto: Option<Vec3>,
     pub perched: Option<Vec3>,
+    /// A hand on a wall beside it (`parkour::wallhand`): how far on (0-1,
+    /// eased), and the wall (kept while it eases off).
+    pub wall_hand: f32,
+    pub wall_beside: Option<super::parkour::wallhand::Beside>,
     /// Running, its lean with its acceleration (`parkour::lean`), and its
     /// facing last frame, for its turn's rate.
     pub lean: super::parkour::lean::Lean,
@@ -614,6 +618,8 @@ impl WalkerState {
             skid: None,
             onto: None,
             perched: None,
+            wall_hand: 0.0,
+            wall_beside: None,
             lean: Default::default(),
             lean_yaw: yaw,
             kick_chain: None,
@@ -1808,6 +1814,38 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             state.lean_yaw = state.facing.yaw;
             if state.lean.now.length_squared() > 1.0e-10 {
                 lean::lean(&mut target.pose, &gait_rig, state.lean.now);
+            }
+        }
+        // Beside a wall, standing or walking, a hand rests on it
+        // (`parkour::wallhand`), eased on and off; not with the arms busy
+        // (a beam's balance, a squeeze, a teeter, a reach, crouched).
+        {
+            use super::parkour::wallhand;
+            let free = running <= 0.0
+                && !state.on_holds()
+                && state.jump.is_none()
+                && state.posture.is_standing()
+                && !crouched
+                && state.beam <= 0.0
+                && state.squeezed <= 0.0
+                && state.teeter.is_none()
+                && walker.reach.is_none();
+            let found = ground.filter(|_| free).and_then(|ground| {
+                let blocks = |point: Vec3, low: f32| ground.0.blocks(point, low, low + 2.0);
+                wallhand::beside(&target.pose, state.locomotion.position, state.facing.yaw, &gait_rig, &blocks)
+            });
+            let wanted = found.map_or(0.0, |wall| wall.weight());
+            let most = time.delta_secs() / wallhand::EASE;
+            state.wall_hand = (state.wall_hand + (wanted - state.wall_hand).clamp(-most, most)).clamp(0.0, 1.0);
+            // A wall on the other side taken only once the hand is off.
+            if found.is_some_and(|wall| state.wall_beside.is_none_or(|last| last.side == wall.side) || state.wall_hand <= 0.0) {
+                state.wall_beside = found;
+            }
+            if state.wall_hand <= 0.0 {
+                state.wall_beside = None;
+            }
+            if let Some(wall) = state.wall_beside {
+                wallhand::rest_hand(&mut target.pose, state.locomotion.position, state.facing.yaw, &gait_rig, &wall, super::gait::smoothstep(state.wall_hand));
             }
         }
         // Sitting, sitting down or standing up: the posture's pose instead

@@ -117,6 +117,9 @@ enum Gait {
     /// A standing jump onto a 0.2 m post 1.2 m ahead: the jump to its top,
     /// then the fall landing on the post.
     Onto,
+    /// A 1.2 m/s walk beside a wall, a hand on it: the wall probed for and
+    /// the hand rested on it every frame.
+    WallHand,
 }
 
 fn main() {
@@ -165,7 +168,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -674,6 +677,20 @@ fn main() {
             beam::balance(&mut pose, &rig, 1.0, beam::sway_at(cycle * 4.0));
             Some((pose, Some(params)))
         }
+        // Walking beside a wall 0.45 m out from the left shoulder, a hand on
+        // it, as the walker finds and rests it.
+        _ if let Gait::WallHand = gait => {
+            use migera::character::anim::parkour::wallhand;
+            let params = GaitParams::walking_on(1.2, &rig);
+            let mut pose = walk_pose_on(cycle, &params, &stood, &rig);
+            let left = rig.left();
+            let face = migera::character::anim::rig::forward_kinematics_on(&stood, &rig)[migera::character::skeleton::Bone::LeftArm].dot(left) + 0.45;
+            let blocks = |p: Vec3, low: f32| p.dot(left) >= face && 2.5 > low;
+            if let Some(wall) = wallhand::beside(&pose, Vec3::ZERO, 0.0, &rig, &blocks) {
+                wallhand::rest_hand(&mut pose, Vec3::ZERO, 0.0, &rig, &wall, wall.weight());
+            }
+            Some((pose, Some(params)))
+        }
         // Running round a turn, leant as the walker leans it.
         _ if let Gait::RunLean = gait => {
             use migera::character::anim::parkour::lean;
@@ -766,6 +783,7 @@ fn main() {
         Gait::RunLean => "   a 4 m/s run turning and gathering, leant".to_string(),
         Gait::Skid(round) => if round { "   a plant-and-turn from 5 m/s" } else { "   a skid stop from 5 m/s" }.to_string(),
         Gait::Onto => "   a standing jump onto a 0.2 m post 1.2 m ahead".to_string(),
+        Gait::WallHand => "   a 1.2 m/s walk beside a wall, a hand on it".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -914,6 +932,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("skid") => Gait::Skid(false),
         Some("plant-turn") => Gait::Skid(true),
         Some("onto") => Gait::Onto,
+        Some("wall-hand") => Gait::WallHand,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
         Some("let-go") => Gait::LetGo(false),

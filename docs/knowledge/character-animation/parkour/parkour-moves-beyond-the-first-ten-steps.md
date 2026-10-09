@@ -209,7 +209,16 @@ climbing is the heart of the style; perches and agility make it feel right.
   [free climbing on holds](./a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md).
   Outside corners and the transitions to a ladder, pole or beam end are
   not built.
-- Steps 11, 12 and 14-18 not started.
+- **Step 11** built (2026-10-09):
+  [leaning with acceleration](./a-run-leans-whole-into-a-turn-and-its-trunk-with-its-speed.md),
+  [skid stops and plant-and-turns](./a-skid-stop-slides-side-on-and-rises-over-stuck-feet.md),
+  [hops in stride](./a-small-obstacle-is-hopped-as-a-running-leap-its-feet-lifted.md),
+  [precision jumps](./a-precision-jump-is-a-standing-jump-handed-to-a-fall-at-its-top.md)
+  and [a hand on a wall](./a-hand-rests-on-a-wall-beside-the-body.md). Not
+  built: the whole-body pitch of a sprint start (it trunk-pitches only), a
+  plant-and-turn running on without standing, a landing on the balls of
+  the feet.
+- Steps 12 and 14-18 not started.
 
 ## Related
 
