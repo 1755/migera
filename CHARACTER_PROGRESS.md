@@ -41,6 +41,27 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 11 (first part): leaning with a run's acceleration
+
+A running walker leans by its acceleration, `tan θ = a/g`
+(`parkour::lean`). Note: [a run leans whole into a turn, and its trunk
+with its speed](docs/knowledge/character-animation/parkour/a-run-leans-whole-into-a-turn-and-its-trunk-with-its-speed.md).
+
+- **Into a turn**, the whole body rolls by `atan(v·ω/g)` about its outer
+  ankle, the feet kept where the gait put them.
+- **Gathering or shedding speed**, the trunk pitches by `atan(a/g)`: 11.5°
+  forward at the run's 2 m/s², 17° back at its 3.
+- **Not whole-body forward**: over a steady run's stance the trailing foot
+  at toe-off would need the hips 9 cm lower or come 7 cm short (and slide).
+- **The bench:** `--gait run-lean`.
+- **Headless:** the trunk tilts by the lean asked within 1°; the feet stay
+  within 1 mm; a sudden turn eases in without overshoot, no joint's step
+  changing over 4.8 mm.
+- **Live** (BRP; Xvfb, gizmos on and mesh off, mesh on, Back): a 4 m/s
+  circle at 1 rad/s rolled the trunk 22.2° (the formula: 22.2°); a start
+  to 5 m/s pitched it 14-17° gathering, 7-9° at speed, −7 to −9° braking.
+- **Cost:** 54 µs a character at p50, the plain run's 44.
+
 ### Parkour, step 13: free climbing on holds
 
 Asked to free climb (`Walker::holds`, `Walker::free_climb`), the walker

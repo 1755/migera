@@ -287,4 +287,5 @@ also shows the walk's sway on a run's clock jolting the root over 3 mm.
 - [A speed contact test is fooled by a lagging sprung leg](./a-speed-contact-test-is-fooled-by-a-lagging-sprung-leg.md) — context: planted feet from the clock, and now gripped.
 - [Walking foot rocker contact model](./walking-foot-rocker-contact-model.md) — context: the three contacts, the tip now following the toe.
 - [Root motion is the rendered contact's displacement](./root-motion-is-the-rendered-contacts-displacement.md) — contrast: why a run moves at its own speed instead.
+- [A run leans whole into a turn, and its trunk with its speed](../parkour/a-run-leans-whole-into-a-turn-and-its-trunk-with-its-speed.md) — extension: the lean laid over this cycle by its acceleration, and why a steady cycle cannot pitch whole.
 - [Walk step width and sideways sway](./walk-step-width-and-sideways-sway.md) — context: the walk sway a run fades out.

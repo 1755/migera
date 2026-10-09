@@ -515,6 +515,10 @@ pub struct WalkerState {
     /// walks to to get on.
     pub free_climbing: Option<super::parkour::holds::FreeClimb>,
     pub holds_spot: Option<Vec3>,
+    /// Running, its lean with its acceleration (`parkour::lean`), and its
+    /// facing last frame, for its turn's rate.
+    pub lean: super::parkour::lean::Lean,
+    pub lean_yaw: f32,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -581,6 +585,8 @@ impl WalkerState {
             squeezed: 0.0,
             free_climbing: None,
             holds_spot: None,
+            lean: Default::default(),
+            lean_yaw: yaw,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -1384,6 +1390,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // Both feet down by the gait's clock, as last frame left it: a walk
         // holds its speed then (`run::paced`).
         let both_down = foot_ik.gait_swing == Some([false; 2]);
+        let pace_before = state.pace;
         state.pace = if still || state.shuffle.is_some() || toward.is_some() {
             asked
         } else {
@@ -1741,6 +1748,26 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             super::parkour::teeter::teeter(&mut target.pose, &gait_rig, t);
             let t = t + time.delta_secs();
             state.teeter = (t < super::parkour::teeter::TEETER_TIME).then_some(t);
+        }
+        // Running, leant with its acceleration (`parkour::lean`): rolled into
+        // a turn by its speed times its facing's turn rate (last frame's),
+        // the trunk pitched forward gathering speed and back shedding it.
+        {
+            use super::parkour::lean;
+            let dt = time.delta_secs();
+            if dt > 0.0 {
+                let turn_rate = facing::shortest_angle(state.facing.yaw - state.lean_yaw) / dt;
+                let wanted = if weight >= 1.0 && !state.on_holds() && state.jump.is_none() {
+                    lean::lean_for((state.pace - pace_before) / dt, lean::turning(speed, turn_rate)) * running
+                } else {
+                    Vec2::ZERO
+                };
+                state.lean.advance(wanted, dt);
+            }
+            state.lean_yaw = state.facing.yaw;
+            if state.lean.now.length_squared() > 1.0e-10 {
+                lean::lean(&mut target.pose, &gait_rig, state.lean.now);
+            }
         }
         // Sitting, sitting down or standing up: the posture's pose instead
         // (`sitting`), its legs as solved on its own contacts, untouched by
