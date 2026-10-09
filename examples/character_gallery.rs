@@ -1250,6 +1250,13 @@ fn steer_the_walker(
             walker.spin_jump = Some(turn);
             hangs.spin_fired = true;
         }
+        if !hangs.faith_fired
+            && let (Some(at), Some(hay)) = (hangs.faith_at, hangs.hay)
+            && time.elapsed_secs() >= at
+        {
+            walker.leap_of_faith = Some(hay);
+            hangs.faith_fired = true;
+        }
         if !hangs.onto_fired
             && let Some((at, top)) = hangs.onto
             && time.elapsed_secs() >= at
@@ -1545,6 +1552,11 @@ struct HangSchedule {
     /// T[,DEGREES]`, else 180).
     spin_jump: Option<(f32, f32)>,
     spin_fired: bool,
+    /// A haystack (`--hay X,Z,HEIGHT,RADIUS`), and a leap of faith into it
+    /// at T (`--faith-at T`).
+    hay: Option<migera::character::anim::parkour::faith::Haystack>,
+    faith_at: Option<f32>,
+    faith_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1640,6 +1652,13 @@ impl HangSchedule {
                         schedule.onto = Some((at, Vec3::new(x, y, z)));
                     }
                 }
+                "--hay" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, height, radius] = numbers[..] {
+                        schedule.hay = Some(migera::character::anim::parkour::faith::Haystack { top: Vec3::new(x, height, z), radius, height });
+                    }
+                }
+                "--faith-at" => schedule.faith_at = args.next().and_then(|t| t.trim().parse().ok()),
                 "--spin-jump-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, ref rest @ ..] = numbers[..] {
@@ -1887,6 +1906,24 @@ fn place_holds(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
 /// The gallery's pole, as drawn.
 #[derive(Component)]
 struct GalleryPole;
+
+/// The gallery's haystack, as drawn.
+#[derive(Component)]
+struct GalleryHay;
+
+fn place_hay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryHay>>) {
+    let Some(hay) = hangs.hay else { return };
+    if !drawn.is_empty() {
+        return;
+    }
+    let straw = materials.add(StandardMaterial { base_color: Color::srgb(0.82, 0.68, 0.32), perceptual_roughness: 0.95, ..default() });
+    commands.spawn((
+        GalleryHay,
+        Mesh3d(meshes.add(Cylinder::new(hay.radius, hay.height))),
+        MeshMaterial3d(straw),
+        Transform::from_translation(hay.top - Vec3::Y * (0.5 * hay.height)),
+    ));
+}
 
 fn place_pole(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryPole>>) {
     let Some(pole) = hangs.pole else { return };
@@ -2875,7 +2912,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

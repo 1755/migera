@@ -196,6 +196,10 @@ pub struct Walker {
     /// A jump from standing that turns this far in the air, radians about
     /// `+Y` (`parkour::spin`; π turns round); the ask is dropped once taken.
     pub spin_jump: Option<f32>,
+    /// A leap of faith into this pile from standing on a top's edge
+    /// (`parkour::faith`): it turns to face it, dives, lands on its back in
+    /// it and rises out; the ask is dropped once taken (or out of reach).
+    pub leap_of_faith: Option<super::parkour::faith::Haystack>,
     /// Running fast (`parkour::skid::SKID_FROM`), asked to stop it skids to
     /// a stop, and asked to face back (steered over [`SKID_BACK`] off its
     /// facing) it plants and turns round, standing; otherwise it slows to a
@@ -247,6 +251,7 @@ impl Default for Walker {
             perch: false,
             look_round: false,
             spin_jump: None,
+            leap_of_faith: None,
             skid: false,
         }
     }
@@ -556,6 +561,8 @@ pub struct WalkerState {
     /// A turning jump's turn, until it is handed to its fall
     /// (`parkour::spin`).
     pub spinning: Option<f32>,
+    /// A leap of faith under way (`parkour::faith`).
+    pub faith: Option<super::parkour::faith::LeapOfFaith>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -640,6 +647,7 @@ impl WalkerState {
             onto: None,
             perched: None,
             spinning: None,
+            faith: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -660,7 +668,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some() || self.skid.is_some() || self.faith.is_some()
     }
 }
 
@@ -1970,6 +1978,23 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.leap_asked = Some(ask);
                 }
             }
+            // A leap of faith (`parkour::faith`), standing: turned to face
+            // the pile on the spot, then the leap.
+            if let Some(hay) = walker.leap_of_faith
+                && standing
+                && state.jump.is_none()
+                && state.faith.is_none()
+                && state.perch_weight <= 0.0
+            {
+                let ahead = approach::heading_of(rig.forward());
+                let toward = approach::heading_of((hay.top - state.locomotion.position).with_y(0.0).normalize_or(rig.forward())) - ahead;
+                if facing::shortest_angle(toward - state.facing.yaw).abs() > 0.02 {
+                    steer = Steer::Toward { yaw: toward, rate: 2.0 };
+                } else {
+                    state.faith = super::parkour::faith::LeapOfFaith::plan(state.locomotion.position, state.facing.yaw, hay, &stood, &rig);
+                    walker.leap_of_faith = None;
+                }
+            }
             // A turning jump (`parkour::spin`), standing.
             if standing
                 && state.jump.is_none()
@@ -2789,6 +2814,31 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.under_slide = None;
                     state.stood_hold = STOOD_HOLD;
                     phase.elapsed = 0.0;
+                }
+            }
+            // A leap of faith (`parkour::faith`): posed as planned, the root
+            // riding its centre of mass; risen out of the pile, it stands.
+            if let Some(faith) = state.faith.as_mut() {
+                faith.advance(dt);
+                target.pose = match springs {
+                    Some(springs) => faith.pose_led(&springs.0),
+                    None => faith.pose(),
+                };
+                state.locomotion.position = faith.root();
+                state.facing.yaw = faith.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if faith.is_done() {
+                    state.faith = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
+                    let_go = true;
                 }
             }
             // Skidding (`parkour::skid`): posed as planned, the root riding

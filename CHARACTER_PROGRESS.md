@@ -41,6 +41,28 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (third part): the leap of faith
+
+Asked (`Walker::leap_of_faith`), from a high top the walker dives into a
+pile of hay, lands on its back in it, and rises out (`parkour::faith`).
+Note: [a leap of faith is a ballistic swan dive flipped onto the
+back](docs/knowledge/character-animation/parkour/a-leap-of-faith-is-a-ballistic-swan-dive-flipped-onto-the-back.md).
+
+- **The leap:** a spring off the edge, the COM ballistic into the pile;
+  the swan's shape pitched whole into a dive, held, then a half front flip
+  onto its back; sunk to near the floor, hidden, risen out through the
+  get-up's keys.
+- **The gallery:** `--hay X,Z,HEIGHT,RADIUS`, `--faith-at T` (with
+  `--start-height` and a `--block` to stand on). **The bench:**
+  `--gait faith`.
+- **Headless:** from 6 and 10 m into piles 1.5-3 m out: ballistic within
+  0.009 m/s², landing chest up within 0.14 m of the middle, sunk under the
+  top, nothing under the floor, every pose finite, ending standing.
+- **Live** (Xvfb, gizmos on and mesh off, Left; mesh on, Back and Left;
+  BRP): from a 6 m block into a pile, a swan's dive, turned over, sunk,
+  risen out.
+- **Cost:** 27 µs a character at p50.
+
 ### Parkour, step 12 (second part): a turning jump from a stand
 
 Asked (`Walker::spin_jump`), a standing jump turns round in the air
