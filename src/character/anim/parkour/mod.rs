@@ -9,6 +9,7 @@ pub mod fall;
 pub mod geometry;
 pub mod hang;
 pub mod pole;
+pub mod squeeze;
 pub mod teeter;
 pub mod underslide;
 pub mod vault;

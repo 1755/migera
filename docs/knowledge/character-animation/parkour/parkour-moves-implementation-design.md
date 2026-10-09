@@ -286,6 +286,16 @@ its API, its tests, and when it is done.
   into a gap narrower than 1.3 shoulder widths (Warren and Whang 1987).
 - **Tests.** Feet on the beam; the COM over the support; nothing through
   the low ceiling.
+- **Built** 2026-10-09: [the beam
+  walk](./a-beam-is-walked-with-the-feet-near-its-line-and-the-arms-out.md),
+  [the teeter at an
+  edge](./a-teeter-at-an-edge-windmills-the-arms-once-a-stop.md), [the slide
+  under a slab from a
+  run](./a-low-slab-is-slid-under-on-the-seat-from-a-run.md), [the
+  crawl](./a-crawl-is-a-four-beat-gait-on-the-get-ups-hands-and-knees.md),
+  and [the squeeze along a
+  passage](./a-narrow-passage-is-squeezed-through-as-a-side-shuffle.md).
+  Step 10 is built.
 
 ## Order and dependencies
 
@@ -365,7 +375,9 @@ its API, its tests, and when it is done.
   pole the same day ([its
   note](./a-pole-is-climbed-as-an-inchworm-hands-over-a-leg-clamp.md));
   ropes out of scope. Built.
-- Step 10: not started.
+- **Step 10**, balance and tight spaces: the beam walk, the teeter, the
+  slide under, the crawl and the squeeze, built 2026-10-09 (their notes
+  under step 10 above). Built: steps 1-10 are done.
 - Steps 11-18, the rest of an Assassin's-Creed-style set (running agility,
   more jumps, free climbing on holds, any wall, overhangs and windows,
   perches, swinging fixtures, slides and long falls): designed in [their

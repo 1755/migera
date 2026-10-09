@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 10 finished: squeezing through a narrow passage
+
+Asked to squeeze along a passage (`Walker::squeeze`,
+`parkour::squeeze::Squeeze`), the walker walks to its mouth, turns square
+to it, side-shuffles along it with its arms flat, and walks on once
+through. Note: [a narrow passage is squeezed through as a side
+shuffle](docs/knowledge/character-animation/parkour/a-narrow-passage-is-squeezed-through-as-a-side-shuffle.md).
+
+- **The facing** across the passage is chosen once, as asked; the shuffle
+  at 0.35 m/s; the walls kept off by the walker's wall probe.
+- **The gallery:** `--squeeze`. **The bench:** `--gait squeeze` and
+  `--gait shuffle`.
+- **Headless:** faces across and shuffles toward the far end from any
+  side; the arms held in and back, no farther out than the shoulders.
+- **Live** (Xvfb, gizmos on and mesh off, Top and Left; mesh on; BRP):
+  into a 0.5 m passage, the pelvis 13 cm off the wall behind, along it on
+  its line to within a centimetre.
+- **Cost:** 191 µs a character at p50, of which the side shuffle alone is
+  190: eight times a walk's 24 (posed afresh each frame, its cycle not
+  cached). A finding to come back to.
+
+Step 10 is built: steps 1-10 are done. 1279 library tests pass; clippy is
+clean with and without `real_rig`, but for an older test warning in
+`hand.rs`.
+
 ### Parkour, step 10 (fourth part): crawling on hands and knees
 
 Asked to crawl (`Walker::crawl`), the walker gets down and crawls along its

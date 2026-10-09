@@ -1193,6 +1193,10 @@ fn steer_the_walker(
         }
         walker.catch = hangs.catch;
         walker.crawl = hangs.crawl.is_some_and(|(at, seconds)| (at..at + seconds).contains(&time.elapsed_secs()));
+        // Asked once; the walker drops it once through.
+        if let Some(squeeze) = hangs.squeeze.take() {
+            walker.squeeze = Some(squeeze);
+        }
         walker.pole = hangs.pole;
         if walker.beams != hangs.beams {
             walker.beams = hangs.beams.clone();
@@ -1482,6 +1486,9 @@ struct HangSchedule {
     slide_under_fired: bool,
     /// Crawling from T for SECONDS (`--crawl-at T,SECONDS`).
     crawl: Option<(f32, f32)>,
+    /// Squeezing along a passage between two walls (`--squeeze
+    /// X0,Z0,X1,Z1[,WIDTH]`), asked from the start.
+    squeeze: Option<migera::character::anim::parkour::squeeze::Squeeze>,
 }
 
 impl HangSchedule {
@@ -1544,6 +1551,21 @@ impl HangSchedule {
                     }
                 }
                 "--slide-under-at" => schedule.slide_under_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--squeeze" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x0, z0, x1, z1, ref rest @ ..] = numbers[..] {
+                        let (from, to) = (Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1));
+                        let width = rest.first().copied().unwrap_or(0.5);
+                        let along = (to - from).normalize_or(Vec3::X);
+                        let across = along.cross(Vec3::Y);
+                        let middle = 0.5 * (from + to);
+                        // A wall either side, its face on the passage.
+                        for sign in [1.0f32, -1.0] {
+                            schedule.others.extend(Ledge::block(middle + across * (sign * 0.5 * width), -across * sign, (to - from).length(), 0.4, 2.4));
+                        }
+                        schedule.squeeze = Some(migera::character::anim::parkour::squeeze::Squeeze { from, to });
+                    }
+                }
                 "--crawl-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, seconds] = numbers[..] {

@@ -100,6 +100,9 @@ enum Gait {
     SlideUnder,
     /// Crawling on hands and knees: a cycle of the crawl.
     Crawl,
+    /// Squeezing sideways: the side shuffle at its pace, the arms flat; or
+    /// (`false`) the side shuffle alone, for comparison.
+    Squeeze(bool),
     /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
     /// letting go to the catch, the catch tested each frame of the flight.
     Lache,
@@ -149,7 +152,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -543,6 +546,16 @@ fn main() {
                 Some((now.pose_led(&rig, &springs), None))
             }
         }
+        // Squeezing: the side shuffle at its pace, the arms flattened, as the
+        // walker poses it.
+        _ if let Gait::Squeeze(flat) = gait => {
+            let params = migera::character::anim::shuffle::shuffling(migera::character::anim::parkour::squeeze::SQUEEZE_SPEED, 1.0, 0.0);
+            let mut pose = walk_pose_on(cycle, &params, &stood, &rig);
+            if flat {
+                migera::character::anim::parkour::squeeze::flatten(&mut pose, &rig, 1.0);
+            }
+            Some((pose, Some(params)))
+        }
         _ if let Some(crawl) = &crawling => {
             let mut now = crawl.clone();
             now.advance(true, cycle);
@@ -662,6 +675,7 @@ fn main() {
         Gait::Beam => "   walking on a beam, balancing".to_string(),
         Gait::SlideUnder => "   sliding under a 0.9 m slab from a 5 m/s run, to standing".to_string(),
         Gait::Crawl => "   crawling on hands and knees".to_string(),
+        Gait::Squeeze(flat) => if flat { "   squeezing sideways, the arms flat" } else { "   the side shuffle" }.to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
@@ -799,6 +813,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("beam") => Gait::Beam,
         Some("slide-under") => Gait::SlideUnder,
         Some("crawl") => Gait::Crawl,
+        Some("squeeze") => Gait::Squeeze(true),
+        Some("shuffle") => Gait::Squeeze(false),
         Some("lache") => Gait::Lache,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),

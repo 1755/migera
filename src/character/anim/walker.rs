@@ -162,6 +162,10 @@ pub struct Walker {
     /// (`parkour::crawl`): it gets down from standing first, and up again
     /// once not asked. Crawling, nothing else asked of it is done.
     pub crawl: bool,
+    /// Squeeze sideways along a narrow passage (`parkour::squeeze`): it
+    /// walks to its mouth, turns square to it, shuffles along it, and walks
+    /// on once through (the ask then dropped).
+    pub squeeze: Option<super::parkour::squeeze::Squeeze>,
     /// The pole to climb (`parkour::pole`).
     pub pole: Option<super::parkour::Pole>,
     /// Asked of [`Walker::pole`]: `Up` walks to it, gets on and climbs while
@@ -200,6 +204,7 @@ impl Default for Walker {
             hang: None,
             beams: Vec::new(),
             crawl: false,
+            squeeze: None,
             pole: None,
             on_pole: None,
         }
@@ -491,6 +496,12 @@ pub struct WalkerState {
     pub under_slide: Option<super::parkour::underslide::UnderSlide>,
     /// Crawling, from getting down to standing up (`parkour::crawl`).
     pub crawling: Option<super::parkour::crawl::Crawling>,
+    /// Squeezing along a passage (`parkour::squeeze`): the way it faces
+    /// through it (chosen once, as it is asked), whether it is in it, and
+    /// how far its arms are flattened (0-1).
+    pub squeeze_facing: Option<Vec3>,
+    pub squeezing: bool,
+    pub squeezed: f32,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -552,6 +563,9 @@ impl WalkerState {
             teetered: false,
             under_slide: None,
             crawling: None,
+            squeeze_facing: None,
+            squeezing: false,
+            squeezed: 0.0,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -837,10 +851,51 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             && state.posture.is_standing()
             && !fallen;
         let mut at_pole = false;
+        // Asked to squeeze along a passage (`parkour::squeeze`): to its mouth,
+        // square to it; then in it, shuffling along (below).
+        if walker.squeeze.is_none() {
+            (state.squeezing, state.squeeze_facing) = (false, None);
+        }
+        let squeeze_asked = !state.on_holds() && !state.squeezing && walker.squeeze.is_some() && walker.sit.is_none() && state.posture.is_standing() && !fallen;
         match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
             _ if state.on_holds() => {
                 state.approach = approach::Approach::Idle;
                 (wanted_speed, steer) = (0.0, Steer::Straight);
+            }
+            (_, _, Some(rig)) if squeeze_asked => {
+                let squeeze = walker.squeeze.expect("asked to squeeze");
+                let ahead = approach::heading_of(rig.forward());
+                let facing = *state.squeeze_facing.get_or_insert_with(|| squeeze.facing_for(Quat::from_rotation_y(state.facing.yaw) * rig.forward()));
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                placing = true;
+                let gait = approach_gait(state, cycle_of(&phase), &gait_rig);
+                let obstacles: Vec<_> = route_obstacles.map(|route| route.0.clone()).unwrap_or_default();
+                match state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, squeeze.from, approach::heading_of(facing), speed, &obstacles) {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        (wanted_speed, steer) = (0.0, Steer::Straight);
+                        state.squeezing = true;
+                        state.approach = approach::Approach::Idle;
+                    }
+                }
+            }
+            (_, _, Some(rig)) if state.squeezing => {
+                let squeeze = walker.squeeze.expect("squeezing");
+                let ahead = approach::heading_of(rig.forward());
+                let facing = state.squeeze_facing.unwrap_or_else(|| squeeze.facing_for(rig.forward()));
+                (wanted_speed, steer) = (0.0, Steer::Toward { yaw: approach::heading_of(facing) - ahead, rate: 2.0 });
+                if look_at.is_none() {
+                    look_at = Some(squeeze.to + Vec3::Y * 1.6);
+                }
+                if squeeze.is_through(state.locomotion.position) {
+                    walker.squeeze = None;
+                    (state.squeezing, state.squeeze_facing) = (false, None);
+                }
             }
             (_, _, Some(rig)) if pole_asked => {
                 let pole = walker.pole.expect("asked up a pole");
@@ -1241,7 +1296,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         // on a diagonal. Mostly forward: the walk, the body turned to its way
         // and the head kept on where it faced (`strafe`, below). Changing
         // between them, or the shuffle's side, it stops first.
-        let side = if still || walker.sit.is_some() { 0.0 } else { walker.aside };
+        // Squeezing, the shuffle along the passage.
+        let squeeze_side = match (state.squeezing, walker.squeeze, state.squeeze_facing, foot_ik.rig.as_ref()) {
+            (true, Some(squeeze), Some(facing), Some(rig)) => Some(squeeze.side(facing, rig) * super::parkour::squeeze::SQUEEZE_SPEED),
+            _ => None,
+        };
+        let side = if still || walker.sit.is_some() { 0.0 } else { squeeze_side.unwrap_or(walker.aside) };
         let forward = wanted_speed.max(0.0);
         let going = forward.hypot(side);
         let ahead = if going > 0.0 { forward / going } else { 0.0 };
@@ -1612,6 +1672,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if state.beam > 0.0 {
             let sway = super::parkour::beam::sway_at(state.beam_time);
             super::parkour::beam::balance(&mut target.pose, &gait_rig, super::gait::smoothstep(state.beam), sway);
+        }
+        // Squeezing: the arms held flat at the sides (`parkour::squeeze`).
+        let flattened = time.delta_secs() / super::parkour::beam::BEAM_EASE;
+        state.squeezed = (state.squeezed + if state.squeezing { flattened } else { -flattened }).clamp(0.0, 1.0);
+        if state.squeezed > 0.0 {
+            super::parkour::squeeze::flatten(&mut target.pose, &gait_rig, super::gait::smoothstep(state.squeezed));
         }
         // Stopped with its toes at a drop: a teeter, once a stop, the arms
         // windmilling, the feet planted (`parkour::teeter`).
