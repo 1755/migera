@@ -41,6 +41,25 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (fifth part): a tuck over an obstacle
+
+A standing jump asked with a ledge in its path tucks its knees over it
+(`Jump::tuck_over`): the hop's `HopLift` laid on a standing jump. The lift
+now keeps the COM's path (the root lowered by what the drawn-up legs raise
+it, each foot lifted `1/(1 − 0.16)` of its need). Note (extended): [a small
+obstacle is hopped as a running leap, its feet
+lifted](docs/knowledge/character-animation/parkour/a-small-obstacle-is-hopped-as-a-running-leap-its-feet-lifted.md).
+
+- **Headless:** 0.35 m/1.4 m and 0.45 m/1.8 m jumps over 0.55-0.75 m
+  posts: untucked a leg 6.7-8.9 cm in, tucked nothing in, the jump's own
+  change of step and joint speeds unchanged. A 0.55 m post tucked over
+  anywhere 0.35-0.9 m ahead.
+- **Live** (Xvfb, gizmos on and mesh off, Left and Front; mesh on, Left):
+  `--post 0,-0.8,0.55,0.2 --jump-at 3:0.35:1.4`, the knees up and the feet
+  just over the top.
+- **Cost:** `anim_bench --features real_rig --gait tuck`, 58 µs a character
+  at p50.
+
 ### Parkour, step 12 (fourth part): jumps to a bar or a pole
 
 A leap back from a hang catches a bar behind (a bar is a ledge), and a fall

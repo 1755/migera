@@ -129,6 +129,9 @@ enum Gait {
     /// A leap of faith from a 6 m top into a pile 2.5 m out, rising out of
     /// it: the whole of it.
     Faith,
+    /// A standing jump tucking its knees over a 0.55 m post: posed through
+    /// its whole length, as a jump.
+    Tuck,
 }
 
 fn main() {
@@ -166,10 +169,10 @@ fn main() {
     // that.
     let rig = match gait {
         #[cfg(feature = "real_rig")]
-        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) | Gait::Tuck => migera::character::anim::gltf_rig::puppet_base_as_rendered(),
         #[cfg(not(feature = "real_rig"))]
-        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) => {
-            panic!("--gait wall-run, wall-kick, run-along, slide-under and plant-turn need --features real_rig: only the real rig can plan them")
+        Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::SlideUnder | Gait::Skid(true) | Gait::Tuck => {
+            panic!("--gait wall-run, wall-kick, run-along, slide-under, plant-turn and tuck need --features real_rig: only the real rig can plan them")
         }
         _ => migera::character::anim::rig::RigGeometry::default(),
     };
@@ -177,7 +180,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -497,6 +500,14 @@ fn main() {
             } else {
                 Jump::plan(JumpAsk::forward(height, distance), &stood, &rig)
             })
+        }
+        // A standing jump 0.35 m up, 1.4 m on, its knees tucked over a
+        // 0.55 m post 0.2 m deep in its middle (the real rig: the synthetic
+        // rig's stub shins tuck over none).
+        Gait::Tuck => {
+            use migera::character::anim::jump::{Jump, JumpAsk};
+            use migera::character::anim::parkour::vault::Obstacle;
+            Some(Jump::tuck_over(JumpAsk::forward(0.35, 1.4), Obstacle::square(0.6, 0.2, 0.55), &stood, &rig).expect("a 0.55 m post tucked over"))
         }
         // A speed vault over a 0.9 m wall 0.3 m deep from a run at 3.5 m/s,
         // from its best take-off: posed through its whole length, as a jump.
@@ -826,6 +837,7 @@ fn main() {
         Gait::Perch => "   crouching into a perch and up".to_string(),
         Gait::SpinJump => "   a standing jump turning round in the air".to_string(),
         Gait::Faith => "   a leap of faith from 6 m into a pile".to_string(),
+        Gait::Tuck => "   a standing jump tucking its knees over a 0.55 m post".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -982,6 +994,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("faith") => Gait::Faith,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
+        Some("tuck") => Gait::Tuck,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

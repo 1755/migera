@@ -192,6 +192,11 @@ const HOP_ANKLE_OVER: f32 = 0.14;
 const HOP_TOE_OVER: f32 = 0.05;
 const HOP_MARGIN: f32 = 0.1;
 const HOP_EASE: f32 = 0.12;
+/// The body comes down about this share of a foot's lift, the legs drawn up
+/// carrying the centre of mass up (they are about a third of the mass, and
+/// a leg's centre rises about half its foot's lift): each foot lifted so
+/// much more.
+const LIFT_SINKS: f32 = 0.16;
 /// A foot is down while its ankle is no higher than this over standing's,
 /// metres, and moves no faster than this, m/s.
 const HOP_DOWN: f32 = 0.05;
@@ -385,6 +390,16 @@ impl Jump {
         })
     }
 
+    /// A standing jump as `ask`ed over a low `obstacle` in its way (the
+    /// jump's frame), its knees drawn up over it (step 12, a tuck): the
+    /// feet lifted over it as a hop's, the centre of mass's path unchanged.
+    /// `None` if a foot would be over it on the floor, or it is not cleared.
+    pub fn tuck_over(ask: JumpAsk, obstacle: Obstacle, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let mut jump = Jump::plan(ask, stood, rig);
+        jump.set_hop(HopLift::plan(&jump, obstacle, stood, rig)?);
+        jump.clears_plainly(obstacle, stood, rig).then_some(jump)
+    }
+
     /// Whether, posed from take-off until it runs on, nothing of the body
     /// goes into `obstacle`.
     fn clears_plainly(&self, obstacle: Obstacle, stood: &LocalPose, rig: &RigGeometry) -> bool {
@@ -528,11 +543,20 @@ impl HopLift {
 pub fn lift_over(pose: &LocalPose, lift: &HopLift, t: f32, rig: &RigGeometry) -> LocalPose {
     let mut lifted = *pose;
     let at = forward_kinematics_on(pose, rig);
+    let mut moved = false;
     for (side, (_, ankle)) in LEGS.into_iter().enumerate() {
         let up = lift.at(side, t);
         if up > 1.0e-5 {
-            place_ankle(&mut lifted, rig, ankle, at[ankle] + Vec3::Y * up - at[Bone::Hips]);
+            // Each lift by as much more as the body comes down for it below.
+            place_ankle(&mut lifted, rig, ankle, at[ankle] + Vec3::Y * up / (1.0 - LIFT_SINKS) - at[Bone::Hips]);
+            moved = true;
         }
+    }
+    // The centre of mass where the flight has it: the body moved down by
+    // as much as the legs drawn up carried it up (the tuck's own path
+    // unchanged, step 12).
+    if moved {
+        lifted.root_translation -= com(&lifted, rig) - com(pose, rig);
     }
     lifted
 }
@@ -1093,6 +1117,72 @@ mod tests {
         let hop = |top: f32, depth: f32| Jump::vault(Obstacle::square(1.5, depth, top), RunStart { leg: 0, speed: 4.0 }, VaultKind::Hop, &stood, &rig).is_some();
         assert!(!hop(0.6, 0.3), "hopped a 0.6 m wall");
         assert!(!hop(0.3, 1.0), "hopped a 1 m deep block");
+    }
+
+    /// Standing jumps (0.35 m up, 1.4 m on; 0.45 m up, 1.8 m on) over
+    /// obstacles 0.55-0.65 m and 0.65-0.75 m high (the lowest each does not
+    /// clear by itself), 0.2-0.3 m deep, in their middle: untucked
+    /// a leg goes into each; tucked, nothing does, the centre of mass keeps
+    /// the jump's path, and no joint's step changes over 1 cm more in a
+    /// frame than the jump's own.
+    #[test]
+    fn a_standing_jump_tucks_its_knees_over_an_obstacle() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let mut faults = Vec::new();
+        for (ask, low) in [(JumpAsk::forward(0.35, 1.4), 0.55f32), (JumpAsk::forward(0.45, 1.8), 0.65)] {
+            let bare = Jump::plan(ask, &stood, &rig);
+            for (top, depth) in [(low, 0.2f32), (low + 0.1, 0.2), (low, 0.3)] {
+                let name = format!("{} m up, {} m on, over {top} m high, {depth} m deep", ask.height, ask.distance);
+                let obstacle = Obstacle::square(0.5 * bare.distance() - 0.5 * depth + 0.1, depth, top);
+                // How far into it, the most any joint's step changes in a
+                // frame, the fastest joint (m/s) about the COM, and the COM's
+                // greatest distance from the jump's.
+                let run = |jump: &Jump| {
+                    let (mut into, mut kink, mut fastest, mut com_off) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                    let mut frames: Vec<(BoneSet<Vec3>, Vec3)> = Vec::new();
+                    for k in 0..(jump.duration() / DT) as usize {
+                        let t = k as f32 * DT;
+                        let pose = jump.pose_at(t, &stood, &rig);
+                        let at = forward_kinematics_on(&pose, &rig);
+                        let travelled = forward * jump.travelled_at(t);
+                        let now = BoneSet::from_fn(|bone| at[bone] + travelled);
+                        let c = com(&pose, &rig) + travelled;
+                        com_off = com_off.max((com(&pose, &rig) - com(&jump.pose_at_unshaped(t, &stood, &rig), &rig)).length());
+                        into = Bone::ALL.iter().map(|&bone| obstacle.inside(now[bone], forward)).fold(into, f32::max);
+                        if let Some((before, before_c)) = frames.last() {
+                            fastest = Bone::ALL.iter().map(|&bone| ((now[bone] - c) - (before[bone] - *before_c)).length() / DT).fold(fastest, f32::max);
+                        }
+                        if frames.len() >= 2 {
+                            let (a, b) = (&frames[frames.len() - 2].0, &frames[frames.len() - 1].0);
+                            kink = Bone::ALL.iter().map(|&bone| (now[bone] - 2.0 * b[bone] + a[bone]).length()).fold(kink, f32::max);
+                        }
+                        frames.push((now, c));
+                    }
+                    (into, kink, fastest, com_off)
+                };
+                let (bare_into, bare_kink, bare_fastest, _) = run(&bare);
+                let Some(tucked) = Jump::tuck_over(ask, obstacle, &stood, &rig) else {
+                    faults.push(format!("{name}: not tucked over"));
+                    continue;
+                };
+                let (into, kink, fastest, com_off) = run(&tucked);
+                eprintln!("{name}: untucked into {bare_into:.3}; tucked into {into:.4}, kink {kink:.4} (its own {bare_kink:.4}), fastest {fastest:.1} ({bare_fastest:.1}), COM off {com_off:.5}");
+                if bare_into < 0.01 || into > 1.0e-3 || kink > bare_kink + 0.01 || com_off > 1.0e-3 {
+                    faults.push(format!("{name}: untucked into {bare_into:.3}; tucked into {into:.4}, kink {kink:.4} (its own {bare_kink:.4}), COM off {com_off:.4}"));
+                }
+            }
+        }
+        // And not only in its middle: a 0.55 m post anywhere 0.35-0.9 m
+        // ahead of where it stands (nearer, a foot is over it on the
+        // floor; farther, landing).
+        for k in 0..=11 {
+            let near = 0.35 + 0.05 * k as f32;
+            if Jump::tuck_over(JumpAsk::forward(0.35, 1.4), Obstacle::square(near, 0.2, 0.55), &stood, &rig).is_none() {
+                faults.push(format!("a 0.55 m post {near:.2} m ahead: not tucked over"));
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
     }
 
     /// Too low (a leap clears it), higher than the hips (a mantle), too

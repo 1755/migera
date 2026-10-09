@@ -1973,7 +1973,20 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 && state.jump.is_none()
             {
                 if standing {
-                    state.jump = Some(super::jump::Jump::plan(ask, &stood, &rig));
+                    // A low obstacle in its way: its knees tucked up over
+                    // it (`Jump::tuck_over`), if that clears it.
+                    use super::parkour::vault::{Obstacle, VaultKind};
+                    let ahead = state.facing.rotation() * rig.forward();
+                    let reach = ask.distance;
+                    let tucked = walker
+                        .ledge
+                        .iter()
+                        .chain(&walker.ledges)
+                        .filter_map(|ledge| Obstacle::ahead(ledge, state.locomotion.position, ahead, VaultKind::Hop.most_slant()))
+                        .filter(|obstacle| obstacle.top > 0.0 && obstacle.near + obstacle.depth < reach)
+                        .min_by(|a, b| a.near.total_cmp(&b.near))
+                        .and_then(|obstacle| super::jump::Jump::tuck_over(ask, obstacle, &stood, &rig));
+                    state.jump = Some(tucked.unwrap_or_else(|| super::jump::Jump::plan(ask, &stood, &rig)));
                 } else if running {
                     state.leap_asked = Some(ask);
                 }
