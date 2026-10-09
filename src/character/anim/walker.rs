@@ -158,6 +158,10 @@ pub struct Walker {
     /// Beams about it (`parkour::beam`): on one, it walks along its line at
     /// a beam's pace, the feet nearly on the line, the arms out.
     pub beams: Vec<super::parkour::beam::Beam>,
+    /// Crawl on hands and knees along its facing while asked
+    /// (`parkour::crawl`): it gets down from standing first, and up again
+    /// once not asked. Crawling, nothing else asked of it is done.
+    pub crawl: bool,
     /// The pole to climb (`parkour::pole`).
     pub pole: Option<super::parkour::Pole>,
     /// Asked of [`Walker::pole`]: `Up` walks to it, gets on and climbs while
@@ -195,6 +199,7 @@ impl Default for Walker {
             ledges: Vec::new(),
             hang: None,
             beams: Vec::new(),
+            crawl: false,
             pole: None,
             on_pole: None,
         }
@@ -484,6 +489,8 @@ pub struct WalkerState {
     pub teetered: bool,
     /// Sliding under a slab from a run (`parkour::underslide`).
     pub under_slide: Option<super::parkour::underslide::UnderSlide>,
+    /// Crawling, from getting down to standing up (`parkour::crawl`).
+    pub crawling: Option<super::parkour::crawl::Crawling>,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -544,6 +551,7 @@ impl WalkerState {
             teeter: None,
             teetered: false,
             under_slide: None,
+            crawling: None,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -557,7 +565,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some()
     }
 }
 
@@ -2354,6 +2362,32 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.falling = Some(falling);
                     state.wall_run = None;
                     leapt = true;
+                }
+            }
+            // Crawling (`parkour::crawl`): got down once standing still, posed
+            // in the walker's frame, the root carried along its facing; stood
+            // up again, it walks on.
+            let standing_still = weight <= 0.0 && state.transition.is_at_rest() && state.posture.is_standing() && !state.on_holds() && walker.sit.is_none();
+            if walker.crawl && standing_still && state.crawling.is_none() {
+                state.crawling = Some(super::parkour::crawl::Crawling::new(state.locomotion.position, state.facing.yaw, &stood, &rig));
+            }
+            if let Some(crawl) = state.crawling.as_mut() {
+                crawl.advance(walker.crawl, dt);
+                target.pose = crawl.pose();
+                state.locomotion.position = crawl.root();
+                state.facing.yaw = crawl.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if crawl.is_done() {
+                    state.crawling = None;
+                    state.stood_hold = STOOD_HOLD;
+                    phase.elapsed = 0.0;
                 }
             }
             // Sliding under a slab (`parkour::underslide`): posed as planned,

@@ -41,6 +41,31 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 10 (fourth part): crawling on hands and knees
+
+Asked to crawl (`Walker::crawl`), the walker gets down and crawls along its
+facing (`parkour::crawl::Crawling`). Note: [a crawl is a four-beat gait on
+the get-up's hands and
+knees](docs/knowledge/character-animation/parkour/a-crawl-is-a-four-beat-gait-on-the-get-ups-hands-and-knees.md).
+
+- **Down and up:** the face-down get-up's keys, backward and forward.
+- **The crawl:** four-beat at 0.4 m/s, each limb down 3/4 of the cycle,
+  the arms and shins solved to their places, the body 5 cm low, eased in
+  and out on the key.
+- **The gallery:** `--crawl-at`. **The bench:** `--gait crawl`.
+- **Fixed on the way:** straight limbs out of reach (body lowered); limbs
+  solved at the hand-off (blended in); the key under the floor (cleared);
+  elbows spread wide (pointed back).
+- **Headless:** 1.59 m in 4 s; no joint over 2.4 m/s; no step change over
+  1.7 cm; nothing over 0.65 m while crawling; limbs down within 4.9 mm;
+  three limbs always down.
+- **Live** (Xvfb, gizmos on and mesh off, Left and Front; mesh on): down
+  through the half-kneel, crawled, and up.
+- **Cost:** 10.6 µs a character at p50.
+
+1277 library tests pass; clippy is clean with and without `real_rig`, but
+for an older test warning in `hand.rs`.
+
 ### Parkour, step 10 (third part): sliding under a slab from a run
 
 Running at a slab overhead too low to run under, the walker slides under it

@@ -4,6 +4,7 @@
 
 pub mod along;
 pub mod beam;
+pub mod crawl;
 pub mod fall;
 pub mod geometry;
 pub mod hang;

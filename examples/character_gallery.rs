@@ -1192,6 +1192,7 @@ fn steer_the_walker(
             walker.ledges = hangs.others.clone();
         }
         walker.catch = hangs.catch;
+        walker.crawl = hangs.crawl.is_some_and(|(at, seconds)| (at..at + seconds).contains(&time.elapsed_secs()));
         walker.pole = hangs.pole;
         if walker.beams != hangs.beams {
             walker.beams = hangs.beams.clone();
@@ -1479,6 +1480,8 @@ struct HangSchedule {
     /// [,WIDTH]`) from a run (`--slide-under-at T`).
     slide_under_at: Option<f32>,
     slide_under_fired: bool,
+    /// Crawling from T for SECONDS (`--crawl-at T,SECONDS`).
+    crawl: Option<(f32, f32)>,
 }
 
 impl HangSchedule {
@@ -1541,6 +1544,12 @@ impl HangSchedule {
                     }
                 }
                 "--slide-under-at" => schedule.slide_under_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--crawl-at" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, seconds] = numbers[..] {
+                        schedule.crawl = Some((at, seconds));
+                    }
+                }
                 "--beam" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x0, z0, x1, z1, height, ref rest @ ..] = numbers[..] {

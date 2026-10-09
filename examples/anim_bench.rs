@@ -98,6 +98,8 @@ enum Gait {
     Beam,
     /// Sliding under a 0.9 m slab from a 5 m/s run, to standing past it.
     SlideUnder,
+    /// Crawling on hands and knees: a cycle of the crawl.
+    Crawl,
     /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
     /// letting go to the catch, the catch tested each frame of the flight.
     Lache,
@@ -147,7 +149,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -350,6 +352,16 @@ fn main() {
         }
         _ => None,
     };
+    // A crawl (`parkour::crawl`): the clock is a second of crawling at its
+    // pace, from got down and into it.
+    let crawling = match gait {
+        Gait::Crawl => {
+            let mut crawl = migera::character::anim::parkour::crawl::Crawling::new(Vec3::ZERO, 0.0, &stood, &rig);
+            crawl.advance(true, 3.0);
+            Some(crawl)
+        }
+        _ => None,
+    };
     // A pole (`parkour::pole`): the clock is a climbing cycle up, from its
     // start.
     let poling = match gait {
@@ -531,6 +543,11 @@ fn main() {
                 Some((now.pose_led(&rig, &springs), None))
             }
         }
+        _ if let Some(crawl) = &crawling => {
+            let mut now = crawl.clone();
+            now.advance(true, cycle);
+            Some((now.pose(), None))
+        }
         _ if let Some(slide) = &under_slide => {
             let mut now = slide.clone();
             now.advance(cycle * slide.end());
@@ -644,6 +661,7 @@ fn main() {
         Gait::Pole => "   climbing a pole, a cycle of the climb up".to_string(),
         Gait::Beam => "   walking on a beam, balancing".to_string(),
         Gait::SlideUnder => "   sliding under a 0.9 m slab from a 5 m/s run, to standing".to_string(),
+        Gait::Crawl => "   crawling on hands and knees".to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
@@ -780,6 +798,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("pole") => Gait::Pole,
         Some("beam") => Gait::Beam,
         Some("slide-under") => Gait::SlideUnder,
+        Some("crawl") => Gait::Crawl,
         Some("lache") => Gait::Lache,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),
