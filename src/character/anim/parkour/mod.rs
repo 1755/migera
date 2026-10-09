@@ -8,6 +8,7 @@ pub mod fall;
 pub mod geometry;
 pub mod hang;
 pub mod pole;
+pub mod teeter;
 pub mod vault;
 pub mod wall;
 

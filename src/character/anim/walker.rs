@@ -475,6 +475,10 @@ pub struct WalkerState {
     /// long it has balanced, seconds (the sway's clock).
     pub beam: f32,
     pub beam_time: f32,
+    /// Teetering at an edge it stopped at (`parkour::teeter`), seconds in;
+    /// and whether it has this stop (once a stop).
+    pub teeter: Option<f32>,
+    pub teetered: bool,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -532,6 +536,8 @@ impl WalkerState {
             pole_spot: None,
             beam: 0.0,
             beam_time: 0.0,
+            teeter: None,
+            teetered: false,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -1590,6 +1596,27 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if state.beam > 0.0 {
             let sway = super::parkour::beam::sway_at(state.beam_time);
             super::parkour::beam::balance(&mut target.pose, &gait_rig, super::gait::smoothstep(state.beam), sway);
+        }
+        // Stopped with its toes at a drop: a teeter, once a stop, the arms
+        // windmilling, the feet planted (`parkour::teeter`).
+        let standing_still = weight <= 0.0 && state.transition.is_at_rest() && state.posture.is_standing() && !state.on_holds() && !crouched && walker.sit.is_none();
+        if !standing_still {
+            state.teetered = false;
+            state.teeter = None;
+        } else if !state.teetered
+            && let Some(rig) = foot_ik.rig.as_ref()
+        {
+            let forward = Quat::from_rotation_y(state.facing.yaw) * rig.forward();
+            let ground_at = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+            if super::parkour::teeter::at_edge(state.locomotion.position, forward.with_y(0.0).normalize_or(Vec3::NEG_Z), &ground_at) {
+                state.teetered = true;
+                state.teeter = Some(0.0);
+            }
+        }
+        if let Some(t) = state.teeter {
+            super::parkour::teeter::teeter(&mut target.pose, &gait_rig, t);
+            let t = t + time.delta_secs();
+            state.teeter = (t < super::parkour::teeter::TEETER_TIME).then_some(t);
         }
         // Sitting, sitting down or standing up: the posture's pose instead
         // (`sitting`), its legs as solved on its own contacts, untouched by

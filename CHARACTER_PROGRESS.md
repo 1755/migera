@@ -41,6 +41,24 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 10 (second part): teetering at an edge
+
+Brought to a stand with a drop just ahead, the walker teeters once a stop
+(`parkour::teeter`). Note: [a teeter at an edge windmills the arms, once a
+stop](docs/knowledge/character-animation/parkour/a-teeter-at-an-edge-windmills-the-arms-once-a-stop.md).
+
+- **An edge:** the ground 0.3 m ahead over 0.5 m lower.
+- **The teeter:** 1.6 s, both arms circling twice up in front, the trunk
+  rocking 0.25 rad, the feet planted, the pose untouched at either end.
+- **Headless:** standing exactly at both ends; the hands up to 1.85 m
+  against the head's 1.60; no joint over 5.7 m/s, no step change over
+  1.7 cm.
+- **Live** (Xvfb, gizmos on and mesh off, Left and Front; mesh on; BRP):
+  on a 2 m block 0.25 m from its edge, it teetered once and settled.
+
+1275 library tests pass; clippy is clean with and without `real_rig`, but
+for an older test warning in `hand.rs`.
+
 ### Parkour, step 10 (first part): walking on a beam
 
 On a beam (`parkour::beam::Beam`, `Walker::beams`), the walk balances. Note:
