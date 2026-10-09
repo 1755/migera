@@ -1,6 +1,6 @@
 ---
 title: A narrow passage is squeezed through as a side shuffle
-description: "Step 10, fifth part: asked to squeeze along a passage, the walker walks to its mouth, turns square to it (the facing chosen once, as asked), side-shuffles along it at 0.35 m/s with the arms flat at its sides, and walks on once through. The side shuffle itself costs 190 µs a frame, eight times a walk. Read before changing parkour/squeeze.rs."
+description: "Step 10, fifth part: asked to squeeze along a passage, the walker turns square to it at its mouth, side-shuffles along it at 0.35 m/s, arms flat, and walks on once through. The side shuffle itself costs 190 µs a frame, eight times a walk. Read before changing parkour/squeeze.rs."
 type: decision
 status: current
 tags:
