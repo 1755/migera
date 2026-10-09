@@ -139,6 +139,8 @@ enum Gait {
     Monkey,
     /// Swinging round a flagpole, from the catch to letting go.
     Flagpole,
+    /// Swinging one-handed on a hook, from the catch to letting go.
+    Hook,
 }
 
 fn main() {
@@ -187,7 +189,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -415,16 +417,20 @@ fn main() {
     });
     // A flagpole (`parkour::flagpole`): the clock is the swing from the
     // catch (run off a 1.5 m top at 3 m/s) to letting go.
-    let flagging = matches!(gait, Gait::Flagpole).then(|| {
+    let flagging = matches!(gait, Gait::Flagpole | Gait::Hook).then(|| {
         use migera::character::anim::parkour::flagpole::{Flagpole, Swinging};
         use migera::character::anim::parkour::Falling;
         let forward = rig.forward();
         let pole = Flagpole::new(Vec3::new(0.75, 2.6, 0.0) + forward * 0.9, Vec3::NEG_X, 1.5);
+        let hook = forward * 0.9 + Vec3::Y * 2.7;
         let mut falling = Falling::off(Vec3::Y * 1.5, 0.0, forward * 3.0, &stood, 0.0, 0.0, &stood, &rig);
         falling.reach(true);
         let caught = (0..120).find_map(|_| {
             falling.advance(DT);
-            Swinging::caught(&pole, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig)
+            match gait {
+                Gait::Hook => Swinging::caught_hook(hook, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig),
+                _ => Swinging::caught(&pole, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig),
+            }
         });
         let caught = caught.expect("a flagpole caught");
         let mut probe = caught.clone();
@@ -901,6 +907,7 @@ fn main() {
         Gait::Springboard => "   a 4 m/s run's leap off a springboard".to_string(),
         Gait::Monkey => "   crossing monkey bars hand over hand".to_string(),
         Gait::Flagpole => "   swinging round a flagpole".to_string(),
+        Gait::Hook => "   swinging one-handed on a hook".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -1061,6 +1068,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("springboard") => Gait::Springboard,
         Some("monkey") => Gait::Monkey,
         Some("flagpole") => Gait::Flagpole,
+        Some("hook") => Gait::Hook,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

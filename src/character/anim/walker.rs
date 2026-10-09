@@ -220,6 +220,10 @@ pub struct Walker {
     /// catches it, swings round and is let go on the way up; the ask is
     /// dropped once let go.
     pub flagpole: Option<super::parkour::flagpole::Flagpole>,
+    /// Hooks or pots hung up to swing on (`parkour::flagpole`, a hook):
+    /// falling by one, it reaches for it, catches it one-handed, swings
+    /// forward and lets go; on to the next it falls by.
+    pub hooks: Vec<Vec3>,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -271,6 +275,7 @@ impl Default for Walker {
             springboard: None,
             monkey_bars: None,
             flagpole: None,
+            hooks: Vec::new(),
         }
     }
 }
@@ -588,8 +593,10 @@ pub struct WalkerState {
     /// under the first.
     pub monkey: Option<super::parkour::monkey::Crossing>,
     pub monkey_spot: Option<(super::parkour::monkey::MonkeyBars, Vec3)>,
-    /// Swinging round a flagpole (`parkour::flagpole`).
+    /// Swinging round a flagpole, or on a hook (`parkour::flagpole`), and
+    /// the hook last let go of (not caught again falling from it).
     pub flagging: Option<super::parkour::flagpole::Swinging>,
+    pub last_hook: Option<Vec3>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -679,6 +686,7 @@ impl WalkerState {
             monkey: None,
             monkey_spot: None,
             flagging: None,
+            last_hook: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -2760,8 +2768,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
                 falling.against(&ledges, &rig);
                 state.falling = Some(falling);
+                // A flagpole's ask is done; hooks stay asked.
+                if swinging.holding() == [true; 2] {
+                    walker.flagpole = None;
+                }
                 state.flagging = None;
-                walker.flagpole = None;
             }
         }
         // Across monkey bars (`parkour::monkey`): got on once stopped under
@@ -3197,9 +3208,13 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 }
             }
             if let Some(falling) = state.falling.as_mut() {
-                // Asked to swing round a flagpole: reaching up for it.
-                if walker.flagpole.is_some() {
+                // Asked to swing round a flagpole or on hooks: reaching up
+                // for them.
+                if walker.flagpole.is_some() || !walker.hooks.is_empty() {
                     falling.reach(true);
+                }
+                if !falling.airborne() {
+                    state.last_hook = None;
                 }
                 if !started {
                     falling.advance(dt);
@@ -3258,6 +3273,21 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     if let Some(hands) = hands.as_ref() {
                         swinging.set_grips(hands.grips);
                     }
+                    state.flagging = Some(swinging);
+                    state.falling = None;
+                } else if falling.airborne()
+                    && let Some((hook, mut swinging)) = walker
+                        .hooks
+                        .iter()
+                        .filter(|&&hook| state.last_hook != Some(hook))
+                        .find_map(|&hook| super::parkour::flagpole::Swinging::caught_hook(hook, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig).map(|s| (hook, s)))
+                {
+                    // Falling by a hook asked to swing on: caught on it
+                    // one-handed (`parkour::flagpole`, a hook).
+                    if let Some(hands) = hands.as_ref() {
+                        swinging.set_grips(hands.grips);
+                    }
+                    state.last_hook = Some(hook);
                     state.flagging = Some(swinging);
                     state.falling = None;
                 } else if falling.is_fatal() && !falling.airborne() && ragdoll.is_some() {

@@ -1,6 +1,6 @@
 ---
 title: A flagpole is swung round as a driven compound pendulum, caught from a fall
-description: "Step 17: a pole out of a wall is caught from a fall coming by it, swung right round as a compound pendulum about the grip (driven over the top at 2 rad/s), let go 0.6 rad past the bottom after a turn, flung on as a fall. The catch's traps were all elbows. Read before changing parkour/flagpole.rs."
+description: "Step 17: a pole out of a wall is caught from a fall, swung right round as a compound pendulum about the grip (driven over the top), let go after a turn, flung on as a fall; hooks are the same mover one-handed, let go on the first swing forward. Read before changing parkour/flagpole.rs."
 type: decision
 status: current
 tags:
@@ -11,16 +11,22 @@ updated: 2026-10-09
 verified: 2026-10-09
 code:
   - src/character/anim/parkour/flagpole.rs
+  - src/character/anim/parkour/fall.rs
   - src/character/anim/walker.rs
   - examples/character_gallery.rs
   - examples/anim_bench.rs
 sources:
-  - "test parkour::flagpole::tests::a_flagpole_is_caught_swung_round_and_let_go_of"
+  - "tests parkour::flagpole::tests::{a_flagpole_is_caught_swung_round_and_let_go_of, hooks_are_caught_one_handed_swung_on_and_let_go_of}"
+  - "live: character_gallery --start-height 1.5 --block 0,-6,0,1.5,2.0,10 --hook 0,2.7,-6.9 --hook 0,2.5,-8.7 --anim-speed 3, BRP, gizmos Left"
   - "live: character_gallery --step-seconds 0.0333333 --start-height 1.5 --block 0,-6,0,1.5,2.0,10 --block 0.75,-7,90,3.5,6,1 --flagpole 0.75,-6.9,90,2.8,1.5 --flagpole-at 0.5 --anim-speed 3, Xvfb, gizmos on/mesh off Left, mesh on Left; BRP pelvis, hands and feet"
   - "anim_bench --gait flagpole --characters 100"
 aliases:
   - flagpole
   - giant swing
+  - hook
+  - hanging pot
+  - Swinging::caught_hook
+  - Walker::hooks
   - Flagpole
   - parkour::flagpole::Swinging
   - Walker::flagpole
@@ -68,6 +74,19 @@ the palm the way the body faces round it, the fingers on along the forearm
 frame](../rig-and-retargeting/a-hand-grip-is-measured-in-the-hands-own-frame.md)).
 The elbows bend back from the body, a little out.
 
+**Hooks and pots** (`Swinging::caught_hook`, `Walker::hooks`) are the same
+mover on a point:
+- caught by one hand (the right), swung on the plane the fall goes along,
+  the other arm free;
+- undriven, let go on the first swing forward past 0.6 rad, or where the
+  swing stops short of it;
+- the fall reaches while hooks are asked, catches any it comes by except
+  the one just let go of, and so goes on from hook to hook.
+
+**Let go, the fall coasts on the swing's motion**: the trunk and arms
+toward the pose a moment on (`coast_upper`), the legs at their swing's
+speed (`coast_legs`).
+
 **The catch** (0.4 s) carries the fall's motion into the swing:
 - the swing starts at the fall's angular velocity;
 - the hips' distance from the axis goes on at the fall's radial speed (a
@@ -107,6 +126,17 @@ Every catch fault was an elbow:
   bend back now.
 - **The fall's radial speed dropped** in a frame: the hips' distance from
   the axis eased from rest.
+- **Let go from rest**, a hand off a hook stepped 26 cm the frame it let
+  go. Hence the coasting hand-over.
+- **The fall's arm ease took the shortest arc** from the pose it left in
+  to its flight's arms (`fall.rs`). A hand let go of a hook behind and
+  above is near half a turn from them, and the shortest arc flipped sides
+  as the two drifted: the hand swung 41 cm the other way in a frame, 0.08 s
+  into the fall. Choosing the hemisphere against the pose it left still
+  flipped (31 cm), as the flight's shape crossed the boundary. Now each
+  sign is fixed against standing, which the flight's shape never goes half
+  a turn from, and the blend follows that one arc (`arc`). Every other
+  fall's test was unchanged.
 - **The release mid-frame** (stopping the integration there) lost the rest
   of the frame's time: a toe swinging at 12 m/s stepped 9 cm short. It now
   lets go at the frame's end.
@@ -132,13 +162,29 @@ straight inverted body over the pole, legs together.
 **Cost**: `anim_bench --gait flagpole --characters 100`, 65 µs a character
 at p50, the bench replaying the swing from the catch each frame.
 
+**Hooks** (headless; off a 1.5 m top at 3 and 4 m/s, hooks 2.7 m up
+0.9-1.1 m out and 2.5 m up 1.8 m beyond, reaching): both caught, the
+second from the first's flight; the holding hand within 1 µm; let go,
+landed. Steps changed at most 1.9 cm swinging, 6.6 cm flying (the reaching
+arm coming round from the hook behind to overhead in front, over the
+fall's 0.35 s arm ease) and 10 cm as caught (the sweep from rest while the
+fall's hand still moved): about a running leap's own toe-off, but more
+than the flagpole's. Live: off a block, caught both hooks one-handed (the
+wrists 2.40-2.63 m) and landed 2 m on. `anim_bench --gait hook`, 41 µs a
+character.
+
 ## Revisit when
 
 - **More turns, or none** (a half swing straight to the release): `TURNS`
   is a constant; the walker could ask.
 - **A catch from a running jump** (a leap whose flight passes the pole)
   without going over an edge: only falls are tested for the catch.
-- **The release aimed** at a ledge or bar ahead, as a lache is.
+- **The release aimed** at a ledge or bar ahead, as a lache is; hooks
+  are reached only if the flight passes them.
+- **A one-handed catch's 10 cm**: start the sweep at the fall's hand
+  velocity, not from rest.
+- **The body under one hand**: the hips hang on the swing's line, not
+  under the holding shoulder.
 - **Data**: no flagpole or giant swing timings; the drive and the release
   are set by eye.
 

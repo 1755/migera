@@ -160,14 +160,28 @@ struct Caught {
     swivels: [f32; 2],
 }
 
-/// Swinging round a flagpole ([`Flagpole`]).
+/// What is swung on: a flagpole (both hands, round its axis), or a hook or
+/// pot hung at a point (one hand).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fixture {
+    Pole(Flagpole),
+    Hook(Vec3),
+}
+
+/// Swinging round a flagpole ([`Flagpole`]), or on a hook.
 #[derive(Debug, Clone)]
 pub struct Swinging {
-    pole: Flagpole,
+    fixture: Fixture,
     body: Body,
     rig: RigGeometry,
-    /// Where along the pole the hands hold, metres out.
+    /// Where along the pole the hands hold, metres out (a hook: none).
     along: f32,
+    /// Which hands hold; how many turns it swings round before letting go
+    /// (none: on the first swing forward); whether it is driven over the
+    /// top.
+    holding: [bool; 2],
+    turns: f32,
+    driven: bool,
     /// The way it swings forward (level, square to the pole), its facing
     /// heading, and the pole's axis it turns about (`ahead × Y`).
     ahead: Vec3,
@@ -192,17 +206,9 @@ impl Swinging {
     #[allow(clippy::too_many_arguments)]
     pub fn caught(pole: &Flagpole, hips: Vec3, velocity: Vec3, pose: &LocalPose, yaw: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
         let body = Body::of(stood, rig);
-        let hang = body.hang();
         let s = (hips - pole.base).dot(pole.out);
         let margin = END_MARGIN + body.half_width();
         if s < margin || s > pole.length - margin {
-            return None;
-        }
-        let grip = pole.at(s);
-        let off = hips - grip;
-        let level = off - pole.out * off.dot(pole.out);
-        let reach = level.length();
-        if reach < hang - CATCH_NEAR || reach > hang + CATCH_FAR {
             return None;
         }
         // Forward is the way it is going across the pole (or facing, slow).
@@ -211,6 +217,34 @@ impl Swinging {
         let facing = Quat::from_rotation_y(yaw) * rig.forward();
         let way = if going.with_y(0.0).length() > 0.3 { going.dot(square).signum() } else { facing.dot(square).signum() };
         let ahead = square * if way == 0.0 { 1.0 } else { way };
+        Self::caught_on(Fixture::Pole(*pole), pole.at(s), s, ahead, [true; 2], TURNS, true, hips, velocity, pose, yaw, body, rig)
+    }
+
+    /// Caught on a hook (or a pot) at `hook` from a fall: as a flagpole
+    /// ([`Self::caught`]), but by one hand (the right), swung on the plane
+    /// it is going along, and let go on the first swing forward past
+    /// [`RELEASE`], undriven (or where the swing stops short of it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn caught_hook(hook: Vec3, hips: Vec3, velocity: Vec3, pose: &LocalPose, yaw: f32, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let body = Body::of(stood, rig);
+        let facing = Quat::from_rotation_y(yaw) * rig.forward();
+        let ahead = velocity.with_y(0.0).try_normalize().filter(|_| velocity.with_y(0.0).length() > 0.3).unwrap_or(facing.with_y(0.0).normalize_or(Vec3::NEG_Z));
+        Self::caught_on(Fixture::Hook(hook), hook, 0.0, ahead, [false, true], 0.0, false, hips, velocity, pose, yaw, body, rig)
+    }
+
+    /// Caught on `fixture` holding at `grip` (`along` a pole), swinging
+    /// toward `ahead`, by the hands `holding`, `turns` round, `driven` or
+    /// not.
+    #[allow(clippy::too_many_arguments)]
+    fn caught_on(fixture: Fixture, grip: Vec3, along: f32, ahead: Vec3, holding: [bool; 2], turns: f32, driven: bool, hips: Vec3, velocity: Vec3, pose: &LocalPose, yaw: f32, body: Body, rig: &RigGeometry) -> Option<Self> {
+        let hang = body.hang();
+        let axis = ahead.cross(Vec3::Y).normalize();
+        let off = hips - grip;
+        let level = off - axis * off.dot(axis);
+        let reach = level.length();
+        if reach < hang - CATCH_NEAR || reach > hang + CATCH_FAR {
+            return None;
+        }
         let phi = level.dot(ahead).atan2(-level.y);
         if phi.abs() > CATCH_ROUND {
             return None;
@@ -221,7 +255,6 @@ impl Swinging {
         let at = forward_kinematics_on(&fall_pose, rig);
         let wrists = ARMS.map(|arm| Quat::from_rotation_y(yaw) * (at[arm.wrist] - at[Bone::Hips]));
         let elbows = ARMS.map(|arm| Quat::from_rotation_y(yaw) * (at[arm.elbow] - at[Bone::Hips]));
-        let axis = ahead.cross(Vec3::Y).normalize();
         // Each arm's swivel as caught, with the pose's own geometry then
         // (facing as the fall did, its wrists and elbows where it had them).
         let turn = Quat::from_rotation_y(yaw);
@@ -233,9 +266,12 @@ impl Swinging {
             swivel(shoulder, hips + wrists[side], hips + elbows[side], pole).2
         });
         Some(Self {
-            pole: *pole,
+            fixture,
             rig: rig.clone(),
-            along: s,
+            along,
+            holding,
+            turns,
+            driven,
             ahead,
             yaw: crate::character::anim::approach::heading_of(ahead) - crate::character::anim::approach::heading_of(rig.forward()),
             axis,
@@ -278,17 +314,19 @@ impl Swinging {
         let wanted = 0.5 * TOP_RATE * TOP_RATE + 2.0 * g;
         let steps = (dt / (1.0 / 240.0)).ceil().max(1.0) as usize;
         let h = dt / steps as f32;
-        let end = std::f32::consts::TAU * TURNS + RELEASE;
+        let end = std::f32::consts::TAU * self.turns + RELEASE;
         for _ in 0..steps {
-            let driving = self.phi < std::f32::consts::TAU * TURNS && self.energy() < wanted;
+            let driving = self.driven && self.phi < std::f32::consts::TAU * self.turns && self.energy() < wanted;
             let drive = if driving { DRIVE / self.omega.abs().max(1.0) * self.omega.signum().max(0.0).max(if self.omega == 0.0 { 1.0 } else { 0.0 }) } else { 0.0 };
             self.omega += (-g * self.phi.sin() + drive) * h;
             self.phi += self.omega * h;
             self.t += h;
             // Let go at the frame's end: stopped mid-frame, the frame it let
             // go in went on less than a frame's time, and a toe swinging at
-            // 12 m/s stepped 9 cm short.
-            if self.phi >= end && self.omega > 0.0 {
+            // 12 m/s stepped 9 cm short. Undriven and stopping forward short
+            // of the release, let go there, at rest.
+            let stopped = !self.driven && self.phi > 0.0 && self.omega <= 0.0;
+            if (self.phi >= end && self.omega > 0.0) || stopped {
                 self.released = true;
             }
         }
@@ -312,7 +350,19 @@ impl Swinging {
     }
 
     fn grip(&self) -> Vec3 {
-        self.pole.at(self.along)
+        match self.fixture {
+            Fixture::Pole(pole) => pole.at(self.along),
+            Fixture::Hook(hook) => hook,
+        }
+    }
+
+    /// Each hand's hold (the world): on a pole, a shoulder's width apart
+    /// along it; on a hook, the holding hand on it.
+    fn hand_points(&self, turn: Quat, rig: &RigGeometry) -> [Vec3; 2] {
+        match self.fixture {
+            Fixture::Pole(pole) => [0, 1].map(|side| pole.at(self.along + SIGN[side] * self.body.half_width() * pole.out.dot(turn * rig.left()).signum())),
+            Fixture::Hook(hook) => [hook; 2],
+        }
     }
 
     /// The hips now (the world).
@@ -369,7 +419,7 @@ impl Swinging {
         }
         // The hands round the pole, a shoulder's width apart, the palm the
         // way the body faces round it, the fingers on along the forearm.
-        let points = [0, 1].map(|side| self.pole.at(self.along + SIGN[side] * self.body.half_width() * self.pole.out.dot(turn * rig.left()).signum()));
+        let points = self.hand_points(turn, rig);
         let palm = Quat::from_axis_angle(self.axis, self.phi) * self.ahead;
         let shoulders = [0, 1].map(|side| hips + turn * (Quat::from_axis_angle(back * self.axis, self.phi) * (self.body.shoulders[side] - self.body.hips)));
         // Caught, the fall's pose eased out but for the arms, which are
@@ -384,7 +434,9 @@ impl Swinging {
             && self.catching() < 1.0
         {
             let s = self.catching();
-            let arms = [CLAVICLES[0], CLAVICLES[1], ARMS[0].shoulder, ARMS[1].shoulder, ARMS[0].elbow, ARMS[1].elbow, ARMS[0].wrist, ARMS[1].wrist];
+            // The holding arms are solved; a free arm (on a hook) eases out
+            // of the fall's with the body.
+            let arms: Vec<Bone> = [0, 1].into_iter().filter(|&side| self.holding[side]).flat_map(|side| [CLAVICLES[side], ARMS[side].shoulder, ARMS[side].elbow, ARMS[side].wrist]).collect();
             let blended = crate::character::anim::clip::blend(&caught.pose, &pose, s);
             for bone in Bone::ALL.into_iter().filter(|bone| !arms.contains(bone)) {
                 pose.rotations[bone] = blended.rotations[bone];
@@ -465,12 +517,12 @@ impl Swinging {
     fn arms_to(&self, pose: &mut LocalPose, rig: &RigGeometry, root: Vec3, back: Quat, wrists: [Vec3; 2], turns: [Quat; 2], poles: [Vec3; 2], weight: f32) {
         let targets = wrists.map(|p| back * (p - root));
         let at = forward_kinematics_on(pose, rig);
-        for side in 0..2 {
+        for side in (0..2).filter(|&side| self.holding[side]) {
             let lift = Quat::IDENTITY.slerp(shoulder_lift(at[CLAVICLES[side]], at[ARMS[side].shoulder], targets[side], 0.85 * self.body.arms[side]), weight);
             pose.rotations[CLAVICLES[side]] = delta_after_world_turn(pose, rig, CLAVICLES[side], lift);
         }
         let at = forward_kinematics_on(pose, rig);
-        for side in 0..2 {
+        for side in (0..2).filter(|&side| self.holding[side]) {
             let chain = ARMS[side];
             let pole = poles[side];
             let off = targets[side] - at[chain.shoulder];
@@ -509,9 +561,15 @@ impl Swinging {
         self.posed(rig).1
     }
 
-    /// How closed the hands are (closing over the catch, open let go).
+    /// How closed the hands are (closing over the catch, open let go, or
+    /// free).
     pub fn grips(&self) -> [f32; 2] {
-        [if self.released { 0.0 } else { self.catching() }; 2]
+        self.holding.map(|holding| if self.released || !holding { 0.0 } else { self.catching() })
+    }
+
+    /// Which hands hold (left, right).
+    pub fn holding(&self) -> [bool; 2] {
+        self.holding
     }
 
     /// Where it looks: ahead along the swing.
@@ -534,7 +592,26 @@ impl Swinging {
     pub fn release(&self, ground: &dyn Fn(Vec3) -> Option<f32>, floor: f32, stood: &LocalPose, rig: &RigGeometry) -> Falling {
         let root = self.root();
         let below = ground(root.with_y(root.y.min(floor + 0.05))).map_or(floor, |h| h.min(floor.max(h)));
-        let mut falling = Falling::off(root, self.facing(), self.hips_velocity(), &self.pose(rig), below, 0.0, stood, rig);
+        let pose = self.pose(rig);
+        let mut falling = Falling::off(root, self.facing(), self.hips_velocity(), &pose, below, 0.0, stood, rig);
+        // The body leaving with the swing's motion: the trunk and arms
+        // coasting on toward the pose a moment on, the legs at their
+        // swing's speed (left from rest, a hand off a hook stepped 26 cm in
+        // the frame it let go).
+        let mut on = self.clone();
+        on.released = false;
+        on.turns = f32::MAX;
+        on.driven = false;
+        on.advance(Falling::COAST_AHEAD);
+        let ahead = on.pose(rig);
+        falling.coast_upper(ahead);
+        let world = |swinging: &Self, pose: &LocalPose| {
+            let at = forward_kinematics_on(pose, rig);
+            let turn = swinging.turn();
+            [Bone::LeftFoot, Bone::RightFoot].map(|ankle| swinging.root() + turn * (at[ankle] - at[Bone::Hips]))
+        };
+        let (now, later) = (world(self, &pose), world(&on, &ahead));
+        falling.coast_legs([0, 1].map(|side| (later[side] - now[side]) / Falling::COAST_AHEAD));
         falling.land_on(ground);
         falling
     }
@@ -661,6 +738,101 @@ mod tests {
                 faults.push(format!("{name}: let go at {released:?}, not up and on"));
             }
             if falling.root().y.abs() > 1.0e-3 || !falling.is_done() {
+                faults.push(format!("{name}: did not land, at {:?}", falling.root()));
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
+
+    /// Run off a 1.5 m top at 3 and 4 m/s toward a hook 2.7 m up 0.9-1.1 m
+    /// past the edge, a second 1.8 m beyond it 0.2 m lower: each caught by
+    /// one hand as the hips come by it, swung forward and let go on the
+    /// way up, the second caught from the first's flight (reaching), then
+    /// landed; the holding hand on the hook within 1 mm after each catch,
+    /// the other free; every pose finite; no joint's step changing over
+    /// 3 cm in a frame swinging, 7 cm flying, 11 cm catching.
+    #[test]
+    fn hooks_are_caught_one_handed_swung_on_and_let_go_of() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let grips = crate::character::anim::hand::puppet_grips();
+        let mut faults = Vec::new();
+        for (speed, first) in [(3.0f32, 0.9f32), (4.0, 1.1)] {
+            let name = format!("{speed} m/s, the first hook {first} m out");
+            let hooks = [forward * first + Vec3::Y * 2.7, forward * (first + 1.8) + Vec3::Y * 2.5];
+            let mut falling = Falling::off(Vec3::Y * 1.5, 0.0, forward * speed, &stood, 0.0, 0.0, &stood, &rig);
+            falling.reach(true);
+            let mut frames: Vec<BoneSet<Vec3>> = vec![world(&stood, Vec3::Y * 1.5 - forward * (speed * DT), 0.0, &rig), world(&stood, Vec3::Y * 1.5, 0.0, &rig)];
+            let (mut caught_hooks, mut hand_off, mut kink, mut catching_kink, mut flying_kink) = (0, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let mut t = 0.0;
+            'run: while t < 10.0 {
+                // Falling until a hook still ahead is caught, or landed.
+                let mut swinging = None;
+                while !falling.is_done() && t < 10.0 {
+                    falling.advance(DT);
+                    t += DT;
+                    let now = world(&falling.pose(&rig), falling.root(), falling.facing(), &rig);
+                    let n = frames.len();
+                    let step = Bone::ALL.iter().map(|&b| (now[b] - 2.0 * frames[n - 1][b] + frames[n - 2][b]).length()).fold(0.0, f32::max);
+                    if falling.airborne() {
+                        flying_kink = flying_kink.max(step);
+                    }
+                    frames.push(now);
+                    if let Some(caught) = hooks[caught_hooks..].first().and_then(|&hook| Swinging::caught_hook(hook, falling.hips(), falling.hips_velocity(), &falling.pose(&rig), falling.facing(), &stood, &rig)) {
+                        swinging = Some(caught);
+                        break;
+                    }
+                }
+                let Some(mut swinging) = swinging else { break 'run };
+                caught_hooks += 1;
+                swinging.set_grips(grips);
+                let mut s = 0.0;
+                while !swinging.is_released() && s < 5.0 {
+                    swinging.advance(DT);
+                    s += DT;
+                    t += DT;
+                    let pose = swinging.pose(&rig);
+                    if !Bone::ALL.iter().all(|&b| pose.rotations[b].is_finite()) {
+                        faults.push(format!("{name}: NaN"));
+                        break 'run;
+                    }
+                    let now = world(&pose, swinging.root(), swinging.facing(), &rig);
+                    let n = frames.len();
+                    let step = Bone::ALL.iter().map(|&b| (now[b] - 2.0 * frames[n - 1][b] + frames[n - 2][b]).length()).fold(0.0, f32::max);
+                    if s < CATCH { catching_kink = catching_kink.max(step) } else { kink = kink.max(step) }
+                    if s > CATCH {
+                        for (side, wrist) in swinging.wrists(&rig).into_iter().enumerate() {
+                            if swinging.holding()[side] {
+                                hand_off = hand_off.max((now[ARMS[side].wrist] - wrist).length());
+                            }
+                        }
+                    }
+                    frames.push(now);
+                }
+                falling = swinging.release(&|_| Some(0.0), 0.0, &stood, &rig);
+                // Reaching for the next, as a walker asked to swing on
+                // hooks does.
+                falling.reach(true);
+            }
+            eprintln!("{name}: caught {caught_hooks} hooks, hand off {hand_off:.5}, swinging {kink:.4}, flying {flying_kink:.4}, catching {catching_kink:.4}, landed {:?} at {t:.2} s", falling.root());
+            // Flying, the reaching arm comes round from the hook behind to
+            // overhead in front over the fall's 0.35 s arm ease (6.6 cm).
+            if kink > 0.03 || flying_kink > 0.07 {
+                faults.push(format!("{name}: a step changed {kink:.4} swinging, {flying_kink:.4} flying"));
+            }
+            if caught_hooks != 2 {
+                faults.push(format!("{name}: caught {caught_hooks} hooks of 2"));
+            }
+            if hand_off > 1.0e-3 {
+                faults.push(format!("{name}: the holding hand {hand_off:.4} m off its hook"));
+            }
+            // One hand catching starts its sweep from rest while the fall's
+            // hand was still moving as its arms eased (10 cm): about a
+            // running leap's own toe-off (8-11 cm).
+            if catching_kink > 0.11 {
+                faults.push(format!("{name}: catching, a step changed {catching_kink:.4}"));
+            }
+            if !falling.is_done() || falling.root().y.abs() > 1.0e-3 {
                 faults.push(format!("{name}: did not land, at {:?}", falling.root()));
             }
         }

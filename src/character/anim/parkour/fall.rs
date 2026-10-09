@@ -1439,7 +1439,17 @@ impl Falling {
                     Some(ahead) => self.from_pose.rotations[bone].slerp(ahead.rotations[bone], swung),
                     None => self.from_pose.rotations[bone],
                 };
-                pose.rotations[bone] = from.slerp(pose.rotations[bone], freed);
+                // Along one arc whatever the two drift to: each sign fixed
+                // against standing (the flight's shape never goes half a
+                // turn from it), not the shortest arc frame by frame. A hand
+                // let go of a hook behind and above is near half a turn from
+                // the flight's arms: the shortest arc flipped sides as they
+                // drifted, and the hand swung 41 cm the other way in a frame.
+                let stood = self.body.stood.rotations[bone];
+                let toward = |q: Quat| if q.dot(stood) < 0.0 { -q } else { q };
+                let from_sign = if self.from_pose.rotations[bone].dot(stood) < 0.0 { -1.0 } else { 1.0 };
+                let from = if from.dot(self.from_pose.rotations[bone]) < 0.0 { -from } else { from } * from_sign;
+                pose.rotations[bone] = arc(from, toward(pose.rotations[bone]), freed);
             }
         }
         // The hips in the pose's frame: down from standing as far as they
@@ -1663,6 +1673,18 @@ fn mixed(a: &LocalPose, b: &LocalPose, w: f32) -> LocalPose {
 fn hermite(p0: Vec3, v0: Vec3, p1: Vec3, v1: Vec3, span: f32, s: f32) -> Vec3 {
     let (s2, s3) = (s * s, s * s * s);
     p0 * (2.0 * s3 - 3.0 * s2 + 1.0) + v0 * (span * (s3 - 2.0 * s2 + s)) + p1 * (3.0 * s2 - 2.0 * s3) + v1 * (span * (s3 - s2))
+}
+
+/// `a` to `b` along the great arc between them as given (the longer one if
+/// they are more than a quarter apart as quaternions), at `t` (0-1): no
+/// shortest-path choice, so no flip as either drifts across the boundary.
+fn arc(a: Quat, b: Quat, t: f32) -> Quat {
+    let dot = a.dot(b).clamp(-1.0, 1.0);
+    let theta = dot.acos();
+    if theta.sin().abs() < 1.0e-4 {
+        return a.lerp(b, t).normalize();
+    }
+    ((a * ((1.0 - t) * theta).sin() + b * (t * theta).sin()) * (1.0 / theta.sin())).normalize()
 }
 
 /// A squat landing from a drop of `drop` metres: how long it takes,

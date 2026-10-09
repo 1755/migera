@@ -1285,6 +1285,9 @@ fn steer_the_walker(
             walker.flagpole = Some(pole);
             hangs.flagpole_fired = true;
         }
+        if walker.hooks != hangs.hooks {
+            walker.hooks = hangs.hooks.clone();
+        }
         walker.look_at = idle.look_at;
         walker.reach = idle.reach;
         walker.sit = sitting;
@@ -1597,6 +1600,8 @@ struct HangSchedule {
     flagpole: Option<migera::character::anim::parkour::flagpole::Flagpole>,
     flagpole_at: Option<f32>,
     flagpole_fired: bool,
+    /// Hooks to swing on (`--hook X,Y,Z`, each), asked from the start.
+    hooks: Vec<Vec3>,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1725,6 +1730,12 @@ impl HangSchedule {
                     }
                 }
                 "--flagpole-at" => schedule.flagpole_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--hook" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, y, z] = numbers[..] {
+                        schedule.hooks.push(Vec3::new(x, y, z));
+                    }
+                }
                 "--spin-jump-at" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, ref rest @ ..] = numbers[..] {
@@ -1982,11 +1993,16 @@ struct GalleryHay;
 struct GalleryFlagpole;
 
 fn place_flagpole(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryFlagpole>>) {
-    let Some(pole) = hangs.flagpole else { return };
-    if !drawn.is_empty() {
+    if !drawn.is_empty() || (hangs.flagpole.is_none() && hangs.hooks.is_empty()) {
         return;
     }
     let steel = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), metallic: 0.6, perceptual_roughness: 0.4, ..default() });
+    // Each hook a ring hung on a short chain from above.
+    for &hook in &hangs.hooks {
+        commands.spawn((GalleryFlagpole, Mesh3d(meshes.add(Torus::new(0.03, 0.05))), MeshMaterial3d(steel.clone()), Transform::from_translation(hook).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))));
+        commands.spawn((GalleryFlagpole, Mesh3d(meshes.add(Cylinder::new(0.008, 0.6))), MeshMaterial3d(steel.clone()), Transform::from_translation(hook + Vec3::Y * 0.35)));
+    }
+    let Some(pole) = hangs.flagpole else { return };
     commands.spawn((
         GalleryFlagpole,
         Mesh3d(meshes.add(Cylinder::new(migera::character::anim::parkour::flagpole::POLE_RADIUS, pole.length))),

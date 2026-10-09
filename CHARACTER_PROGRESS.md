@@ -41,6 +41,22 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 17 (third part): hooks
+
+Asked (`Walker::hooks`), a fall reaches for hooks or pots it comes by,
+catches one one-handed, swings forward and lets go, on to the next
+(`Swinging::caught_hook`, the flagpole's mover on a point, undriven). Let
+go, the fall now coasts on the swing's motion. The fall's arm ease
+(`fall.rs`) follows one arc fixed against standing: its shortest arc
+flipped sides for a hand let go of a hook behind, a 41 cm swing in a
+frame; no other fall changed. Note: [the flagpole's,
+extended](docs/knowledge/character-animation/parkour/a-flagpole-is-swung-round-as-a-driven-compound-pendulum.md).
+
+- **Headless:** two hooks caught in turn and landed; the holding hand
+  within 1 µm; steps at most 1.9 cm swinging, 6.6 cm flying, 10 cm caught.
+- **Live** (BRP; gizmos, Left): off a block, two hooks, landed.
+  `--hook X,Y,Z`. **Bench:** `--gait hook`, 41 µs a character.
+
 ### Parkour, step 17 (second part): a flagpole
 
 Asked (`Walker::flagpole`), a fall coming by a pole sticking out of a wall

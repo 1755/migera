@@ -235,7 +235,7 @@ climbing is the heart of the style; perches and agility make it feel right.
   only), a springboard's leap running on after it lands.
 - **Step 17** under way (2026-10-09):
   [monkey bars](./monkey-bars-are-crossed-hand-over-hand-the-body-hung-from-the-hands-carrying-it.md),
-  [a flagpole](./a-flagpole-is-swung-round-as-a-driven-compound-pendulum.md).
+  [a flagpole and hooks](./a-flagpole-is-swung-round-as-a-driven-compound-pendulum.md).
 - Steps 14, 15 and 18 not started.
 
 ## Related
