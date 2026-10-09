@@ -15,6 +15,7 @@ pub mod holds;
 pub mod lean;
 pub mod monkey;
 pub mod perch;
+pub mod platform;
 pub mod pole;
 pub mod precision;
 pub mod skid;

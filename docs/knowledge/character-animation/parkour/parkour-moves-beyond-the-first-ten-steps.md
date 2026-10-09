@@ -239,7 +239,10 @@ climbing is the heart of the style; perches and agility make it feel right.
   [a corner swing](./a-corner-post-is-swung-round-as-a-running-leap-bent-round-it.md).
   Not built: a corner swing past a quarter turn, a flagpole's release
   aimed at a ledge.
-- Steps 14, 15 and 18 not started.
+- **Step 18** under way (2026-10-09):
+  [a long fall's loop](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md),
+  [moving platforms](./a-moving-platform-is-ridden-in-its-own-frame.md).
+- Steps 14 and 15 not started.
 
 ## Related
 

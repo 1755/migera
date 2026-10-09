@@ -41,6 +41,32 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 18 (second part): moving platforms
+
+A walker stands, walks and jumps on a moving platform, and walks or
+jumps off it carrying its velocity, or drops onto one going by
+(`parkour::platform`). On one, or in a jump or fall in its frame, it is
+carried by the platform's displacement each frame. A fall picks its
+frame at the start (`frame_for_fall`). Note: [a moving platform is ridden
+in its own frame](docs/knowledge/character-animation/parkour/a-moving-platform-is-ridden-in-its-own-frame.md).
+
+- **Fixed on the way:**
+  - riding let go the frame the root crossed the edge;
+  - a walked-off fall's first frame: a stall that also shows on static
+    ground (5.7 cm, now gone), the platform counted twice (4.5 cm), the
+    platform missing (5.8 cm).
+- **Headless:** across every hand-off the hips' world velocity is
+  continuous to 1 mm/s; it lands on the platform where it is; no change of
+  step beyond the plain fall's own.
+- **Live** (BRP, gizmos Left and Front, mesh):
+  - riding, it held its place on the platform within 7 mm;
+  - walking off, the pelvis's step went 16, 8, 7, 3 mm;
+  - a jump on it landed 0.76 m on, on its top;
+  - dropped onto it going by, it landed and rode it.
+- **Gallery:** `--platform X,Z,HEADING,TOP,LENGTH,WIDTH,AMPLITUDE,PERIOD`.
+- **Cost:** riding poses nothing new; one copy of the platform list a
+  frame.
+
 ### Parkour, step 18 (first part): a long fall's loop
 
 A fall long enough to have room for it windmills the arms and cycles the

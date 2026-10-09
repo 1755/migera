@@ -230,6 +230,12 @@ pub struct Walker {
     /// falling by one, it reaches for it, catches it one-handed, swings
     /// forward and lets go; on to the next it falls by.
     pub hooks: Vec<Vec3>,
+    /// Moving platforms (`parkour::platform`), written by the app each
+    /// frame (share the handle with the character's `PlatformGround`, so
+    /// the feet stand on them): standing, walking or jumping on one, it is
+    /// carried with it; leaving it, it carries its velocity; falling onto
+    /// one, it lands on it where it is.
+    pub platforms: super::parkour::platform::Platforms,
 }
 
 /// Steered this far off its facing, radians, a skidding walker turns round
@@ -283,6 +289,7 @@ impl Default for Walker {
             flagpole: None,
             corner: None,
             hooks: Vec::new(),
+            platforms: Default::default(),
         }
     }
 }
@@ -606,6 +613,11 @@ pub struct WalkerState {
     pub last_hook: Option<Vec3>,
     /// Swinging round a corner post in a leap (`parkour::corner`).
     pub cornering: Option<super::parkour::corner::CornerSwing>,
+    /// The moving platform (`Walker::platforms`, by index) it is carried
+    /// with: stood on, jumped on, or fallen in the frame of.
+    pub riding: Option<usize>,
+    /// How far that carried it this frame (the world).
+    pub carried: Vec3,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -697,6 +709,8 @@ impl WalkerState {
             flagging: None,
             last_hook: None,
             cornering: None,
+            riding: None,
+            carried: Vec3::ZERO,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -939,6 +953,26 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             state.stride.stepped += resume.handover + gait_rig.forward() * (rest + resume.speed * past);
             state.stride.given = true;
             state.jump = None;
+        }
+
+        // On a moving platform (`parkour::platform`), or in a jump or fall
+        // in its frame: carried as far as it moved, its own motion on top.
+        // The foot locks are not told (they ride with the body): planted on
+        // the platform, they go with it.
+        let platforms = walker.platforms.now();
+        let carried = match state.riding.and_then(|i| platforms.get(i)) {
+            Some(platform) => platform.moved,
+            None => {
+                state.riding = None;
+                Vec3::ZERO
+            }
+        };
+        state.carried = carried;
+        if carried != Vec3::ZERO {
+            state.locomotion.position += carried;
+            if let Some(falling) = state.falling.as_mut() {
+                falling.shift(carried);
+            }
         }
 
         // Asked to sit on a chair elsewhere: walk to it and turn round first
@@ -3190,6 +3224,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         if let Some(rig) = foot_ik.rig.clone() {
             // Started from this frame's pose, it moves on from the next.
             let mut started = leapt;
+            // Walked off an edge: the fall begins where the root was before
+            // this frame's travel, so it goes this frame's way at once (begun
+            // still, the body stood still a frame: a 5.7 cm change of step).
+            let mut walked_off = false;
             // Jumping onto a small top (`parkour::precision`): at the jump's
             // top, a fall landing on the top, the hips at rest over its
             // middle.
@@ -3255,13 +3293,33 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         super::parkour::Falling::from_jump(&jump, root, state.facing.yaw, below, foot_ik.pelvis_drop, &stood, &rig)
                     }
                     None => {
+                        walked_off = true;
                         let velocity = Vec3::new(state.locomotion.root_velocity.x, 0.0, state.locomotion.root_velocity.z);
                         super::parkour::Falling::off(state.locomotion.position, state.facing.yaw, velocity, &target.pose, below, foot_ik.pelvis_drop, &stood, &rig)
                     }
                 };
                 // Onto a top it comes down on along its flight (a running
                 // jump across a gap); else against a wall faced, kept off it.
-                falling.land_on(&|at| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height));
+                // With moving platforms, in the frame it lands in: off one,
+                // carrying its velocity; onto one, where it will be.
+                let sample = |at: Vec3| ground.and_then(|ground| ground.0.sample(at)).map(|hit| hit.height);
+                if platforms.is_empty() {
+                    falling.land_on(&sample);
+                } else {
+                    let frame;
+                    (falling, frame) = super::parkour::platform::frame_for_fall(falling, state.riding, &platforms, &sample);
+                    // Walked off, it goes this frame's way at once: into the
+                    // world from a platform, from before this frame's carry
+                    // (its own velocity has the platform's in it now: both,
+                    // 4.5 cm too far); from the world onto one, with this
+                    // frame's carry (its own velocity is relative now:
+                    // neither, 5.8 cm short).
+                    if walked_off && state.riding != frame {
+                        let moved = frame.and_then(|i| platforms.get(i)).map_or(Vec3::ZERO, |platform| platform.moved);
+                        falling.shift(moved - state.carried);
+                    }
+                    state.riding = frame;
+                }
                 let ledges: Vec<super::parkour::Ledge> = walker.ledge.into_iter().chain(walker.ledges.iter().copied()).collect();
                 falling.against(&ledges, &rig);
                 state.falling = Some(falling);
@@ -3298,7 +3356,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 if !falling.airborne() {
                     state.last_hook = None;
                 }
-                if !started {
+                if !started || walked_off {
                     falling.advance(dt);
                 }
                 target.pose = match springs {
@@ -3637,13 +3695,18 @@ pub fn keep_off_walls(at: Vec3, moved: Vec3, ground: &dyn super::ground::GroundP
     (to - at, out)
 }
 
+/// What [`ride_rendered_feet`] moves: the walker's own for its platforms.
+type RiddenRig = (&'static AnimPose, &'static mut WalkerState, &'static mut AnimFootIk, &'static mut Transform, &'static AnimGround, Option<&'static Walker>);
+
 /// Moves each walker by exactly how far its planted feet moved under it in
 /// the pose just RENDERED, after the springs, before the IK: integrating the
 /// gait's published velocity instead erred by `½·a·dt²` and by the springs'
 /// lag, and a planted foot slid 39 mm a stance.
-pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut WalkerState, &mut AnimFootIk, &mut Transform, &AnimGround)>) {
-    for (pose, mut state, mut foot_ik, mut root, ground) in &mut rigs {
+pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<RiddenRig>) {
+    for (pose, mut state, mut foot_ik, mut root, ground, walker) in &mut rigs {
         let state = &mut *state;
+        let platforms = walker.map(|walker| walker.platforms.now()).unwrap_or_default();
+        let carried = std::mem::take(&mut state.carried);
         let now = pose.pose();
         let rig = foot_ik.rig.clone().unwrap_or_default();
         let moved = match (&state.stride.params, &state.stride.previous) {
@@ -3746,7 +3809,16 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<(&AnimPose, &mut Walk
         }
         // The rise is travel too: a lock that knew only the horizontal part
         // carried a planted foot 9 cm up a 0.2 grade every stance.
-        foot_ik.turn.travel.y = root.translation.y - height_before;
+        // Less a platform's own rise, which carries the planted feet too.
+        foot_ik.turn.travel.y = root.translation.y - height_before - carried.y;
+        // Standing or walking on a moving platform, carried with it from
+        // the next frame; on holds, not. (In a jump or a fall, the frame it
+        // began in, or was planned to land in.) Walked off its edge, kept
+        // till the fall begins next frame, which carries its velocity on:
+        // let go here, the fall began in the world, standing still.
+        if state.jump.is_none() && state.falling.is_none() && state.fall_to.is_none() {
+            state.riding = if state.on_holds() { None } else { platforms.iter().position(|platform| platform.stood_on_by(state.locomotion.position)) };
+        }
     }
 }
 

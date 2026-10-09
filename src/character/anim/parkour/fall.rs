@@ -604,6 +604,44 @@ impl Falling {
         self.keep_roll_on(below, ground, &rig);
     }
 
+    /// Just begun, the velocity of the frame it falls in added
+    /// (`parkour::platform`): leaving a moving platform, the world's,
+    /// carrying the platform's; dropping onto one, the platform's, less its
+    /// velocity. The landing planned again for the new velocity (before
+    /// [`Self::land_on`]).
+    pub fn carry(&mut self, velocity: Vec3) {
+        self.velocity += velocity;
+        let rig = self.rig.clone();
+        self.replan(&rig);
+    }
+
+    /// Just begun, falling to the ground `ground` high instead (before
+    /// [`Self::land_on`]).
+    pub fn fall_to(&mut self, ground: f32) {
+        self.ground = ground;
+        let rig = self.rig.clone();
+        self.replan(&rig);
+    }
+
+    /// Carried `by` (the world) with the frame it falls in: a moving
+    /// platform it fell from or onto. Everything it keeps in the world
+    /// moves; its motion in the frame is unchanged.
+    pub fn shift(&mut self, by: Vec3) {
+        self.from_hips += by;
+        self.from_ankles = self.from_ankles.map(|ankle| ankle + by);
+        self.feet = self.feet.map(|foot| foot + by);
+        self.ground += by.y;
+        self.wall = self.wall.map(|(top, out)| (top + by, out));
+        self.wall_span = self.wall_span.map(|(a, b)| (a + by, b + by));
+        self.target = self.target.map(|ledge| Ledge { a: ledge.a + by, b: ledge.b + by, ..ledge });
+        if let Some(roll) = self.roll.as_mut() {
+            roll.squat.shift(by);
+            for point in [&mut roll.from, &mut roll.tucked, &mut roll.rolled, &mut roll.end, &mut roll.end_root] {
+                *point += by;
+            }
+        }
+    }
+
     /// Rolling, the roll's way along the ground kept on ground as high as it
     /// lands on, every [`ROLL_ROOM_STEP`] from where it tucks to where it
     /// stands, a body's width either side; else it squats (the feet put on

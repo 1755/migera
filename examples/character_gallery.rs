@@ -1615,6 +1615,13 @@ struct HangSchedule {
     corner: Option<(migera::character::anim::parkour::Pole, f32)>,
     corner_at: Option<f32>,
     corner_fired: bool,
+    /// A moving platform (`--platform X,Z,HEADING,TOP,LENGTH,WIDTH,
+    /// AMPLITUDE,PERIOD`: its top's middle at X,Z, TOP high, LENGTH along
+    /// HEADING by WIDTH, swinging back and forth along its length AMPLITUDE
+    /// either side every PERIOD seconds, as a sine), and the handle the
+    /// walker and its ground read it through.
+    platform: Option<(migera::character::anim::parkour::platform::Platform, f32, f32)>,
+    platforms: migera::character::anim::parkour::platform::Platforms,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1750,6 +1757,14 @@ impl HangSchedule {
                     }
                 }
                 "--corner-at" => schedule.corner_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--platform" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, top, length, width, amplitude, period] = numbers[..] {
+                        let way = approach::direction_of(heading.to_radians());
+                        let platform = migera::character::anim::parkour::platform::Platform::new(Vec3::new(x, top, z), way, length, width, top.min(PLATFORM_THICK));
+                        schedule.platform = Some((platform, amplitude, period.max(0.1)));
+                    }
+                }
                 "--hook" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x, y, z] = numbers[..] {
@@ -2072,6 +2087,60 @@ struct GallerySpringboard;
 const SPRINGBOARD_WIDE: f32 = 0.45;
 const SPRINGBOARD_THICK: f32 = 0.05;
 
+/// The gallery's moving platform, as drawn: a slab this deep (no deeper
+/// than its top is high).
+#[derive(Component)]
+struct GalleryPlatform;
+const PLATFORM_THICK: f32 = 0.3;
+
+/// Moves the platform (`--platform`) along its sine, before the walker:
+/// where it is now, how fast, and how far it moved since the frame
+/// before, through the handle the walker and its ground share; and draws
+/// it there. The first frame, the walker is given the handle, and with no
+/// ledges for its ground to be built on (`place_ledge` builds it then),
+/// its ground is the floor with the platform on it.
+#[allow(clippy::too_many_arguments)]
+fn move_platform(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    hangs: Res<HangSchedule>,
+    idle: Res<AnimIdleConfig>,
+    mut drawn: Query<&mut Transform, With<GalleryPlatform>>,
+    mut walkers: Query<(Entity, &mut Walker)>,
+    mut last: Local<Option<Vec3>>,
+) {
+    let Some((platform, amplitude, period)) = hangs.platform else { return };
+    let rate = std::f32::consts::TAU / period;
+    let t = time.elapsed_secs();
+    let top = platform.top + platform.way * (amplitude * (rate * t).sin());
+    let velocity = platform.way * (amplitude * rate * (rate * t).cos());
+    let moved = last.map_or(Vec3::ZERO, |was| top - was);
+    let first = last.is_none();
+    *last = Some(top);
+    hangs.platforms.set(vec![platform.moving(top, velocity, moved)]);
+    if first {
+        let no_ledges = hangs.ledge.is_none() && hangs.others.is_empty() && hangs.beams.is_empty() && hangs.springboard.is_none();
+        for (entity, mut walker) in &mut walkers {
+            walker.platforms = hangs.platforms.clone();
+            if no_ledges {
+                let under: Box<dyn migera::character::anim::ground::GroundProbe> =
+                    if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
+                commands.entity(entity).insert(AnimGround(Box::new(migera::character::anim::parkour::platform::PlatformGround { under, platforms: hangs.platforms.clone() })));
+            }
+        }
+    }
+    let at = Transform::from_translation(top - Vec3::Y * (0.5 * platform.thick)).with_rotation(Quat::from_rotation_y(platform.way.x.atan2(platform.way.z)));
+    match drawn.single_mut() {
+        Ok(mut drawn) => *drawn = at,
+        Err(_) => {
+            let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.42, 0.3), perceptual_roughness: 0.8, ..default() });
+            commands.spawn((GalleryPlatform, Name::new("gallery_platform"), Mesh3d(meshes.add(Cuboid::new(platform.width, platform.thick, platform.length))), MeshMaterial3d(wood), at));
+        }
+    }
+}
+
 fn bend_springboard(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -2160,6 +2229,11 @@ fn place_ledge(
     for walker in &walkers {
         let under: Box<dyn migera::character::anim::ground::GroundProbe> =
             if idle.slope == 0.0 { Box::new(FlatGround::default()) } else { Box::new(SlopedGround { height: 0.0, grade: idle.slope }) };
+        // With a moving platform (`move_platform`), on it too.
+        let under: Box<dyn migera::character::anim::ground::GroundProbe> = match hangs.platform {
+            Some(_) => Box::new(migera::character::anim::parkour::platform::PlatformGround { under, platforms: hangs.platforms.clone() }),
+            None => under,
+        };
         commands.entity(walker).insert(AnimGround(Box::new(migera::character::anim::parkour::LedgeGround::new(under, ledges.clone()))));
     }
     let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
@@ -3103,6 +3177,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
+        .add_systems(Update, move_platform.before(WalkerSet::Drive))
         .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds, place_hay, bend_springboard, place_monkey, place_flagpole).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
