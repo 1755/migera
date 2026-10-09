@@ -123,6 +123,9 @@ enum Gait {
     /// Crouching into a perch and back up, a cycle: the layer blended by
     /// the feet each frame.
     Perch,
+    /// A standing jump turning round in the air: the jump to its hand-over,
+    /// then the fall turning and landing.
+    SpinJump,
 }
 
 fn main() {
@@ -171,7 +174,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -403,6 +406,16 @@ fn main() {
     // A jump onto a post (`parkour::precision`): the clock is the jump to
     // its hand-off, then the fall to standing on the post.
     let onto = match gait {
+        Gait::SpinJump => {
+            use migera::character::anim::parkour::spin;
+            let mut jump = spin::spin_jump(&stood, &rig);
+            let full = jump.clone();
+            while !spin::hands_over(&jump) {
+                jump.advance(DT);
+            }
+            let falling = spin::spin_fall(&jump, rig.forward() * jump.travelled(), 0.0, 0.0, 0.0, std::f32::consts::PI, &stood, &rig);
+            Some((full, jump.elapsed(), falling))
+        }
         Gait::Onto => {
             use migera::character::anim::parkour::precision;
             let top = rig.forward() * 1.2 + Vec3::Y * 0.2;
@@ -798,6 +811,7 @@ fn main() {
         Gait::Onto => "   a standing jump onto a 0.2 m post 1.2 m ahead".to_string(),
         Gait::WallHand => "   a 1.2 m/s walk beside a wall, a hand on it".to_string(),
         Gait::Perch => "   crouching into a perch and up".to_string(),
+        Gait::SpinJump => "   a standing jump turning round in the air".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -950,6 +964,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("onto") => Gait::Onto,
         Some("wall-hand") => Gait::WallHand,
         Some("perch") => Gait::Perch,
+        Some("spin-jump") => Gait::SpinJump,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
         Some("let-go") => Gait::LetGo(false),

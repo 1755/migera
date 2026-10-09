@@ -193,6 +193,9 @@ pub struct Walker {
     pub perch: bool,
     /// Look round, the gaze swept slowly side to side (a viewpoint's).
     pub look_round: bool,
+    /// A jump from standing that turns this far in the air, radians about
+    /// `+Y` (`parkour::spin`; π turns round); the ask is dropped once taken.
+    pub spin_jump: Option<f32>,
     /// Running fast (`parkour::skid::SKID_FROM`), asked to stop it skids to
     /// a stop, and asked to face back (steered over [`SKID_BACK`] off its
     /// facing) it plants and turns round, standing; otherwise it slows to a
@@ -243,6 +246,7 @@ impl Default for Walker {
             onto: None,
             perch: false,
             look_round: false,
+            spin_jump: None,
             skid: false,
         }
     }
@@ -549,6 +553,9 @@ pub struct WalkerState {
     /// stands on after, balancing.
     pub onto: Option<Vec3>,
     pub perched: Option<Vec3>,
+    /// A turning jump's turn, until it is handed to its fall
+    /// (`parkour::spin`).
+    pub spinning: Option<f32>,
     /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
     /// and its pose on the rig bound (made once).
     pub perch_weight: f32,
@@ -632,6 +639,7 @@ impl WalkerState {
             skid: None,
             onto: None,
             perched: None,
+            spinning: None,
             perch_weight: 0.0,
             perch_pose: None,
             look_round_t: 0.0,
@@ -1962,6 +1970,15 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.leap_asked = Some(ask);
                 }
             }
+            // A turning jump (`parkour::spin`), standing.
+            if standing
+                && state.jump.is_none()
+                && state.perch_weight <= 0.0
+                && let Some(turn) = walker.spin_jump.take()
+            {
+                state.jump = Some(super::parkour::spin::spin_jump(&stood, &rig));
+                state.spinning = Some(turn);
+            }
             // Asked onto a small top (`parkour::precision`), standing: turned
             // to face it on the spot, then a standing jump onto it.
             if let Some(top) = walker.onto
@@ -2818,6 +2835,19 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 state.falling = Some(super::parkour::precision::fall_onto(&jump, top, root, state.facing.yaw, foot_ik.pelvis_drop, &stood, &rig));
                 state.onto = None;
                 state.perched = Some(top);
+                started = true;
+            }
+            // A turning jump (`parkour::spin`): a little into its flight, a
+            // fall turning it round in the air, landing on the floor it left.
+            if let Some(turn) = state.spinning
+                && state.jump.as_ref().is_some_and(super::parkour::spin::hands_over)
+                && state.falling.is_none()
+                && let Some(jump) = state.jump.take()
+            {
+                let root = state.locomotion.position + state.facing.rotation() * std::mem::take(&mut state.stride.stepped);
+                let floor = state.locomotion.position.y;
+                state.falling = Some(super::parkour::spin::spin_fall(&jump, root, state.facing.yaw, floor, foot_ik.pelvis_drop, turn, &stood, &rig));
+                state.spinning = None;
                 started = true;
             }
             if let Some(below) = state.fall_to.take()

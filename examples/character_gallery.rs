@@ -1243,6 +1243,13 @@ fn steer_the_walker(
         let during = |window: Option<(f32, f32)>| window.is_some_and(|(at, seconds)| (at..at + seconds).contains(&time.elapsed_secs()));
         walker.perch = during(hangs.perch);
         walker.look_round = during(hangs.look_round);
+        if !hangs.spin_fired
+            && let Some((at, turn)) = hangs.spin_jump
+            && time.elapsed_secs() >= at
+        {
+            walker.spin_jump = Some(turn);
+            hangs.spin_fired = true;
+        }
         if !hangs.onto_fired
             && let Some((at, top)) = hangs.onto
             && time.elapsed_secs() >= at
@@ -1534,6 +1541,10 @@ struct HangSchedule {
     /// looking round likewise (`--look-round-at T[,SECONDS]`).
     perch: Option<(f32, f32)>,
     look_round: Option<(f32, f32)>,
+    /// A turning jump from standing at T, turning DEGREES (`--spin-jump-at
+    /// T[,DEGREES]`, else 180).
+    spin_jump: Option<(f32, f32)>,
+    spin_fired: bool,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1627,6 +1638,12 @@ impl HangSchedule {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, x, y, z] = numbers[..] {
                         schedule.onto = Some((at, Vec3::new(x, y, z)));
+                    }
+                }
+                "--spin-jump-at" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, ref rest @ ..] = numbers[..] {
+                        schedule.spin_jump = Some((at, rest.first().copied().unwrap_or(180.0).to_radians()));
                     }
                 }
                 "--perch-at" | "--look-round-at" => {

@@ -14,6 +14,7 @@ pub mod perch;
 pub mod pole;
 pub mod precision;
 pub mod skid;
+pub mod spin;
 pub mod squeeze;
 pub mod teeter;
 pub mod underslide;

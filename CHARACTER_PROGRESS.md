@@ -41,6 +41,22 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (second part): a turning jump from a stand
+
+Asked (`Walker::spin_jump`), a standing jump turns round in the air
+(`parkour::spin`). Note: [a turning jump is a standing jump handed to a
+spinning fall](docs/knowledge/character-animation/parkour/a-turning-jump-is-a-standing-jump-handed-to-a-spinning-fall.md).
+
+- **The jump:** straight up 0.4 m, handed 0.1 s into its flight to a fall
+  that turns it (as a leap back turns) and lands it facing the new way.
+- **The gallery:** `--spin-jump-at T[,DEGREES]`. **The bench:**
+  `--gait spin-jump`.
+- **Headless:** half turns either way and a quarter turn land facing the
+  turn within 0.0001 rad, every pose finite, no step change beyond the
+  take-off's own, no joint over 11.7 m/s.
+- **Live** (BRP): turned round and stood.
+- **Cost:** 29 µs a character at p50.
+
 ### Parkour, step 12 (first part): diagonal ejects from a hang
 
 Leaps up and aside, and back and aside, from a hang (`Leap::UpAside`,
