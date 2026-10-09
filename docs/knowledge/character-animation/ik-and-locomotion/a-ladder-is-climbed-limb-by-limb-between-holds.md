@@ -259,3 +259,4 @@ bows' cache, every copy `pose_led` ran ahead re-searched its step: 744 µs.
 - [A jump is planned as its centre of mass's path](./a-jump-is-planned-as-its-centre-of-mass-path.md) — context: `jump::upper` and leading each bone ahead of its spring.
 - [A walking arm swings back and its hand hangs relaxed](./a-walking-arm-swings-back-and-its-hand-hangs-relaxed.md) — contrast: the relaxed finger curl `RelaxedHands` holds when not gripping.
 - [Walk pelvis rides one sinusoid per step](./walk-pelvis-rides-one-sinusoid-per-step.md) — contrast: the walk's per-step pelvis rate, which a climb's beat mirrors.
+- [A wall of holds is free climbed limb by limb, a gap jumped for](../parkour/a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md) — contrast: the same limb-by-limb idea on scattered holds, each move choosing its hold.

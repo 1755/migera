@@ -1197,6 +1197,16 @@ fn steer_the_walker(
         if let Some(squeeze) = hangs.squeeze.take() {
             walker.squeeze = Some(squeeze);
         }
+        // Free climbing: the latest way asked, while its time lasts.
+        if walker.holds != hangs.holds {
+            walker.holds = hangs.holds.clone();
+        }
+        let elapsed = time.elapsed_secs();
+        let way = hangs.free_climbs.iter().filter(|(at, _, _)| *at <= elapsed).max_by(|a, b| a.0.total_cmp(&b.0)).and_then(|(at, way, seconds)| (*seconds <= 0.0 || elapsed < at + seconds).then_some(*way));
+        if way != hangs.last_free_climb {
+            walker.free_climb = way;
+            hangs.last_free_climb = way;
+        }
         walker.pole = hangs.pole;
         if walker.beams != hangs.beams {
             walker.beams = hangs.beams.clone();
@@ -1489,6 +1499,13 @@ struct HangSchedule {
     /// Squeezing along a passage between two walls (`--squeeze
     /// X0,Z0,X1,Z1[,WIDTH]`), asked from the start.
     squeeze: Option<migera::character::anim::parkour::squeeze::Squeeze>,
+    /// A wall of holds (`--holds-wall X,Z,HEADING,COLUMNS,ROWS[,TOP]`: a
+    /// grid 0.4 m across and 0.3 m up, its top a lip at TOP if given), and
+    /// the way to climb it (`--free-climb T,X,Y[,SECONDS]`: from T, for
+    /// SECONDS if given).
+    holds: Option<migera::character::anim::parkour::holds::HoldWall>,
+    free_climbs: Vec<(f32, bevy::math::Vec2, f32)>,
+    last_free_climb: Option<bevy::math::Vec2>,
 }
 
 impl HangSchedule {
@@ -1551,6 +1568,29 @@ impl HangSchedule {
                     }
                 }
                 "--slide-under-at" => schedule.slide_under_at = args.next().and_then(|t| t.trim().parse().ok()),
+                "--holds-wall" => {
+                    use migera::character::anim::parkour::holds::HoldWall;
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [x, z, heading, columns, rows, ref rest @ ..] = numbers[..] {
+                        let face = Vec3::new(x, 0.0, z);
+                        let out = approach::direction_of(heading.to_radians());
+                        let mut wall = HoldWall::grid(face, out, columns as usize, rows as usize, 0.4, 0.3, 0.35);
+                        let width = columns * 0.4 + 0.4;
+                        let height = rest.first().copied().unwrap_or(0.35 + rows * 0.3 + 0.3);
+                        let block = Ledge::wall(face, out, width, height, 1.0);
+                        if !rest.is_empty() {
+                            wall.top = Some(block);
+                        }
+                        schedule.others.push(block);
+                        schedule.holds = Some(wall);
+                    }
+                }
+                "--free-climb" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, x, y, ref rest @ ..] = numbers[..] {
+                        schedule.free_climbs.push((at, bevy::math::Vec2::new(x, y), rest.first().copied().unwrap_or(0.0)));
+                    }
+                }
                 "--squeeze" => {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [x0, z0, x1, z1, ref rest @ ..] = numbers[..] {
@@ -1732,6 +1772,25 @@ impl HangSchedule {
         }
         self.fired = true;
         Some(HangAsk::Grab)
+    }
+}
+
+/// The gallery's holds, as drawn.
+#[derive(Component)]
+struct GalleryHold;
+
+fn place_holds(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, hangs: Res<HangSchedule>, drawn: Query<(), With<GalleryHold>>) {
+    let Some(wall) = hangs.holds.as_ref() else { return };
+    if !drawn.is_empty() {
+        return;
+    }
+    let colour = materials.add(StandardMaterial { base_color: Color::srgb(0.85, 0.45, 0.2), perceptual_roughness: 0.7, ..default() });
+    let mesh = meshes.add(Cuboid::new(0.12, 0.035, 0.05));
+    let turn = Quat::from_rotation_arc(Vec3::Z, wall.out);
+    for hold in &wall.holds {
+        // Its top at the hold, standing out of the face.
+        let at = hold.at + wall.out * 0.025 - Vec3::Y * 0.0175;
+        commands.spawn((GalleryHold, Mesh3d(mesh.clone()), MeshMaterial3d(colour.clone()), Transform::from_translation(at).with_rotation(turn)));
     }
 }
 
@@ -2726,7 +2785,7 @@ fn main() {
         .insert_resource(HangSchedule::from_args())
         .add_systems(Startup, step_fixed_seconds)
         .add_systems(Update, (follow_speed_schedule, steer_the_walker).chain().before(WalkerSet::Drive))
-        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole).after(WalkerSet::Drive));
+        .add_systems(Update, (place_chair, place_ladder, place_ledge, place_pole, place_holds).after(WalkerSet::Drive));
 
     // The authoring studio, compiled only under `--features anim_studio`
     // so a release consumer never links the editor UI:

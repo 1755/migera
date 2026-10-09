@@ -8,7 +8,7 @@ tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
+updated: 2026-10-09
 code:
   - src/character/anim/parkour
   - src/character/anim/ladder.rs
@@ -205,10 +205,15 @@ climbing is the heart of the style; perches and agility make it feel right.
 
 ## Status
 
-Not started (2026-10-08).
+- **Step 13** built (2026-10-09):
+  [free climbing on holds](./a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md).
+  Outside corners and the transitions to a ladder, pole or beam end are
+  not built.
+- Steps 11, 12 and 14-18 not started.
 
 ## Related
 
 - [Parkour moves, step by step](./parkour-moves-implementation-design.md) — prerequisite: steps 1-10 and the principles these steps follow.
 - [Parkour movement data](./parkour-movement-data.md) — deeper: measured numbers each step takes its timings from, and the gaps.
 - [A ladder is climbed limb by limb between holds](../ik-and-locomotion/a-ladder-is-climbed-limb-by-limb-between-holds.md) — prerequisite: the holds model step 13 generalises from rungs to holds.
+- [A wall of holds is free climbed limb by limb, a gap jumped for](./a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md) — deeper: step 13 as built.

@@ -23,7 +23,7 @@
 
 use std::time::Instant;
 
-use bevy::math::Vec3;
+use bevy::math::{Vec2, Vec3};
 use migera::character::anim::dho::DhoState;
 use migera::character::anim::gait::{walk_pose_on, GaitParams};
 use migera::character::anim::phase::{GaitPhase, PhaseLayer};
@@ -106,6 +106,8 @@ enum Gait {
     /// A lache from a pumped swing on a 2.3 m bar to one 2 m ahead: from
     /// letting go to the catch, the catch tested each frame of the flight.
     Lache,
+    /// Free climbing up a wall of holds: 3 s of it, limb by limb.
+    FreeClimb,
 }
 
 fn main() {
@@ -152,7 +154,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -379,6 +381,18 @@ fn main() {
         }
         _ => None,
     };
+    // Free climbing (`parkour::holds`): the clock is 3 s of climbing up a
+    // wall of holds, from on it.
+    let free_climbing = match gait {
+        Gait::FreeClimb => {
+            use migera::character::anim::parkour::holds::{FreeClimb, HoldWall};
+            let wall = HoldWall::grid(Vec3::new(0.0, 0.0, -0.6), Vec3::Z, 9, 18, 0.4, 0.3, 0.35);
+            let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
+            climb.advance(None, 1.5);
+            Some(climb)
+        }
+        _ => None,
+    };
     let falling = match gait {
         Gait::Drop(roll) => {
             let velocity = rig.forward() * 1.4;
@@ -556,6 +570,11 @@ fn main() {
             }
             Some((pose, Some(params)))
         }
+        _ if let Some(climb) = &free_climbing => {
+            let mut now = climb.clone();
+            now.advance(Some(Vec2::Y), cycle * 3.0);
+            Some((now.pose_led(&springs), None))
+        }
         _ if let Some(crawl) = &crawling => {
             let mut now = crawl.clone();
             now.advance(true, cycle);
@@ -677,6 +696,7 @@ fn main() {
         Gait::Crawl => "   crawling on hands and knees".to_string(),
         Gait::Squeeze(flat) => if flat { "   squeezing sideways, the arms flat" } else { "   the side shuffle" }.to_string(),
         Gait::Lache => "   a lache from a 2.3 m bar to one 2 m ahead, from letting go to the catch".to_string(),
+        Gait::FreeClimb => "   free climbing up a wall of holds".to_string(),
         Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
@@ -816,6 +836,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("squeeze") => Gait::Squeeze(true),
         Some("shuffle") => Gait::Squeeze(false),
         Some("lache") => Gait::Lache,
+        Some("free-climb") => Gait::FreeClimb,
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),

@@ -166,6 +166,13 @@ pub struct Walker {
     /// walks to its mouth, turns square to it, shuffles along it, and walks
     /// on once through (the ask then dropped).
     pub squeeze: Option<super::parkour::squeeze::Squeeze>,
+    /// A wall of holds to free climb (`parkour::holds`).
+    pub holds: Option<super::parkour::holds::HoldWall>,
+    /// Climb [`Walker::holds`] this way (on the face: `x` toward its left
+    /// facing it, `y` up; zero holds still): it walks to the wall and gets
+    /// on first. On it, `None` holds still; asked down at the bottom it
+    /// steps off, up at the top it takes the lip into a hang and climbs up.
+    pub free_climb: Option<bevy::math::Vec2>,
     /// The pole to climb (`parkour::pole`).
     pub pole: Option<super::parkour::Pole>,
     /// Asked of [`Walker::pole`]: `Up` walks to it, gets on and climbs while
@@ -205,6 +212,8 @@ impl Default for Walker {
             beams: Vec::new(),
             crawl: false,
             squeeze: None,
+            holds: None,
+            free_climb: None,
             pole: None,
             on_pole: None,
         }
@@ -502,6 +511,10 @@ pub struct WalkerState {
     pub squeeze_facing: Option<Vec3>,
     pub squeezing: bool,
     pub squeezed: f32,
+    /// Free climbing a wall of holds (`parkour::holds`), and the spot it
+    /// walks to to get on.
+    pub free_climbing: Option<super::parkour::holds::FreeClimb>,
+    pub holds_spot: Option<Vec3>,
     /// Kicked across to another wall to chain a kick off it: that wall and
     /// the lip to kick to from it.
     pub kick_chain: Option<(super::parkour::Ledge, super::parkour::Ledge)>,
@@ -566,6 +579,8 @@ impl WalkerState {
             squeeze_facing: None,
             squeezing: false,
             squeezed: 0.0,
+            free_climbing: None,
+            holds_spot: None,
             kick_chain: None,
             fall_to: None,
             detour: None,
@@ -579,7 +594,7 @@ impl WalkerState {
     /// the air: on a ladder, grabbing or hanging from a ledge, running up a
     /// wall, or falling off an edge and landing.
     pub fn on_holds(&self) -> bool {
-        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some()
+        self.climbing.is_some() || self.hanging.is_some() || self.falling.is_some() || self.wall_run.is_some() || self.poling.is_some() || self.under_slide.is_some() || self.crawling.is_some() || self.free_climbing.is_some()
     }
 }
 
@@ -857,10 +872,37 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             (state.squeezing, state.squeeze_facing) = (false, None);
         }
         let squeeze_asked = !state.on_holds() && !state.squeezing && walker.squeeze.is_some() && walker.sit.is_none() && state.posture.is_standing() && !fallen;
+        // Asked to free climb (`parkour::holds`): to the spot in front of the
+        // wall, facing it; got on once stopped (below).
+        let holds_asked = !state.on_holds() && walker.free_climb.is_some() && walker.holds.is_some() && walker.sit.is_none() && state.posture.is_standing() && !fallen;
+        let mut at_holds = false;
         match (walker.sit, walker.chair, foot_ik.rig.as_ref()) {
             _ if state.on_holds() => {
                 state.approach = approach::Approach::Idle;
                 (wanted_speed, steer) = (0.0, Steer::Straight);
+            }
+            (_, _, Some(rig)) if holds_asked => {
+                let wall = walker.holds.as_ref().expect("asked to climb");
+                let ahead = approach::heading_of(rig.forward());
+                let spot = *state.holds_spot.get_or_insert_with(|| super::parkour::holds::FreeClimb::spot(wall, state.locomotion.position));
+                let speed = if walker.speed > 0.0 { walker.speed } else { approach::APPROACH_SPEED };
+                placing = true;
+                let gait = approach_gait(state, cycle_of(&phase), &gait_rig);
+                let obstacles: Vec<_> = route_obstacles.map(|route| route.0.clone()).unwrap_or_default();
+                match state.approach.advance(state.locomotion.position, state.facing.yaw + ahead, &gait, spot, approach::heading_of(-wall.out), speed, &obstacles) {
+                    approach::Order::Walk { speed, heading, rate } => {
+                        (wanted_speed, steer, arrived) = (speed, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Stop { heading, rate } => {
+                        (wanted_speed, steer, arrived) = (0.0, Steer::Toward { yaw: heading - ahead, rate }, false);
+                    }
+                    approach::Order::Arrived => {
+                        (wanted_speed, steer, at_holds) = (0.0, Steer::Straight, true);
+                    }
+                }
+                if look_at.is_none() {
+                    look_at = Some(wall.face + Vec3::Y * 1.8);
+                }
             }
             (_, _, Some(rig)) if squeeze_asked => {
                 let squeeze = walker.squeeze.expect("asked to squeeze");
@@ -2198,6 +2240,67 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     state.ladder_spot = None;
                     state.stood_hold = STOOD_HOLD;
                     phase.elapsed = 0.0;
+                }
+            }
+        }
+        // Free climbing (`parkour::holds`): got on once stopped in front of
+        // the wall; posed on its holds, the root riding its hips; stepped off
+        // at the bottom, a fall; topped out, a hang on the lip, climbing up
+        // if it was climbing up.
+        if let Some(rig) = foot_ik.rig.clone() {
+            let ready = at_holds && weight <= 0.0 && state.transition.is_at_rest() && state.crouching.is_standing() && state.jump.is_none();
+            if ready
+                && state.free_climbing.is_none()
+                && let Some(wall) = walker.holds.as_ref()
+            {
+                match super::parkour::holds::FreeClimb::get_on(wall, state.locomotion.position, &stood, &rig) {
+                    Some(mut climb) => {
+                        if let Some(hands) = hands.as_ref() {
+                            climb.set_grips(hands.grips);
+                        }
+                        state.free_climbing = Some(climb);
+                    }
+                    None => walker.free_climb = None,
+                }
+                state.holds_spot = None;
+                state.approach = approach::Approach::Idle;
+            }
+            if let Some(climb) = state.free_climbing.as_mut() {
+                let way = walker.free_climb.filter(|way| way.length_squared() > 1.0e-6);
+                climb.advance(way, dt);
+                target.pose = match springs {
+                    Some(springs) => climb.pose_led(&springs.0),
+                    None => climb.pose(),
+                };
+                state.locomotion.position = climb.root();
+                state.facing.yaw = climb.facing();
+                state.facing.target_yaw = state.facing.yaw;
+                foot_ik.planted = [false; 2];
+                foot_ik.landing = None;
+                foot_ik.touchdown = None;
+                foot_ik.clear = [0.0; 2];
+                foot_ik.gait_swing = None;
+                foot_ik.gait_bearing = None;
+                legs_free = true;
+                if let Some(hands) = hands.as_mut() {
+                    let grips = climb.grips();
+                    if hands.grip != grips || hands.hook != [true; 2] {
+                        hands.grip = grips;
+                        hands.hook = [true; 2];
+                    }
+                }
+                if climb.stepped_off() {
+                    state.falling = Some(climb.step_off(&stood));
+                    state.free_climbing = None;
+                    walker.free_climb = None;
+                } else if climb.topped_out() {
+                    let up = way.is_some_and(|way| way.y > 0.0);
+                    state.hanging = climb.top_out(&walker.ledges);
+                    state.free_climbing = None;
+                    walker.free_climb = None;
+                    if up {
+                        walker.hang = Some(super::parkour::hang::HangAsk::ClimbUp);
+                    }
                 }
             }
         }

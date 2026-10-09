@@ -41,6 +41,46 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 13: free climbing on holds
+
+Asked to free climb (`Walker::holds`, `Walker::free_climb`), the walker
+walks to a wall of holds, gets on, and climbs it limb by limb the way
+asked (`parkour::holds::FreeClimb` on a `HoldWall`). Note: [a wall of holds
+is free climbed limb by limb, a gap jumped
+for](docs/knowledge/character-animation/parkour/a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md).
+
+- **A move:** one limb to a new hold, three held, four-beat for the way
+  (up, down, aside, diagonal); a hand 0.55 s, a foot 0.45 s; the hips
+  placed from the holds.
+- **A dyno** for a hand hold out of reach up to 1.3 m over the higher
+  hand: sink, drive, ballistic flight, caught with both hands.
+- **The ends:** got on from standing; stepped off at the bottom into a
+  fall; the lip taken into a hang at the top (blended over 0.3 s), then
+  climbed up.
+- **The gallery:** `--holds-wall X,Z,HEADING,COLS,ROWS[,TOP]`,
+  `--free-climb T,X,Y[,S]`. **The bench:** `--gait free-climb`.
+- **Fixed on the way:** knees folded into the wall (footholds 0.5 m under
+  the hips, a smooth turn-out); a foot crossing sides; flying arms flipping
+  (a rotation blend from release to catch); a 25 cm jump taking the lip
+  (blended); an elbow stuck out level with its shoulder in a lock-off (seen
+  live from Back only; pulled down as the hand comes to the shoulder).
+- **Headless:** up 1.40 m in 9 s, aside 1.18 and 1.12 m in 6 s, down 1.33
+  m in 9 s; held hands within 1.2 µm, feet within 0.7 µm; nothing over 0.9
+  mm into the wall; no joint over 2.4 m/s about the hips nor a step change
+  over 1.3 cm; a 1.1 m gap jumped (0.37 s with no hand held); topped out
+  with no joint moving over 3 cm.
+- **A limit found:** matched hands need the feet in a 0.18 m band to move
+  a hand off the pair; on the gap test's wall it hops on a row at a time
+  (four dynos).
+- **Live** (Xvfb, gizmos on and mesh off, Left and Back; mesh on; BRP):
+  walked to the wall, got on, climbed, jumped to the lip, topped out and
+  climbed up onto it.
+- **Cost:** 68 µs a character at p50, like the other led movers (pole 39,
+  bar swing 63, hang 58).
+
+1282 library tests pass; clippy is clean, but for an older test warning in
+`hand.rs`.
+
 ### Parkour, step 10 finished: squeezing through a narrow passage
 
 Asked to squeeze along a passage (`Walker::squeeze`,
