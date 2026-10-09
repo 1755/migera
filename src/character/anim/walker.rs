@@ -187,6 +187,12 @@ pub struct Walker {
     /// balances there, its arms out; out of reach, the ask is dropped. Its
     /// top must be among [`Walker::ledges`] for it to stand there.
     pub onto: Option<Vec3>,
+    /// Crouch into a perch where it stands (`parkour::perch`), on a post or
+    /// a narrow top; up again when not asked. Perched, it rises before it
+    /// walks or jumps.
+    pub perch: bool,
+    /// Look round, the gaze swept slowly side to side (a viewpoint's).
+    pub look_round: bool,
     /// Running fast (`parkour::skid::SKID_FROM`), asked to stop it skids to
     /// a stop, and asked to face back (steered over [`SKID_BACK`] off its
     /// facing) it plants and turns round, standing; otherwise it slows to a
@@ -235,6 +241,8 @@ impl Default for Walker {
             pole: None,
             on_pole: None,
             onto: None,
+            perch: false,
+            look_round: false,
             skid: false,
         }
     }
@@ -541,6 +549,12 @@ pub struct WalkerState {
     /// stands on after, balancing.
     pub onto: Option<Vec3>,
     pub perched: Option<Vec3>,
+    /// Perching (`parkour::perch`): how far crouched into it (0-1, eased),
+    /// and its pose on the rig bound (made once).
+    pub perch_weight: f32,
+    pub perch_pose: Option<LocalPose>,
+    /// Looking round, seconds in.
+    pub look_round_t: f32,
     /// A hand on a wall beside it (`parkour::wallhand`): how far on (0-1,
     /// eased), and the wall (kept while it eases off).
     pub wall_hand: f32,
@@ -618,6 +632,9 @@ impl WalkerState {
             skid: None,
             onto: None,
             perched: None,
+            perch_weight: 0.0,
+            perch_pose: None,
+            look_round_t: 0.0,
             wall_hand: 0.0,
             wall_beside: None,
             lean: Default::default(),
@@ -1299,6 +1316,10 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             }
             wanted_speed = wanted_speed.min(super::parkour::beam::BEAM_SPEED);
         }
+        // Perched (`parkour::perch`), it rises before it walks.
+        if state.perch_weight > 0.0 {
+            wanted_speed = 0.0;
+        }
         // A wall ahead within its stopping distance (`keep_off_walls`): it
         // turns off its way as little as is clear, keeps to that side along
         // the wall, and back onto its way past its end (`way_round`); with
@@ -1848,6 +1869,24 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                 wallhand::rest_hand(&mut target.pose, state.locomotion.position, state.facing.yaw, &gait_rig, &wall, super::gait::smoothstep(state.wall_hand));
             }
         }
+        // Asked to perch, standing still: crouched down into it, up again
+        // when not asked, or asked to walk or jump onto a top
+        // (`parkour::perch`).
+        {
+            use super::parkour::perch;
+            let still = weight <= 0.0 && state.transition.is_at_rest() && state.posture.is_standing() && !state.on_holds() && state.jump.is_none() && !crouched;
+            let toward = if walker.perch && walker.onto.is_none() && walker.speed <= 0.0 && still { 1.0 } else { 0.0 };
+            let most = time.delta_secs() / perch::PERCH_EASE;
+            state.perch_weight = (state.perch_weight + (toward - state.perch_weight).clamp(-most, most)).clamp(0.0, 1.0);
+            if state.perch_weight > 0.0 {
+                if foot_ik.rig.is_some() && state.perch_pose.is_none() {
+                    state.perch_pose = Some(perch::perch_pose(&stood, &gait_rig));
+                }
+                if let Some(perched) = state.perch_pose.as_ref() {
+                    perch::perch(&mut target.pose, perched, &gait_rig, super::gait::smoothstep(state.perch_weight));
+                }
+            }
+        }
         // Sitting, sitting down or standing up: the posture's pose instead
         // (`sitting`), its legs as solved on its own contacts, untouched by
         // the leg IK. It starts only once stopped.
@@ -1928,6 +1967,7 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             if let Some(top) = walker.onto
                 && standing
                 && state.jump.is_none()
+                && state.perch_weight <= 0.0
             {
                 use super::parkour::precision::{jump_onto, FACING};
                 let ahead = approach::heading_of(rig.forward());
@@ -2891,6 +2931,16 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         }
 
 
+        // Looking round (a viewpoint's): the gaze swept 1.1 rad either side
+        // of its facing and back every 7 s, level.
+        if walker.look_round && look_at.is_none() {
+            state.look_round_t += time.delta_secs();
+            let ahead = approach::heading_of(gait_rig.forward());
+            let swept = 1.1 * (std::f32::consts::TAU * state.look_round_t / 7.0).sin();
+            look_at = Some(root.translation + approach::direction_of(state.facing.yaw + swept + ahead) * 4.0 + Vec3::Y * 1.5);
+        } else {
+            state.look_round_t = 0.0;
+        }
         // Turned to its way going aside and forward at once, it looks where
         // it was steered to face.
         if look_at.is_none() && state.strafe != 0.0 {

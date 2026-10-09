@@ -218,7 +218,12 @@ climbing is the heart of the style; perches and agility make it feel right.
   built: the whole-body pitch of a sprint start (it trunk-pitches only), a
   plant-and-turn running on without standing, a landing on the balls of
   the feet.
-- Steps 12 and 14-18 not started.
+- **Step 16** built (2026-10-09):
+  [perches](./a-perch-is-the-get-ups-squat-feet-together-forearms-on-knees.md)
+  and looking round. Not built: onto a perch from a hang below, a leap
+  out of the crouch itself (it rises first), a drop from a perch to a
+  hang.
+- Steps 12, 14, 15, 17 and 18 not started.
 
 ## Related
 

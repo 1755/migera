@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod hang;
 pub mod holds;
 pub mod lean;
+pub mod perch;
 pub mod pole;
 pub mod precision;
 pub mod skid;

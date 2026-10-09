@@ -1240,6 +1240,9 @@ fn steer_the_walker(
             _ => Steer::Straight,
         };
         walker.skid = hangs.skid;
+        let during = |window: Option<(f32, f32)>| window.is_some_and(|(at, seconds)| (at..at + seconds).contains(&time.elapsed_secs()));
+        walker.perch = during(hangs.perch);
+        walker.look_round = during(hangs.look_round);
         if !hangs.onto_fired
             && let Some((at, top)) = hangs.onto
             && time.elapsed_secs() >= at
@@ -1527,6 +1530,10 @@ struct HangSchedule {
     /// unless SIZE).
     onto: Option<(f32, Vec3)>,
     onto_fired: bool,
+    /// Perching from T for SECONDS (`--perch-at T[,SECONDS]`, else on), and
+    /// looking round likewise (`--look-round-at T[,SECONDS]`).
+    perch: Option<(f32, f32)>,
+    look_round: Option<(f32, f32)>,
     /// Steered to face a heading from T (`--steer-at T,DEGREES`), at 2
     /// rad/s.
     steer_at: Option<(f32, f32)>,
@@ -1620,6 +1627,17 @@ impl HangSchedule {
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
                     if let [at, x, y, z] = numbers[..] {
                         schedule.onto = Some((at, Vec3::new(x, y, z)));
+                    }
+                }
+                "--perch-at" | "--look-round-at" => {
+                    let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if let [at, ref rest @ ..] = numbers[..] {
+                        let window = Some((at, rest.first().copied().unwrap_or(f32::INFINITY)));
+                        if arg == "--perch-at" {
+                            schedule.perch = window;
+                        } else {
+                            schedule.look_round = window;
+                        }
                     }
                 }
                 "--post" => {

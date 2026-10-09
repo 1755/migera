@@ -41,6 +41,28 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 16: perches
+
+Asked to perch (`Walker::perch`), the walker crouches into a perch where
+it stands, on a post it jumped onto or any top (`parkour::perch`); asked
+to look round (`Walker::look_round`), its gaze sweeps. Note: [a perch is
+the get-up's squat, feet together, forearms on the
+knees](docs/knowledge/character-animation/parkour/a-perch-is-the-get-ups-squat-feet-together-forearms-on-knees.md).
+
+- **The shape:** the get-up's deep squat, the feet 0.14 m apart, the
+  forearms over the knees, the trunk turned until the COM is over the
+  feet.
+- **The layer:** eased over 0.8 s, the legs blended by their feet; it
+  rises before it walks or jumps onto another top.
+- **The gallery:** `--perch-at T[,S]`, `--look-round-at T[,S]`. **The
+  bench:** `--gait perch`.
+- **Headless:** the feet on a 0.3 m top, the COM over them, the hips under
+  60 % of standing's height, the wrists over the knees; down and up with
+  the ankles held within 1 cm, no step change over 1 cm.
+- **Live** (Xvfb, gizmos on and mesh off, Left and Front; mesh on): jumped
+  onto a 0.3 m post, perched on it, looked round.
+- **Cost:** 10 µs a character at p50.
+
 ### Parkour, step 11 finished: a hand on a wall beside the body
 
 Standing or walking beside a tall wall within reach of a shoulder, that
