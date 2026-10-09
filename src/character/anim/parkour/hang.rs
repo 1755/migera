@@ -2187,7 +2187,15 @@ mod tests {
         // As live: the next along 2.06 m from the grip, a wall 3 m behind.
         let farther = Ledge::wall(Vec3::new(3.26, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0);
         let far_behind = Ledge::wall(Vec3::new(0.0, 0.0, 2.5), Vec3::NEG_Z, 3.0, 2.0, 1.0);
+        // Diagonal: up 0.6 m and along past the wall's end; behind 2.5 m and
+        // off to the right.
+        let up_aside = Ledge::wall(Vec3::new(1.8, 0.0, -0.5), Vec3::Z, 2.0, 3.1, 1.0);
+        let farther_up_aside = Ledge::wall(Vec3::new(2.3, 0.0, -0.5), Vec3::Z, 2.0, 3.1, 1.0);
+        let back_aside = Ledge::wall(Vec3::new(2.0, 0.0, 2.5), Vec3::NEG_Z, 2.0, 2.0, 1.0);
         let cases = [
+            ("up and aside", wall, vec![up_aside], Leap::UpAside(Shimmy::Right), Some(up_aside)),
+            ("up and aside, 1.5 m", wall, vec![farther_up_aside], Leap::UpAside(Shimmy::Right), Some(farther_up_aside)),
+            ("back and aside", wall, vec![back_aside], Leap::BackAside(Shimmy::Right), Some(back_aside)),
             ("up", sill, vec![above], Leap::Up, Some(above)),
             ("aside", wall, vec![along], Leap::Aside(Shimmy::Right), Some(along)),
             ("aside, 2 m", wall, vec![farther], Leap::Aside(Shimmy::Right), Some(farther)),

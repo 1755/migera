@@ -41,6 +41,26 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 12 (first part): diagonal ejects from a hang
+
+Leaps up and aside, and back and aside, from a hang (`Leap::UpAside`,
+`Leap::BackAside`), aimed as step 6's leaps at the target's nearest grip.
+Note (extended): [a hang is leapt from, up, aside or
+back](docs/knowledge/character-animation/parkour/a-hang-is-leapt-from-up-aside-or-back.md).
+
+- **Fixed on the way:** a fall kept the hands off a wall's plane even off
+  the wall's side; leaping up and aside along one face, the elbow swung
+  12-15 cm the frame it let go. The keep-off fades over 0.2 m outside each
+  wall's ends.
+- **The gallery:** `--leap-at T,up-left|up-right|back-left|back-right`.
+  **The bench:** `--gait leap-up-aside`, `leap-back-aside`.
+- **Headless:** up and right 1-1.5 m along to a lip 0.6 m higher, back and
+  right to a face 2.5 m behind: caught, the hands held, ballistic, nothing
+  into a block, letting go changing a step by 1.15-1.4 cm.
+- **Live** (BRP): up and right to a 2.85 m lip 1.8 m along, caught and
+  hung.
+- **Cost:** 37 and 40 µs a character at p50.
+
 ### Parkour, step 16: perches
 
 Asked to perch (`Walker::perch`), the walker crouches into a perch where

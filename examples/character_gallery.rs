@@ -1732,6 +1732,10 @@ impl HangSchedule {
                             "back" => Some(Leap::Back),
                             "left" => Some(Leap::Aside(Shimmy::Left)),
                             "right" => Some(Leap::Aside(Shimmy::Right)),
+                            "up-left" => Some(Leap::UpAside(Shimmy::Left)),
+                            "up-right" => Some(Leap::UpAside(Shimmy::Right)),
+                            "back-left" => Some(Leap::BackAside(Shimmy::Left)),
+                            "back-right" => Some(Leap::BackAside(Shimmy::Right)),
                             _ => None,
                         };
                         schedule.leap = way.map(|way| (at, way));

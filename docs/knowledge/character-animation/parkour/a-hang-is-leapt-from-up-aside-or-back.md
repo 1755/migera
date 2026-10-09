@@ -7,8 +7,8 @@ tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
-verified: 2026-10-08
+updated: 2026-10-09
+verified: 2026-10-09
 code:
   - src/character/anim/parkour/hang/leap.rs
   - src/character/anim/parkour/hang.rs
@@ -93,6 +93,16 @@ wall the fall faces, and the fall is held off the wall it faces
 **The walker** releases into the fall when the launch ends. During the
 flight it tests the catch against the target alone.
 
+**Diagonal ejects** (step 12 of the [steps beyond the first
+ten](./parkour-moves-beyond-the-first-ten-steps.md), added 2026-10-09):
+- `Leap::UpAside`: to a ledge 0.3-1.1 m up whose nearest grip is 0.4-2.15 m
+  along to that side, on the same face. It launches from the aside leap's
+  point (swung along and up).
+- `Leap::BackAside`: to a face behind whose nearest grip is 0.4 m or more
+  off to that side (the hang's own side), turning round in the air. It
+  launches from the back push, swung along too.
+- The flight is aimed as any leap's, at the target's nearest grip.
+
 ## Alternatives considered
 
 - **A flight of its own** instead of `Falling`: the fall already has the
@@ -144,6 +154,13 @@ flight it tests the catch against the target alone.
     before the catch. It pushes the hips out at 3.6 g over the last two
     frames, about 1 cm in all. Dropping the ramp for a leap would land a
     missed catch with a jolt, so it is kept.
+- **A wall's plane is not the wall.** Leaping up and aside to a higher
+  ledge on the same face, the hands, still over the lip of the ledge left,
+  were behind the target's plane. The fall keeps the hands off the
+  target's face, and pushed them out onto its plane though they were off
+  its side: an elbow swung 12-15 cm the frame it let go. Moving the launch
+  point did not change it. The keep-off (margin and plane both) now fades
+  over 0.2 m outside each wall's ends.
 
 ## Consequences
 
@@ -182,6 +199,14 @@ from its start and the catch swept each frame):
 | `leap-back` | 45 µs |
 
 Similar to a grab and hang (55 µs) and a climb up (42 µs).
+
+**Diagonals** (headless, the same test): up and right 1.0 and 1.5 m along
+to a lip 0.6 m higher, and back and right to a face 2.5 m behind, 1 m
+along. Each caught its target with the hands held, the flight ballistic
+and nothing into a block. Letting go changed a step by 1.15-1.4 cm, as
+the straight leaps do. Live, up and right to a 2.85 m lip 1.8 m along, it
+caught it and hung 1.38 m along. `anim_bench --gait leap-up-aside` 37
+µs, `leap-back-aside` 40 µs a character at p50.
 
 ## Revisit when
 

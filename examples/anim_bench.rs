@@ -312,6 +312,8 @@ fn main() {
                 Leap::Up => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 0.12), Ledge::wall(Vec3::new(0.0, 0.0, -0.62), Vec3::Z, 2.0, 3.3, 1.0)),
                 Leap::Aside(_) => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(3.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0)),
                 Leap::Back => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 3.0, 2.0, 1.0)),
+                Leap::UpAside(_) => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(2.3, 0.0, -0.5), Vec3::Z, 2.0, 3.1, 1.0)),
+                Leap::BackAside(_) => (Ledge::wall(Vec3::new(0.0, 0.0, -0.5), Vec3::Z, 2.0, 2.5, 1.0), Ledge::wall(Vec3::new(2.0, 0.0, 2.5), Vec3::NEG_Z, 2.0, 2.0, 1.0)),
             };
             let mut hanging = Hanging::hung(&from, &[target], Vec3::new(0.2, 0.0, 1.0), 0.0, [None; 2], &stood, &rig);
             hanging.advance(1.5);
@@ -809,6 +811,8 @@ fn main() {
                 Leap::Up => "up to a ledge 0.8 m above",
                 Leap::Aside(_) => "aside to the next ledge along",
                 Leap::Back => "back to a wall behind",
+                Leap::UpAside(_) => "up and aside to a ledge 0.6 m above",
+                Leap::BackAside(_) => "back and aside to a wall behind",
             };
             format!("   leaping from a hang {way} and catching it")
         }
@@ -954,6 +958,8 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("leap-up") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Up),
         Some("leap-aside") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Aside(migera::character::anim::parkour::hang::Shimmy::Right)),
         Some("leap-back") => Gait::Leap(migera::character::anim::parkour::hang::Leap::Back),
+        Some("leap-up-aside") => Gait::Leap(migera::character::anim::parkour::hang::Leap::UpAside(migera::character::anim::parkour::hang::Shimmy::Right)),
+        Some("leap-back-aside") => Gait::Leap(migera::character::anim::parkour::hang::Leap::BackAside(migera::character::anim::parkour::hang::Shimmy::Right)),
         _ => Gait::None,
     };
     (characters.max(1), frames.max(1), gait)

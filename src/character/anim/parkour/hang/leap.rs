@@ -33,6 +33,12 @@ pub enum Leap {
     Back,
     /// Sideways to the next ledge along, the character's own left or right.
     Aside(Shimmy),
+    /// Up and aside (step 12 of the steps beyond the first ten, a diagonal
+    /// eject): to a ledge above that is also along to that side.
+    UpAside(Shimmy),
+    /// Back and aside, turning round: to a ledge behind that is also off
+    /// to that side (the hang's own).
+    BackAside(Shimmy),
 }
 
 /// A launch under way: its plan, and how far into it.
@@ -87,6 +93,9 @@ const ASIDE_GAP: f32 = 1.8;
 const ASIDE_RISE: f32 = 0.6;
 const BACK_REACH: (f32, f32) = (0.8, 3.5);
 const BACK_RISE: f32 = 0.5;
+/// A diagonal leap's target at least this far to its side, metres
+/// (nearer, straight up or back).
+const DIAGONAL_ASIDE: f32 = 0.4;
 /// Caught, the grip this far in from the ledge's end, metres.
 const END_MARGIN: f32 = 0.35;
 /// With nothing behind to catch, a leap back leaves at these speeds out and
@@ -162,6 +171,36 @@ impl Hanging {
                     return false;
                 };
                 (from + way * SWING_ALONG + Vec3::Y * SWING_UP, Some(target), 0.0)
+            }
+            Leap::UpAside(shimmy) => {
+                let way = sideways(shimmy);
+                let Some(target) = self
+                    .others
+                    .iter()
+                    .copied()
+                    .filter(|ledge| ledge.out.dot(out) > 0.9 && (UP_REACH.0..=UP_REACH.1).contains(&(ledge.height() - lip.y)))
+                    .filter(|ledge| {
+                        let near = ledge.nearest(lip, END_MARGIN);
+                        let gap = (near - lip).dot(way);
+                        (DIAGONAL_ASIDE..=ASIDE_GAP + END_MARGIN).contains(&gap) && ledge.out_of(lip).abs() < 0.5
+                    })
+                    .min_by(|a, b| (a.nearest(lip, 0.0) - lip).length().total_cmp(&(b.nearest(lip, 0.0) - lip).length()))
+                else {
+                    return false;
+                };
+                (from + way * SWING_ALONG + Vec3::Y * SWING_UP, Some(target), 0.0)
+            }
+            Leap::BackAside(shimmy) => {
+                let way = sideways(shimmy);
+                let push = from + out * PUSH_OUT + Vec3::Y * PUSH_UP + way * SWING_ALONG;
+                let Some(target) = self.others.iter().copied().filter(|ledge| ledge.out.dot(out) < -0.9 && ledge.height() <= lip.y + BACK_RISE).find(|ledge| {
+                    let away = ledge.out_of(push);
+                    let near = ledge.nearest(push, END_MARGIN);
+                    (BACK_REACH.0..=BACK_REACH.1).contains(&away) && (near - push).dot(way) >= DIAGONAL_ASIDE && (near - push).with_y(0.0).length() < BACK_REACH.1 + 0.5
+                }) else {
+                    return false;
+                };
+                (push, Some(target), std::f32::consts::PI)
             }
             Leap::Back => {
                 let push = from + out * PUSH_OUT + Vec3::Y * PUSH_UP;

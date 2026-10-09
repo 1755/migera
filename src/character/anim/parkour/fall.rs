@@ -340,6 +340,9 @@ pub struct Falling {
     /// A wall it faces, its hands kept off ([`Self::facing_wall`]): a point
     /// on its top edge and the face's way out.
     wall: Option<(Vec3, Vec3)>,
+    /// Its ends along its top, if known ([`Self::against`]): a hand off its
+    /// side is not kept off it.
+    wall_span: Option<(Vec3, Vec3)>,
     /// How far the hips keep off it, metres, every [`ROOM_STEP`] seconds
     /// from leaving (empty: [`HIPS_OFF_WALL`]).
     wall_rooms: Vec<f32>,
@@ -418,6 +421,7 @@ impl Falling {
             stand_height: 0.0,
             feet: [Vec3::ZERO; 2],
             wall: None,
+            wall_span: None,
             wall_rooms: Vec::new(),
             wall_give: WALL_GIVE,
             ankle_velocities: [Vec3::ZERO; 2],
@@ -807,6 +811,7 @@ impl Falling {
         });
         if let Some(ledge) = wall {
             self.facing_wall(ledge.nearest(rest, 0.0), ledge.out);
+            self.wall_span = Some((ledge.a, ledge.b));
         }
     }
 
@@ -1500,14 +1505,25 @@ impl Falling {
         // lip, kept off it at once, they jumped 4-15 cm the frame it let go.
         // And the face of the ledge leapt at, below its lip (leaping up, the
         // hands reaching for it went 2.6 cm into the wall under it).
-        let target_wall = self.target.map(|ledge| (ledge.nearest(hips, 0.0), ledge.out));
-        for (top, out) in self.wall.into_iter().chain(target_wall) {
+        let target_wall = self.target.map(|ledge| (ledge.nearest(hips, 0.0), ledge.out, Some((ledge.a, ledge.b))));
+        for (top, out, span) in self.wall.map(|(top, out)| (top, out, self.wall_span)).into_iter().chain(target_wall) {
             let at = forward_kinematics_on(&pose, rig);
             for chain in [ArmChain::LEFT, ArmChain::RIGHT] {
                 let wrist = root + turn * at[chain.wrist];
                 let under = smoothstep(((top.y - wrist.y) / WALL_EASED).clamp(0.0, 1.0));
+                // Only in front of it: off its side by more than
+                // `WALL_EASED`, not at all (leaping up and aside from a lip
+                // to a higher one along the same face, the hands over the
+                // lip were pushed out onto the target's plane, an elbow 15
+                // cm the frame it let go).
+                let beside = span.map_or(1.0, |(a, b)| {
+                    let span = b - a;
+                    let along = (wrist - a).dot(span.normalize_or_zero());
+                    let past = (-along).max(along - span.length()).max(0.0);
+                    1.0 - smoothstep((past / WALL_EASED).clamp(0.0, 1.0))
+                });
                 let off = (wrist - top).dot(out);
-                let short = HANDS_OFF_WALL * under * freed - off;
+                let short = (HANDS_OFF_WALL * under * freed - off) * beside;
                 let kept = wrist + out * short.max(0.0);
                 // Sliding down its own wall, the hands held on the face,
                 // eased onto it as they come under its top, no higher than
