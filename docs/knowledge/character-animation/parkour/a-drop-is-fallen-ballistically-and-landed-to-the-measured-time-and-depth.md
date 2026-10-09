@@ -1,22 +1,28 @@
 ---
 title: A drop is fallen ballistically and landed to the measured time and depth
-description: "parkour::Falling: off an edge the hips fall under gravity; a squat landing to the measured time and knee depth (keyed by drop height); past 1.7 m a roll whose resting height is planned over time; past 4 m the ragdoll. Read before changing fall.rs, any landing, or the walker's ground snap."
+description: "parkour::Falling: off an edge the hips fall under gravity; a squat landing to the measured time and knee depth (keyed by drop height); past 1.7 m a roll planned over time; past 4 m the ragdoll. A long fall windmills the arms and cycles the legs. Read before changing fall.rs, any landing, or the walker's ground snap."
 type: decision
 status: current
 tags:
   - locomotion
   - ik
   - biomechanics
-updated: 2026-10-08
-verified: 2026-10-08
+updated: 2026-10-09
+verified: 2026-10-09
 code:
   - src/character/anim/parkour/fall.rs
   - src/character/anim/walker.rs
+  - examples/anim_bench.rs
 sources:
   - "tests parkour::fall::tests::* (drops of 0.9 and 1.8 m, still and at 1.4 m/s)"
+  - "test parkour::fall::tests::a_long_fall_windmills_the_arms_and_cycles_the_legs"
   - "live: character_gallery --block 0,0.9,180,0.9,2.0,1.8 --start-height 0.9 --anim-speed-schedule 2:1.2, Xvfb, BRP"
+  - "live: character_gallery --start-height 8 --block 0,-6,0,8,2.0,10 --anim-speed 3, Xvfb, gizmos on/mesh off Left"
   - "Dai et al. 2020; Puddle and Maulder 2013 (parkour-movement-data)"
 aliases:
+  - long fall loop
+  - windmilling arms
+  - Falling::flailing
   - Falling
   - FallPhase
   - STEP_DOWN
@@ -88,6 +94,28 @@ up twice as slowly. No data: past the measured 2.7 m, set by eye.
 (`Walker::fall_now`), the ragdoll taking the body with the velocity the
 kinematic root had; without a ragdoll it rolls. No data; past the measured
 2.7 m the loads climb steeply.
+
+**A long fall loops** (`Falling::flailing`, step 18): the arms windmill
+and the legs cycle through the middle of the flight.
+- Each upper arm swings round a 0.9 rad cone about where it points, at
+  1.4 Hz, the two arms half a turn apart.
+- Each ankle goes round an ellipse 0.15 m forward and 0.2 m up from where
+  it is, never further down, so the leg is never pushed past its reach.
+- The loop eases in over 0.3 s from 0.35 s after leaving (once the arms
+  are free).
+- Short of the fatal drop it is gone 0.3 s before touchdown, so the
+  landing is untouched. Below about 3 m there is no room for it, and none
+  is shown.
+- Past the fatal drop the arms go on to touchdown, where the ragdoll takes
+  the body; without a ragdoll they ease out over the landing's arm ease.
+  The legs always ease out, so the feet meet the ground where the landing
+  plans them.
+- Never in a fall that reaches for a catch, is aimed at a ledge, is held
+  off a wall or is sliding.
+
+The arm loop sizes a cone, not whole turns at the shoulder as the
+teeter's are: whole turns can only stop at the top, but a cone eased in
+and out fades wherever round it is. No data: set by eye.
 
 **The walker**: `ride_rendered_feet` does not snap the root down onto ground
 more than a step below last frame's; it notes the ground (`fall_to`), and
@@ -168,6 +196,23 @@ squats at 1.4, from 0.5 m it squats at 4 m/s.
 **Headless, hurt** (3.5 m): the wrists on the ground within 1 cm, on its
 hands for the hold, the knees past 128°, nothing below the ground, standing
 at the end.
+
+**Headless, the long fall's loop** (240 Hz):
+- From 8 m, the loop is full and the arms keep it to touchdown. The hand
+  sweeps 1.09 m round the shoulder (0.50 m with no loop) and the foot
+  0.21 m under the hips.
+- From 6 m at 3 m/s, the legs reach 0.77 of the loop: the flight is short
+  enough that their ease in and out overlap.
+- From 3.6 m, a trace of the loop, gone by touchdown; the feet land
+  exactly where they did before.
+- From 1.5 m, none.
+- At most 1 mm of change in any joint's step: the wrist's centripetal
+  acceleration on its cone, plus gravity.
+
+**Live, the long fall** (an 8 m block, walking off at 3 m/s; gizmos on,
+mesh off; Left): through the flight the hands go round the shoulders and
+the feet rise and fall in turn. Without a ragdoll it then rolls.
+`anim_bench --gait long-fall`: 27 µs a character (the 2.2 m roll: 26).
 
 **Live** (a 0.9 m block, walking off at 1.2 m/s, BRP): the pelvis from
 1.84 m to 0.48 at the bottom, the feet planted on the floor, standing again

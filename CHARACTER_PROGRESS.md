@@ -41,6 +41,28 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 18 (first part): a long fall's loop
+
+A fall long enough to have room for it windmills the arms and cycles the
+legs through the middle of its flight (`Falling::flailing`, in
+`parkour/fall.rs`):
+- each upper arm circles a cone about where it points, at 1.4 Hz, the two
+  arms half a turn apart;
+- each ankle goes round an ellipse forward and up from where it is.
+
+The loop is gone 0.3 s before a landing. Past the fatal drop the arms go
+on to touchdown and the ragdoll. Note: [the drop's, extended](docs/knowledge/character-animation/parkour/a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md).
+
+- **Headless** (240 Hz):
+  - from 8 m, the hand sweeps 1.09 m round the shoulder (0.50 m without
+    the loop) and the foot 0.21 m under the hips;
+  - from 3.6 m, a trace of the loop, gone by touchdown;
+  - from 1.5 m, none;
+  - steps change at most 1 mm.
+- **Live** (8 m block, gizmos on, mesh off, Left): the hands go round the
+  shoulders and the feet alternate through the flight.
+- **Bench:** `--gait long-fall`, 27 µs a character (the 2.2 m roll: 26).
+
 ### Parkour, step 17 (last part): a corner swing
 
 Asked (`Walker::corner`), a run past a post at a corner paces its last

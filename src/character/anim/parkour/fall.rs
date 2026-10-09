@@ -86,6 +86,19 @@ const ARMS_DOWN: f32 = 0.15;
 /// The trunk and arms go from where they were as it left to the flight's
 /// over this long, seconds.
 const ARMS_FREE: f32 = 0.35;
+/// A long fall's loop ([`Falling::flailing`]): from this long after it
+/// leaves (the arms freed), coming in over this long, and gone this long
+/// before it touches down (the legs reaching for the landing), seconds;
+/// past [`FATAL_DROP`], the arms going on to touchdown. Each arm circles a
+/// cone this wide about where it points, radians, and each foot an
+/// ellipse this long forward and this high, metres, at this rate, Hz, the
+/// two sides half a turn apart. No data: by eye.
+const LOOP_FROM: f32 = 0.35;
+const LOOP_IN: f32 = 0.3;
+const LOOP_OUT: f32 = 0.3;
+const LOOP_CONE: f32 = 0.9;
+const LOOP_STRIDE: (f32, f32) = (0.15, 0.2);
+const LOOP_RATE: f32 = 1.4;
 /// Facing a wall, how far the wrists keep off it, metres: a hand's length,
 /// its fingers up the wall.
 const HANDS_OFF_WALL: f32 = 0.1;
@@ -487,6 +500,37 @@ impl Falling {
     fn legs_down(&self, flight: f32) -> f32 {
         let u = (self.t / flight).clamp(0.0, 1.0);
         if self.is_sliding() { ((u - SLIDE_FEET) / (1.0 - SLIDE_FEET)).clamp(0.0, 1.0) } else { u }
+    }
+
+    /// A long fall's loop, how much of it the arms and the legs take, 0-1,
+    /// through a flight `flight` long: the arms windmilling, the legs
+    /// cycling (`LOOP_*`). Only a fall long enough to have room for it
+    /// between freeing the arms and reaching for the landing; never one
+    /// reaching for a catch, aimed at a ledge, held off a wall or sliding.
+    /// Past [`FATAL_DROP`] the arms go on to touchdown (then the ragdoll;
+    /// landed without one, gone over [`ARMS_DOWN`]); the legs never do, so
+    /// the feet meet the ground where the landing plans them.
+    fn flailing(&self, flight: f32) -> (f32, f32) {
+        if self.reaching || self.wall.is_some() || self.target.is_some() || self.is_sliding() {
+            return (0.0, 0.0);
+        }
+        let ease = |u: f32| smoothstep(u.clamp(0.0, 1.0));
+        let into = |t: f32| ease((t - LOOP_FROM) / LOOP_IN);
+        let legs = into(self.t) * ease((flight - LOOP_OUT - self.t) / LOOP_IN);
+        let arms = if !self.is_fatal() {
+            legs
+        } else if self.t < flight {
+            into(self.t)
+        } else {
+            into(flight) * (1.0 - ease((self.t - flight) / ARMS_DOWN))
+        };
+        (arms, legs)
+    }
+
+    /// The loop's phase at `t`, radians: the left side's; the right's half
+    /// a turn on.
+    fn loop_phase(t: f32) -> f32 {
+        std::f32::consts::TAU * LOOP_RATE * (t - LOOP_FROM)
     }
 
     /// A jump in the air (`jump::Jump`) gone over an edge, falling on to
@@ -1452,6 +1496,26 @@ impl Falling {
                 pose.rotations[bone] = arc(from, toward(pose.rotations[bone]), freed);
             }
         }
+        // A long fall's loop: each upper arm swung round a cone about where
+        // it points, the tip going out the back, up, forward and down (the
+        // cone's size eased, so it fades out wherever round it is: whole
+        // turns at the shoulder, as a teeter's, can only stop at the top).
+        let (flail_arms, flail_legs) = self.flailing(flight);
+        if flail_arms > 0.0 {
+            let at = forward_kinematics_on(&pose, rig);
+            let back_way = -rig.forward();
+            for (k, (chain, sign)) in [(ArmChain::LEFT, 1.0f32), (ArmChain::RIGHT, -1.0)].into_iter().enumerate() {
+                let along = (at[chain.elbow] - at[chain.shoulder]).normalize_or(Vec3::NEG_Y);
+                // Square to the arm: back (an arm never points back), and
+                // round from it, mirrored side to side.
+                let out = (back_way - along * along.dot(back_way)).normalize_or(Vec3::Y);
+                let round = along.cross(out) * sign;
+                let phase = Self::loop_phase(self.t) + std::f32::consts::PI * k as f32;
+                let tip = out * phase.cos() + round * phase.sin();
+                let swing = Quat::from_axis_angle(along.cross(tip).normalize_or(Vec3::X), LOOP_CONE * flail_arms);
+                pose.rotations[chain.shoulder] = delta_after_world_turn(&pose, rig, chain.shoulder, swing);
+            }
+        }
         // The hips in the pose's frame: down from standing as far as they
         // are below it (the root rides the hips' height above the ground
         // only once standing again).
@@ -1471,6 +1535,14 @@ impl Falling {
                 let to = self.feet[side] - touch_hips;
                 hips + from.lerp(to, smoothstep(self.legs_down(flight)))
             };
+            // A long fall's loop: the foot round an ellipse forward and up
+            // from where it is (never further down: the leg never pushed
+            // past its reach).
+            if flail_legs > 0.0 {
+                let phase = Self::loop_phase(self.t) + std::f32::consts::PI * side as f32;
+                let cycle = rig.forward() * (LOOP_STRIDE.0 * phase.sin()) + Vec3::Y * (LOOP_STRIDE.1 * (0.5 - 0.5 * phase.cos()));
+                ankle += turn * cycle * flail_legs;
+            }
             place_ankle(&mut pose, rig, bone, back * (ankle - root) - pose_hips);
             // In the air facing a wall, the foot out as far as its knee
             // would go into it (a running jump's legs reaching ahead for
@@ -1877,6 +1949,79 @@ mod tests {
         assert!(off(4.5).is_fatal(), "4.5 m landed");
         assert!(!off(3.5).is_fatal(), "3.5 m not landed");
         assert!(!off(1.2).rolls() && off(2.0).rolls(), "rolls from the wrong height");
+    }
+
+    /// Falling far, the arms windmill and the legs cycle through the
+    /// flight: the hands going round wide of the shoulders, the feet
+    /// rising and falling under the hips, every joint's path smooth. Past
+    /// the fatal drop the arms go on to touchdown; short of it the loop is
+    /// gone before it, the feet touching down where the landing plans; a
+    /// short drop has none.
+    #[test]
+    fn a_long_fall_windmills_the_arms_and_cycles_the_legs() {
+        let (stood, rig) = real_stood();
+        let mut faults = Vec::new();
+        for (height, forward) in [(8.0f32, 0.0f32), (6.0, 3.0), (3.6, 0.0), (1.5, 1.4)] {
+            let name = format!("{height} m, {forward} m/s");
+            let mut falling = Falling::off(Vec3::new(0.0, height, 0.0), 0.0, rig.forward() * forward, &stood, 0.0, 0.0, &stood, &rig);
+            let flight = falling.ends()[0];
+            let (mut hand_low, mut hand_high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            let (mut foot_low, mut foot_high, mut kink, mut most) = (f32::MAX, f32::MIN, 0.0f32, (0.0f32, 0.0f32));
+            let mut frames: Vec<BoneSet<Vec3>> = Vec::new();
+            while falling.t < flight {
+                let at = forward_kinematics_on(&falling.pose(&rig), &rig);
+                let world = BoneSet::from_fn(|bone| falling.root() + at[bone]);
+                let hand = world[ArmChain::LEFT.wrist] - world[ArmChain::LEFT.shoulder];
+                (hand_low, hand_high) = (hand_low.min(hand), hand_high.max(hand));
+                let foot = (world[Bone::LeftFoot] - world[Bone::Hips]).y;
+                (foot_low, foot_high) = (foot_low.min(foot), foot_high.max(foot));
+                let (arms, legs) = falling.flailing(flight);
+                most = (most.0.max(arms), most.1.max(legs));
+                if frames.len() >= 2 {
+                    let n = frames.len();
+                    kink = Bone::ALL.iter().map(|&b| (world[b] - 2.0 * frames[n - 1][b] + frames[n - 2][b]).length()).fold(kink, f32::max);
+                }
+                frames.push(world);
+                falling.advance(DT);
+            }
+            let mut touching = falling.clone();
+            touching.t = flight - 1.0e-5;
+            let at_touch = touching.flailing(flight);
+            let (hands, feet) = ((hand_high - hand_low).length(), foot_high - foot_low);
+            eprintln!("{name}: flight {flight:.3}, loop at most {most:?}, at touchdown {at_touch:?}, hands over {hands:.3}, feet over {feet:.3}, kink {kink:.4}");
+            // A wrist 0.47 m round its cone at 1.4 Hz (`r ω²`), and gravity.
+            let bound = (0.47 * (std::f32::consts::TAU * LOOP_RATE).powi(2) + GRAVITY) * DT * DT + 0.005;
+            if kink > bound {
+                faults.push(format!("{name}: a step changed {kink:.4} (bound {bound:.4})"));
+            }
+            match height {
+                h if h > FATAL_DROP => {
+                    // The legs' loop in and out overlapping in a flight
+                    // just past the fatal drop's (6 m: 0.77).
+                    if !falling.is_fatal() || most.0 < 0.99 || most.1 < 0.5 || hands < 0.6 || feet < 0.15 {
+                        faults.push(format!("{name}: no loop (at most {most:?}, hands over {hands:.3}, feet over {feet:.3})"));
+                    }
+                    if at_touch.0 < 0.99 || at_touch.1 > 0.0 {
+                        faults.push(format!("{name}: at touchdown the loop at {at_touch:?}"));
+                    }
+                }
+                h if h > ROLL_DROP => {
+                    if most.0 <= 0.0 || at_touch != (0.0, 0.0) {
+                        faults.push(format!("{name}: the loop at most {most:?}, at touchdown {at_touch:?}"));
+                    }
+                }
+                _ => {
+                    if most != (0.0, 0.0) {
+                        faults.push(format!("{name}: a loop in a short drop ({most:?})"));
+                    }
+                }
+            }
+        }
+        let (_, m) = fell(3.6, 0.0);
+        if m.touch_gap > 1.0e-3 || m.below_ground > 0.0 {
+            faults.push(format!("3.6 m: the feet {:.4} off their landing, {:.4} below the ground", m.touch_gap, m.below_ground));
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
     }
 
     /// Running on fast off a low drop it rolls, as from a high one; walking

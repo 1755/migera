@@ -144,6 +144,9 @@ enum Gait {
     /// A 4 m/s run's leap swung a quarter turn round a corner post on one
     /// arm: the leap's whole length, held.
     Corner,
+    /// Walking off an 8 m top: the long fall's loop through its flight,
+    /// then the landing.
+    LongFall,
 }
 
 fn main() {
@@ -192,7 +195,7 @@ fn main() {
     let params = match gait {
         Gait::Walk(speed) => Some(GaitParams::walking_on(speed, &rig)),
         Gait::Run(speed) => Some(GaitParams::running_on(speed, &rig)),
-        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner => None,
+        Gait::None | Gait::Jump(..) | Gait::Crouch(..) | Gait::Sneak(..) | Gait::Climb(..) | Gait::Hang(..) | Gait::HangUp | Gait::Shimmy(..) | Gait::Drop(..) | Gait::DropDown | Gait::LetGo(..) | Gait::JumpShort | Gait::Leap(..) | Gait::Mantle | Gait::Vault(..) | Gait::WallRun | Gait::WallKick | Gait::RunAlong | Gait::Slide | Gait::BarSwing | Gait::Lache | Gait::Pole | Gait::Beam | Gait::SlideUnder | Gait::Crawl | Gait::Squeeze(..) | Gait::FreeClimb | Gait::RunLean | Gait::Skid(..) | Gait::Onto | Gait::WallHand | Gait::Perch | Gait::SpinJump | Gait::Faith | Gait::Tuck | Gait::Springboard | Gait::Monkey | Gait::Flagpole | Gait::Hook | Gait::Corner | Gait::LongFall => None,
     };
     // A grab (`parkour::hang`): the clock is how far from the jump's start
     // to two seconds hanging; or, climbing up, from the climb's start to
@@ -538,6 +541,7 @@ fn main() {
             let height = if roll { 2.2 } else { 0.9 };
             Some(migera::character::anim::parkour::Falling::off(Vec3::new(0.0, height, 0.0), 0.0, velocity, &stood, 0.0, 0.0, &stood, &rig))
         }
+        Gait::LongFall => Some(migera::character::anim::parkour::Falling::off(Vec3::new(0.0, 8.0, 0.0), 0.0, rig.forward() * 1.4, &stood, 0.0, 0.0, &stood, &rig)),
         _ => None,
     };
     // A climb (`ladder`): the clock is how far through climbing a standard
@@ -931,6 +935,7 @@ fn main() {
         Gait::Flagpole => "   swinging round a flagpole".to_string(),
         Gait::Hook => "   swinging one-handed on a hook".to_string(),
         Gait::Corner => "   a 4 m/s run swung a quarter turn round a corner post".to_string(),
+        Gait::LongFall => "   walking off an 8 m top, the long fall's loop".to_string(),
         Gait::Vault(kind) => match kind {
             migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
             migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
@@ -1093,6 +1098,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("flagpole") => Gait::Flagpole,
         Some("hook") => Gait::Hook,
         Some("corner") => Gait::Corner,
+        Some("long-fall") => Gait::LongFall,
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,
