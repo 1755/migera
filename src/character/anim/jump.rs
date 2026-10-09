@@ -347,6 +347,8 @@ pub struct Jump {
     /// Running along a wall ([`Jump::along_wall`]): the flight reshaped
     /// onto it.
     along: Option<Box<super::parkour::along::AlongWall>>,
+    /// Hopping a small obstacle ([`Jump::hop`]): the feet lifted over it.
+    hop: Option<super::parkour::vault::HopLift>,
 }
 
 /// Where the feet stand, worked out once from the standing pose; and how a
@@ -452,6 +454,7 @@ impl Jump {
             settle: Vec3::ZERO,
             vault: None,
             along: None,
+            hop: None,
         };
         let asked = ask.distance.max(0.0);
         let passes = if asked > 0.0 { 6 } else { 1 };
@@ -720,11 +723,17 @@ impl Jump {
     /// flight reshaped over the obstacle.
     pub fn pose_at(&self, t: f32, stood: &LocalPose, rig: &RigGeometry) -> LocalPose {
         let pose = self.pose_at_unshaped(t, stood, rig);
-        match (self.vault.as_deref(), self.along.as_deref()) {
-            (Some(vault), _) => vault.reshape(&pose, t, self.travelled_at(t), rig),
-            (_, Some(along)) => along.reshape(&pose, t, self.travelled_at(t), rig),
+        match (self.vault.as_deref(), self.along.as_deref(), self.hop) {
+            (Some(vault), _, _) => vault.reshape(&pose, t, self.travelled_at(t), rig),
+            (_, Some(along), _) => along.reshape(&pose, t, self.travelled_at(t), rig),
+            (_, _, Some(hop)) => super::parkour::vault::lift_over(&pose, &hop, t, rig),
             _ => pose,
         }
+    }
+
+    /// Hopping: the feet lifted over its obstacle as `lift` has it.
+    pub(crate) fn set_hop(&mut self, lift: super::parkour::vault::HopLift) {
+        self.hop = Some(lift);
     }
 
     /// Vaulting: its flight reshaped by `vault`.

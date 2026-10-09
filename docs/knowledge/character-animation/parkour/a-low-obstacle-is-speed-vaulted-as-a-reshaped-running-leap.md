@@ -220,3 +220,4 @@ outside the flight.
 - [A jump from a run replays the run's stance on a planned COM](../ik-and-locomotion/a-jump-from-a-run-replays-the-runs-stance-on-a-planned-com.md) — prerequisite: the leap a vault reshapes, and its hand-back to the run.
 - [A block is mantled as a climb up from the floor](./a-block-is-mantled-as-a-climb-up-from-the-floor.md) — contrast: the other half of step 7, above a vault's height.
 - [Parkour movement data](./parkour-movement-data.md) — deeper: the hurdle, steeplechase and vault-table numbers the vault takes its clearance and contact from.
+- [A small obstacle is hopped as a running leap, its feet lifted](./a-small-obstacle-is-hopped-as-a-running-leap-its-feet-lifted.md) — contrast: below a vault's reach, the same leap unreshaped with its feet lifted; and the leap's own 11-20 cm change of step at toe-off and touchdown.

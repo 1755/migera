@@ -41,6 +41,32 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Parkour, step 11 (third part): hopping a small obstacle in stride
+
+Asked to vault an obstacle up to 0.45 m high with the hop kind
+(`VaultKind::Hop`), a run hops it in stride. Note: [a small obstacle is
+hopped as a running leap, its feet
+lifted](docs/knowledge/character-animation/parkour/a-small-obstacle-is-hopped-as-a-running-leap-its-feet-lifted.md).
+
+- **The hop:** a running leap, its step lengthened (taking off 1 m before,
+  landing 0.9 m past), its COM rising as little as clears it.
+- **The feet lifted** (`HopLift`): each foot over the obstacle by its
+  ankle 0.14 m and toe 0.05 m, eased in and out over 0.12 s while off the
+  floor, so the knee comes up ahead.
+- **The walker:** no detour while a jump is under way (it turned off round
+  the obstacle mid-hop, 1.7 m aside).
+- **The gallery:** `--vault-at T,hop`. **The bench:** `--gait hop`.
+- **Headless:** rails 0.25-0.45 m, runs at 3 and 4.5 m/s, either foot,
+  0-0.4 m past its best (to 1.2 m at 4 m/s): nothing into the rail; the
+  COM rising 0.05-0.25 m; running on at its speed; no joint over 11.1 m/s
+  about the COM; the lift adding no change of step to the leap's own.
+- **Found:** the running leap's own step changes 11-20 cm in a frame at
+  toe-off and touchdown (every running jump; unmeasured until now).
+- **Live** (Xvfb, gizmos on and mesh off, Left; BRP): over a 0.35 m block
+  at 4 m/s, the pelvis to 1.04 m, each foot 0.17 m or more over it, on
+  along its line.
+- **Cost:** 76 µs a character at p50 (the speed vault's 150).
+
 ### Parkour, step 11 (second part): skid stops and plant-and-turns
 
 A fast run asked to stop skids, and asked to face back plants and turns

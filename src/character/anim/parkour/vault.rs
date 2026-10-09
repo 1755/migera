@@ -166,21 +166,55 @@ pub struct Obstacle {
     pub slant: f32,
 }
 
-/// Which vault: a speed vault (the legs together round one side), or a
-/// lazy vault (from an angle, the lead leg over first, nearly straight, the
-/// other after; the body more upright).
+/// A hop's reach (step 11 of the steps beyond the first ten, running
+/// agility): obstacles at most this high and deep, metres, hopped in a
+/// run's stride. Its COM rises at least this far, metres, and at most this
+/// much more to clear; its landing toe this far past the far face, metres.
+/// Over a 0.55 m rail the COM rose 0.25 m and the run went on 1.3 m/s
+/// slower (or from 3 m/s at its best take-off, no hop cleared it).
+pub const HOP_HIGHEST: f32 = 0.45;
+pub const HOP_DEEPEST: f32 = 0.6;
+const HOP_LEAST_RISE: f32 = 0.05;
+const HOP_MORE_RISE: f32 = 0.5;
+const HOP_PAST: f32 = 0.9;
+/// A hop's take-off toe at least this far from the near face, metres: at
+/// 0.5 and 0.7, from 3 m/s no hop cleared a 0.45 m rail. Its landing toe
+/// [`HOP_PAST`] past the far face: at 0.65, the lead foot came over the far
+/// edge a few frames before touchdown and its lift had to drop in them.
+const HOP_LEAST_TAKEOFF: f32 = 1.0;
+/// Hopping, each ankle kept this far over the top and each toe this far,
+/// metres, while either is within this far of the obstacle along the way;
+/// the lift eased in and out over this long, seconds (a running leap's own
+/// legs trailed into anything over a kerb, even rising 0.55 m; lifted by
+/// how near the foot was, a knee rose 0.3 m in a tenth of a second and its
+/// step changed 6 cm in a frame).
+const HOP_ANKLE_OVER: f32 = 0.14;
+const HOP_TOE_OVER: f32 = 0.05;
+const HOP_MARGIN: f32 = 0.1;
+const HOP_EASE: f32 = 0.12;
+/// A foot is down while its ankle is no higher than this over standing's,
+/// metres, and moves no faster than this, m/s.
+const HOP_DOWN: f32 = 0.05;
+const HOP_STILL: f32 = 0.3;
+
+/// Which vault: a speed vault (the legs together round one side), a lazy
+/// vault (from an angle, the lead leg over first, nearly straight, the
+/// other after; the body more upright), or a hop (a small obstacle passed
+/// in the run's stride: its leap, lengthened and raised as little as clears
+/// it, its flight as it is).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VaultKind {
     #[default]
     Speed,
     Lazy,
+    Hop,
 }
 
 impl VaultKind {
     /// The most its run may meet an obstacle's face off square, radians.
     pub fn most_slant(self) -> f32 {
         match self {
-            Self::Speed => MOST_SLANT,
+            Self::Speed | Self::Hop => MOST_SLANT,
             Self::Lazy => LAZY_MOST_SLANT,
         }
     }
@@ -201,6 +235,7 @@ impl VaultKind {
         match self {
             Self::Speed => ROLL,
             Self::Lazy => LAZY_ROLL,
+            Self::Hop => 0.0,
         }
     }
 }
@@ -282,6 +317,9 @@ impl Jump {
     /// [`HIGHEST_OVER_HIPS`], [`DEEPEST`], [`VaultKind::most_slant`]), the
     /// run is slower than [`SLOWEST`], or nothing planned clears it.
     pub fn vault(obstacle: Obstacle, start: RunStart, kind: VaultKind, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        if kind == VaultKind::Hop {
+            return Self::hop(obstacle, start, stood, rig);
+        }
         let hips = forward_kinematics_on(stood, rig)[Bone::Hips].y;
         if obstacle.top < LOWEST || obstacle.top > hips + HIGHEST_OVER_HIPS || obstacle.depth > DEEPEST || start.speed < SLOWEST || obstacle.slant.abs() > kind.most_slant() {
             return None;
@@ -326,6 +364,52 @@ impl Jump {
         })
     }
 
+    /// A hop over a small `obstacle` (the jump's frame) in a run's stride at
+    /// `start.speed`, the foot of `start.leg` just down: a running leap,
+    /// its flight as it is, landing [`HOP_PAST`] past it and running on, its
+    /// COM rising as little as clears it. `None` if the obstacle is out of a
+    /// hop's reach ([`HOP_HIGHEST`], [`HOP_DEEPEST`]), the run is slower
+    /// than [`SLOWEST`], or nothing planned clears it.
+    pub fn hop(obstacle: Obstacle, start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        if obstacle.top > HOP_HIGHEST || obstacle.depth > HOP_DEEPEST || start.speed < SLOWEST || obstacle.slant.abs() > MOST_SLANT {
+            return None;
+        }
+        let forward = rig.forward();
+        let first = Jump::from_run(JumpAsk::running(HOP_LEAST_RISE, 0.0), start, stood, rig);
+        let toe = forward_kinematics_on(&first.pose_at_unshaped(0.0, stood, rig), rig)[crate::character::anim::foot::foot_bones(LEGS[start.leg].1).1].dot(forward);
+        let distance = obstacle.near - toe + obstacle.depth + HOP_PAST;
+        (0..=(HOP_MORE_RISE / 0.05).round() as usize).find_map(|k| {
+            let mut jump = Jump::from_run(JumpAsk::running(HOP_LEAST_RISE + 0.05 * k as f32, distance), start, stood, rig);
+            jump.set_hop(HopLift::plan(&jump, obstacle, stood, rig)?);
+            jump.clears_plainly(obstacle, stood, rig).then_some(jump)
+        })
+    }
+
+    /// Whether, posed from take-off until it runs on, nothing of the body
+    /// goes into `obstacle`.
+    fn clears_plainly(&self, obstacle: Obstacle, stood: &LocalPose, rig: &RigGeometry) -> bool {
+        let forward = rig.forward();
+        let end = self.duration();
+        (0..=(end * 120.0).ceil() as usize).all(|k| {
+            let t = k as f32 / 120.0;
+            let at = forward_kinematics_on(&self.pose_at(t, stood, rig), rig);
+            let travelled = forward * self.travelled_at(t);
+            Bone::ALL.iter().all(|&bone| obstacle.inside(at[bone] + travelled, forward) < CLEAR_TOLERANCE)
+        })
+    }
+
+    /// How far ahead of where a run's foot comes down a small obstacle's
+    /// near face is best for a hop from it: the COM's top over its middle,
+    /// the take-off toe [`HOP_LEAST_TAKEOFF`] from its face at least.
+    pub fn hop_takeoff(depth: f32, start: RunStart, stood: &LocalPose, rig: &RigGeometry) -> f32 {
+        let jump = Jump::from_run(JumpAsk::running(HOP_LEAST_RISE + 0.1, 0.0), start, stood, rig);
+        let push = jump.ends(JumpPhase::Push);
+        let flight = jump.ends(JumpPhase::Flight);
+        let apex = (push..=flight).step_by_samples(80).max_by(|a, b| jump.com_height_at(*a).total_cmp(&jump.com_height_at(*b))).unwrap_or(push);
+        let toe = forward_kinematics_on(&jump.pose_at_unshaped(0.0, stood, rig), rig)[crate::character::anim::foot::foot_bones(LEGS[start.leg].1).1].dot(rig.forward());
+        (planned_com(&jump, apex, stood, rig).dot(rig.forward()) - 0.5 * depth).max(toe + HOP_LEAST_TAKEOFF)
+    }
+
     /// How far ahead of where a run's foot comes down (the root there, the
     /// jump's frame) an obstacle's near face is best for a vault from it:
     /// the COM's top over the obstacle's middle.
@@ -342,6 +426,115 @@ impl Jump {
         let toe = forward_kinematics_on(&jump.pose_at_unshaped(0.0, stood, rig), rig)[crate::character::anim::foot::foot_bones(LEGS[start.leg].1).1].dot(rig.forward());
         (planned_com(&jump, apex, stood, rig).dot(rig.forward()) - 0.5 * depth).max(toe + LEAST_TAKEOFF)
     }
+}
+
+/// How a hop lifts each foot over its obstacle: for each leg (left,
+/// right), the lift's start, from when its foot comes within
+/// [`HOP_MARGIN`] of the obstacle to when it has passed, its end, and how
+/// high, metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HopLift {
+    legs: [Option<HopLeg>; 2],
+}
+
+/// One leg's lift ([`HopLift`]), seconds into the jump.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HopLeg {
+    rise: f32,
+    from: f32,
+    to: f32,
+    fall: f32,
+    height: f32,
+}
+
+/// One foot at one moment of a hop's bare leap ([`HopLift::plan`]).
+#[derive(Debug, Clone, Copy)]
+struct HopFoot {
+    /// Within [`HOP_MARGIN`] of the obstacle along the way; down (low and
+    /// still); how far it must rise to clear the top, metres.
+    over: bool,
+    down: bool,
+    need: f32,
+}
+
+impl HopLift {
+    /// The lift `jump`'s bare leap needs to carry each foot over
+    /// `obstacle`, eased in and out over [`HOP_EASE`] while the foot is off
+    /// the floor (a foot down is low, [`HOP_DOWN`], and still,
+    /// [`HOP_STILL`]): `None` if a foot is over it while down.
+    fn plan(jump: &Jump, obstacle: Obstacle, stood: &LocalPose, rig: &RigGeometry) -> Option<Self> {
+        let forward = rig.forward();
+        let standing = forward_kinematics_on(stood, rig);
+        let end = jump.duration();
+        const RATE: f32 = 240.0;
+        let ankles: Vec<[(Vec3, Vec3); 2]> = (0..=(end * RATE).ceil() as usize)
+            .map(|k| {
+                let t = k as f32 / RATE;
+                let at = forward_kinematics_on(&jump.pose_at_unshaped(t, stood, rig), rig);
+                let travelled = forward * jump.travelled_at(t);
+                LEGS.map(|(_, ankle)| (at[ankle] + travelled, at[crate::character::anim::foot::foot_bones(ankle).1] + travelled))
+            })
+            .collect();
+        // Still as well as low: the leap's landing foot skims the floor
+        // before it lands.
+        let samples: Vec<[HopFoot; 2]> = (0..ankles.len())
+            .map(|k| {
+                [0, 1].map(|side| {
+                    let (p, tip) = ankles[k][side];
+                    let moving = (ankles[(k + 1).min(ankles.len() - 1)][side].0 - ankles[k.saturating_sub(1)][side].0).length() * RATE / 2.0;
+                    let over = |q: Vec3| (obstacle.near - HOP_MARGIN..=obstacle.near + obstacle.depth + HOP_MARGIN).contains(&q.dot(forward));
+                    HopFoot {
+                        over: over(p) || over(tip),
+                        down: p.y < standing[LEGS[side].1].y + HOP_DOWN && moving < HOP_STILL,
+                        need: (obstacle.top + HOP_ANKLE_OVER - p.y).max(obstacle.top + HOP_TOE_OVER - tip.y),
+                    }
+                })
+            })
+            .collect();
+        let time = |i: usize| i as f32 / RATE;
+        let mut legs = [None; 2];
+        for (side, leg) in legs.iter_mut().enumerate() {
+            let over: Vec<usize> = (0..samples.len()).filter(|&i| samples[i][side].over).collect();
+            let (Some(&first), Some(&last)) = (over.first(), over.last()) else { continue };
+            if over.iter().any(|&i| samples[i][side].down) {
+                return None;
+            }
+            let height = over.iter().map(|&i| samples[i][side].need).fold(0.0, f32::max);
+            if height <= 0.0 {
+                continue;
+            }
+            // Eased in no earlier than it left the floor, out no later than
+            // it meets it.
+            let left = (0..first).rev().find(|&i| samples[i][side].down).map_or(0.0, time);
+            let meets = (last..samples.len()).find(|&i| samples[i][side].down).map_or(end, time);
+            let (from, to) = (time(first), time(last));
+            *leg = Some(HopLeg { rise: (from - HOP_EASE).max(left), from, to, fall: (to + HOP_EASE).min(meets), height });
+        }
+        Some(Self { legs })
+    }
+
+    /// How far leg `side`'s foot is lifted `t` seconds in, metres.
+    fn at(&self, side: usize, t: f32) -> f32 {
+        let Some(leg) = self.legs[side] else { return 0.0 };
+        let up = smoothstep(((t - leg.rise) / (leg.from - leg.rise).max(1.0e-3)).clamp(0.0, 1.0));
+        let down = smoothstep(((t - leg.to) / (leg.fall - leg.to).max(1.0e-3)).clamp(0.0, 1.0));
+        leg.height * up * (1.0 - down)
+    }
+}
+
+/// `pose` (a hop's, `t` seconds into its jump) with each foot lifted over
+/// its obstacle as `lift` has it. The knee bends to it, up ahead, as a
+/// hurdler's.
+pub fn lift_over(pose: &LocalPose, lift: &HopLift, t: f32, rig: &RigGeometry) -> LocalPose {
+    let mut lifted = *pose;
+    let at = forward_kinematics_on(pose, rig);
+    for (side, (_, ankle)) in LEGS.into_iter().enumerate() {
+        let up = lift.at(side, t);
+        if up > 1.0e-5 {
+            place_ankle(&mut lifted, rig, ankle, at[ankle] + Vec3::Y * up - at[Bone::Hips]);
+        }
+    }
+    lifted
 }
 
 /// The COM a jump plans `t` seconds in, in the jump's frame (the pose's,
@@ -825,6 +1018,81 @@ mod tests {
         // for its rise, and a lazy vault taken late rises more (from 4 m/s
         // it went on at 2.77). Traceurs lose about 0.2 (a known gap).
         assert!(m.resumed > speed - 1.25, "{name}: runs on at {:.2} m/s", m.resumed);
+    }
+
+    /// From runs at 3-4.5 m/s at obstacles 0.25-0.45 m high and 0.2-0.4 m
+    /// deep, off either foot, from its best take-off to 0.4 m past it: a
+    /// hop clears it (nothing into it), its COM rising little, and runs on
+    /// little slower; too high or deep, it is not hopped.
+    #[test]
+    fn a_small_obstacle_is_hopped_in_stride() {
+        let (stood, rig) = real_stood();
+        let forward = rig.forward();
+        let mut faults = Vec::new();
+        for (top, depth) in [(0.25, 0.2), (0.35, 0.3), (0.45, 0.4)] {
+            for speed in [3.0, 4.5] {
+                for (leg, off) in [0, 1].into_iter().flat_map(|leg| [0.0, 0.2, 0.4].map(|off| (leg, off))) {
+                    let name = format!("{top} m high, {depth} m deep, {speed} m/s, off {leg} {off:+} m");
+                    let start = RunStart { leg, speed };
+                    let obstacle = Obstacle::square(Jump::hop_takeoff(depth, start, &stood, &rig) + off, depth, top);
+                    let Some(mut jump) = Jump::vault(obstacle, start, VaultKind::Hop, &stood, &rig) else {
+                        faults.push(format!("{name}: not hopped"));
+                        continue;
+                    };
+                    let (mut into, mut highest, mut fastest, mut kink) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                    let com_at = |jump: &Jump| jump.com_height_at(jump.elapsed());
+                    let leaves = jump.com_height_at(jump.ends(JumpPhase::Push));
+                    let mut frames: Vec<(BoneSet<Vec3>, Vec3)> = Vec::new();
+                    let (mut bares, mut bare_kink): (Vec<BoneSet<Vec3>>, f32) = (Vec::new(), 0.0);
+                    while !jump.is_done() && jump.resumes().is_some_and(|_| jump.elapsed() < jump.ends(JumpPhase::Flight) + 0.3) {
+                        jump.advance(DT);
+                        let pose = jump.pose(&stood, &rig);
+                        let at = forward_kinematics_on(&pose, &rig);
+                        let travelled = forward * jump.travelled_at(jump.elapsed());
+                        let now = BoneSet::from_fn(|bone| at[bone] + travelled);
+                        let c = pose.root_translation + crate::character::anim::anthropometry::centre_of_mass(&pose, &rig) + travelled;
+                        into = Bone::ALL.iter().map(|&bone| obstacle.inside(now[bone], forward)).fold(into, f32::max);
+                        highest = highest.max(com_at(&jump));
+                        if let Some((before, before_c)) = frames.last() {
+                            fastest = Bone::ALL.iter().map(|&bone| ((now[bone] - c) - (before[bone] - *before_c)).length() / DT).fold(fastest, f32::max);
+                        }
+                        if frames.len() >= 2 {
+                            let (a, b) = (&frames[frames.len() - 2].0, &frames[frames.len() - 1].0);
+                            kink = Bone::ALL.iter().map(|&bone| (now[bone] - 2.0 * b[bone] + a[bone]).length()).fold(kink, f32::max);
+                        }
+                        frames.push((now, c));
+                        let bare = forward_kinematics_on(&jump.pose_at_unshaped(jump.elapsed(), &stood, &rig), &rig);
+                        bares.push(BoneSet::from_fn(|bone| bare[bone] + travelled));
+                        if bares.len() >= 3 {
+                            let n = bares.len();
+                            bare_kink = Bone::ALL.iter().map(|&bone| (bares[n - 1][bone] - 2.0 * bares[n - 2][bone] + bares[n - 3][bone]).length()).fold(bare_kink, f32::max);
+                        }
+                    }
+                    let resumed = jump.resumes().map_or(0.0, |r| r.speed);
+                    eprintln!("{name}: into {into:.4}, rose {:.2}, runs on at {resumed:.2}, fastest {fastest:.1}, kink {kink:.4} (the leap's own {bare_kink:.4})", highest - leaves);
+                    // The run's own fastest about the COM is 14.3 m/s at 4 m/s
+                    // (`clean`). The leap's own step changes 11-13 cm in a
+                    // frame as a planted toe leaves or meets the floor: the
+                    // lift adds no more than a centimetre to it.
+                    if into > 1.0e-3 || resumed < speed - 0.8 || fastest > 14.0 || kink > bare_kink + 0.01 {
+                        faults.push(format!("{name}: into {into:.4}, runs on at {resumed:.2}, fastest {fastest:.1}, kink {kink:.4}"));
+                    }
+                }
+            }
+        }
+        // And from as far past its best as the walker takes one (a step and
+        // the slack).
+        let start = RunStart { leg: 0, speed: 4.0 };
+        for off in 0..13 {
+            let near = Jump::hop_takeoff(0.3, start, &stood, &rig) + 0.1 * off as f32;
+            if Jump::vault(Obstacle::square(near, 0.3, 0.35), start, VaultKind::Hop, &stood, &rig).is_none() {
+                faults.push(format!("0.35 m high, 4 m/s, {:.1} m past its best: not hopped", 0.1 * off as f32));
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+        let hop = |top: f32, depth: f32| Jump::vault(Obstacle::square(1.5, depth, top), RunStart { leg: 0, speed: 4.0 }, VaultKind::Hop, &stood, &rig).is_some();
+        assert!(!hop(0.6, 0.3), "hopped a 0.6 m wall");
+        assert!(!hop(0.3, 1.0), "hopped a 1 m deep block");
     }
 
     /// Too low (a leap clears it), higher than the hips (a mantle), too

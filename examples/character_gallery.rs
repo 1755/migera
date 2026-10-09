@@ -1458,8 +1458,10 @@ struct HangSchedule {
     /// Vaulting the ledge's block running at it (`--vault-at T`, with
     /// `--anim-speed` a run's).
     vault_at: Option<f32>,
-    /// A lazy vault rather than a speed vault (`--vault-at T,lazy`).
+    /// A lazy vault rather than a speed vault (`--vault-at T,lazy`), or a
+    /// hop over a small obstacle in stride (`--vault-at T,hop`).
     lazy: bool,
+    hop: bool,
     /// Running up the ledge's wall (`--wall-run-at T`, with `--anim-speed`
     /// a run's).
     wall_run_at: Option<f32>,
@@ -1673,6 +1675,7 @@ impl HangSchedule {
                     let (at, kind) = given.split_once(',').unwrap_or((given.as_str(), "speed"));
                     schedule.vault_at = at.trim().parse().ok();
                     schedule.lazy = kind.trim() == "lazy";
+                    schedule.hop = kind.trim() == "hop";
                 }
                 "--catch" => schedule.catch = true,
                 "--leap-at" => {
@@ -1782,7 +1785,13 @@ impl HangSchedule {
         if !self.vault_fired && self.vault_at.is_some_and(|at| elapsed >= at) {
             self.vault_fired = true;
             use migera::character::anim::parkour::vault::VaultKind;
-            return Some(HangAsk::Vault(if self.lazy { VaultKind::Lazy } else { VaultKind::Speed }));
+            return Some(HangAsk::Vault(if self.hop {
+                VaultKind::Hop
+            } else if self.lazy {
+                VaultKind::Lazy
+            } else {
+                VaultKind::Speed
+            }));
         }
         if self.fired || self.at.is_none_or(|at| elapsed < at) {
             return None;

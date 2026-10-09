@@ -455,8 +455,14 @@ fn main() {
             use migera::character::anim::jump::{Jump, RunStart};
             use migera::character::anim::parkour::vault::Obstacle;
             let start = RunStart { leg: 0, speed: 3.5 };
-            let near = Jump::vault_takeoff(0.3, 0.9, start, &stood, &rig);
-            Some(Jump::vault(Obstacle::square(near, 0.3, 0.9), start, kind, &stood, &rig).expect("a 0.9 m wall vaulted"))
+            // A hop over a 0.35 m rail; a vault over a 0.9 m wall.
+            if kind == migera::character::anim::parkour::vault::VaultKind::Hop {
+                let near = Jump::hop_takeoff(0.3, start, &stood, &rig);
+                Some(Jump::vault(Obstacle::square(near, 0.3, 0.35), start, kind, &stood, &rig).expect("a 0.35 m rail hopped"))
+            } else {
+                let near = Jump::vault_takeoff(0.3, 0.9, start, &stood, &rig);
+                Some(Jump::vault(Obstacle::square(near, 0.3, 0.9), start, kind, &stood, &rig).expect("a 0.9 m wall vaulted"))
+            }
         }
         Gait::RunAlong => {
             use migera::character::anim::jump::{Jump, RunStart};
@@ -730,7 +736,11 @@ fn main() {
         Gait::FreeClimb => "   free climbing up a wall of holds".to_string(),
         Gait::RunLean => "   a 4 m/s run turning and gathering, leant".to_string(),
         Gait::Skid(round) => if round { "   a plant-and-turn from 5 m/s" } else { "   a skid stop from 5 m/s" }.to_string(),
-        Gait::Vault(kind) => format!("   {} vaulting a 0.9 m wall from a 3.5 m/s run", if kind == migera::character::anim::parkour::vault::VaultKind::Lazy { "lazy" } else { "speed" }),
+        Gait::Vault(kind) => match kind {
+            migera::character::anim::parkour::vault::VaultKind::Hop => "   hopping a 0.35 m rail in a 3.5 m/s run".to_string(),
+            migera::character::anim::parkour::vault::VaultKind::Lazy => "   lazy vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
+            migera::character::anim::parkour::vault::VaultKind::Speed => "   speed vaulting a 0.9 m wall from a 3.5 m/s run".to_string(),
+        },
         Gait::LetGo(catch) => format!("   letting go of a hang and {}", if catch { "catching a ledge below" } else { "landing (3 m)" }),
         Gait::JumpShort => "   a jump falling short and catching the far ledge".to_string(),
         Gait::Leap(way) => {
@@ -874,6 +884,7 @@ fn parse_args() -> (usize, usize, Gait) {
         Some("skid") => Gait::Skid(false),
         Some("plant-turn") => Gait::Skid(true),
         Some("vault-lazy") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Lazy),
+        Some("hop") => Gait::Vault(migera::character::anim::parkour::vault::VaultKind::Hop),
         Some("let-go") => Gait::LetGo(false),
         Some("catch") => Gait::LetGo(true),
         Some("jump-catch") => Gait::JumpShort,

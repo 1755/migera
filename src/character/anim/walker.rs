@@ -1294,9 +1294,13 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
         } else {
             state.vault_pace = 1.0;
         }
+        // Nor in a jump, which keeps its own way: hopping a low obstacle,
+        // the ask dropped at take-off, it turned off round it in the air and
+        // the hop curved 1.7 m aside.
         if !state.on_holds()
             && !placing
             && !vaulting
+            && state.jump.is_none()
             && wanted_speed > 0.0
             && !matches!(steer, Steer::Circle(_))
             && let Some(ground) = ground
@@ -1911,7 +1915,11 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                     let origin = state.locomotion.position + state.facing.rotation() * (state.stride.stepped + rig.forward() * run_part);
                     let start = super::jump::RunStart { leg, speed };
                     if let Some(obstacle) = Obstacle::ahead(&ledge, origin, state.facing.rotation() * rig.forward(), kind.most_slant()) {
-                        let best = super::jump::Jump::vault_takeoff(obstacle.depth, obstacle.top, start, &stood, &rig);
+                        let best = if kind == super::parkour::vault::VaultKind::Hop {
+                            super::jump::Jump::hop_takeoff(obstacle.depth, start, &stood, &rig)
+                        } else {
+                            super::jump::Jump::vault_takeoff(obstacle.depth, obstacle.top, start, &stood, &rig)
+                        };
                         let step = speed / (2.0 * rate);
                         let aim = best + VAULT_AIM;
                         let next = obstacle.near - step;
