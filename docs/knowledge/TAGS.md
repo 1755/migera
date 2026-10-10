@@ -78,6 +78,12 @@ are a block list with one per line: `rg -l '^  - raymarching$' docs/knowledge`.
 | `springs` | Damped harmonic oscillators, inertialization, smoothing. |
 | `poses` | Authored pose data and its verification. |
 
+## Gameplay
+
+| Tag | Meaning |
+|---|---|
+| `camera` | Gameplay camera rigs: follow, orbit, collision/occlusion, framing, lock-on, input feel. |
+
 ## Human biomechanics (research literature)
 
 | Tag | Meaning |

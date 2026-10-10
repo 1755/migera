@@ -127,6 +127,13 @@ Measure animation cost with `cargo run --release --example anim_bench`
 on-screen frame time — that is vsync-capped at the display refresh and
 reports ~16.7 ms regardless of how cheap or expensive the animation is.
 
+## Gameplay Camera Progress
+
+`src/camera`, the third-person camera plugin, keeps its roadmap, test gates
+and log in **[CAMERA_PROGRESS.md](./CAMERA_PROGRESS.md)**. Same rules as the
+two logs above. Its design lives in the
+[gameplay-camera](./docs/knowledge/gameplay-camera/INDEX.md) KB domain.
+
 ## Knowledge Base
 
 `docs/knowledge/` is the project's long-term memory. It holds the

@@ -58,3 +58,4 @@ Fixed in `src/character/anim/math/spring.rs` on 2026-09-24. Caught by
 
 - [Quat::angle_between precision floor](../../engineering-practice/measurement/quat-angle-between-precision-floor.md) — same-trap: another f32 numeric limit that makes spring tests pass or fail wrongly.
 - [PD damping has an explicit-integration bound](../ragdoll-and-physics/pd-damping-explicit-integration-bound.md) — same-trap: another integration that goes unstable when a gain times `dt` gets large.
+- [Camera damping is exponential, not a per-frame lerp](../../gameplay-camera/camera-damping-is-exponential-not-a-per-frame-lerp.md) — applies: the camera reuses these springs; read before smoothing a camera.

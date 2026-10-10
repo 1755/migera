@@ -289,3 +289,4 @@ post-process systems call `post_process_write()` repeatedly to chain effects →
 - [Render phases and batching](../architecture/render-phases-and-batching.md) — deeper: where `DirtySpecializations` feeds phase queueing.
 - [Shadow rendering](../pbr-and-lighting/lighting-and-shadows.md) — example: shadow views keyed by `RetainedViewEntity`.
 - [Bevy-native integration](../../hybrid-architecture/bevy-native-integration.md) — applies: `src/hybrid` binds Bevy's own `ViewUniform` instead of a custom camera block.
+- [Third-person camera design](../../gameplay-camera/third-person-camera-design.md) — contrast: the gameplay rig that decides where this render camera goes; read for follow/collision, not rendering.

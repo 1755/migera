@@ -169,3 +169,4 @@ up. This forefoot touchdown is higher, so the flight is shorter. At their
 - [Running replays measured strides at their Froude number](./running-replays-measured-strides-at-their-froude-number.md) — context: root motion read off the run's planted feet, the other way travel reaches the entity.
 - [A jump from a run replays the run's stance under a planned COM](./a-jump-from-a-run-replays-the-runs-stance-on-a-planned-com.md) — extension: a stopping jump from a run lands with this landing.
 - [A toe tip pivots on the floor and needs its own lock](./a-toe-tip-pivots-on-the-floor-and-needs-its-own-lock.md) — context: the tip lock the landing pins.
+- [Third-person camera design](../../gameplay-camera/third-person-camera-design.md) — applies: the camera that follows this root motion, and its airborne deadband.

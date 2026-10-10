@@ -1,0 +1,265 @@
+---
+title: Third-person camera design
+description: "Design of migera's planned third-person camera (src/camera): a pure-function pipeline (anchor, orbit, rig, layer stack, post-blend collision, effects), per-stage ECS components as extension points, a latched control yaw, real vs virtual time, RON profiles, trace replay. Read before building the camera."
+type: design
+status: draft
+tags:
+  - camera
+  - ecs
+  - physics
+  - testing
+updated: 2026-10-10
+code:
+  - src/character/anim/math
+  - src/character/anim/walker.rs
+  - src/character/anim/ragdoll_plugin.rs
+sources:
+  - "Research notes in this folder"
+  - "Design review of the first draft, 2026-10-10"
+aliases:
+  - ThirdPersonCameraPlugin
+  - CameraView
+  - control_yaw
+  - CameraProfile
+  - resolve_boom
+  - CameraTrace
+---
+
+# Third-person camera design
+
+Contents: [Goal](#goal) · [Pipeline](#pipeline) · [Data model](#data-model) ·
+[Scheduling](#scheduling) · [Collision](#collision) · [Lock-on](#lock-on-and-framing) ·
+[Profiles and DX](#profiles-and-developer-experience) · [Testing](#testing-strategy) ·
+[Open questions](#open-questions) · [Status](#status)
+
+A reusable `ThirdPersonCameraPlugin` in `src/camera`, built as a fixed pipeline
+of small stages. Each stage is a pure function over plain structs and owns
+specific degrees of freedom. Stages talk only through per-stage ECS
+components. The architecture rests on
+[one rig with blended layers](./one-rig-with-blended-layers-over-blending-virtual-cameras.md).
+The behaviours come from the research in this folder.
+
+## Goal
+
+An action-RPG camera that:
+- follows a root-motion character smoothly at any frame rate;
+- never shows the inside of a wall or of the character;
+- keeps the character visible without fighting the player;
+- frames combat and lock-on;
+- moves between modes with no pops;
+- is tuned from data;
+- can be reproduced from a recorded trace when it misbehaves.
+
+Character animation and movement are out of scope. The camera publishes the yaw a
+player controller needs, and nothing more.
+
+## Pipeline
+
+Each stage below owns its outputs; no later stage writes them.
+
+1. **Input** (`Update`). Devices are mapped to a `CameraInput` component. Tests, replay
+   and AI write the same component.
+2. **Anchor.**
+   - The pivot follows the anchor as an *offset from the target*, so moving bases can't
+     unhook it.
+   - Horizontal: critically damped spring plus a hard leash, so the camera can't trail
+     further back at speed.
+   - Vertical: grounded spring. Airborne: a deadband above take-off, so jumps aren't
+     followed but falls are.
+   - Look-ahead along velocity, sprung and clamped.
+   - A teleport snaps everything and sets `cut_this_frame`.
+3. **Orbit.**
+   - Mouse delta is integrated without `dt`. Stick rate goes through deadzone → S-curve →
+     acceleration, then is integrated.
+   - Soft pitch limits ease in, then a hard clamp.
+   - Recentre behind movement after a delay, only while moving.
+   - Goal arbitration (lock-on, dialog, assist, recentre): one owner per degree of freedom,
+     player offset decays under a goal.
+4. **Rig.** Evaluates the stack's blended parameters at the current pitch (distance,
+   height and FOV as `PitchCurve`s, shoulder side sprung) into a `CameraDesiredPose`.
+5. **Collide.** `resolve_boom`, run once on the blended pose; see [Collision](#collision).
+6. **Effects.** Trauma² rotational shake and FOV kick, scaled by a comfort setting. This
+   is the only stage that may add roll.
+7. **Write.** `Transform`, `Projection` FOV and the public `CameraView`.
+
+### Time
+
+- `CameraClock { real_dt, virtual_dt }` is gathered once per frame.
+- **Real time:** look input, recentre timers, blends and effects. A paused or hit-stopped
+  game must still let the player look around.
+- **Virtual time:** follow springs and look-ahead, so the pivot freezes with the world.
+- The profile can override per stage group.
+
+### Damping
+
+All damping is closed-form: `SpringParams` / `spring_vec3` / `decay_exponential`; see
+[damping](./camera-damping-is-exponential-not-a-per-frame-lerp.md).
+
+## Data model
+
+All components derive `Reflect`, so BRP can inspect them.
+
+**Camera entity** (`Camera3d`; every query is `With<Camera3d>`, because the shadow view
+carries a bare `Camera`):
+- `ThirdPersonCamera { target, profile }` requires the rest, so the hello-world is
+  `commands.spawn((Camera3d::default(), ThirdPersonCamera::follow(player)))`.
+- `CameraInput { look_delta, look_rate, zoom, recenter, lock_on, switch, shoulder_swap,
+  assist }`: the only input contract.
+- `CameraInputSettings`, a component so each split-screen player has their own:
+  per-device sensitivity and curve, invert, deadzone, acceleration, shake scale.
+- Per-stage state and outputs: `CameraClock`, `CameraStack`, `CameraAnchor`,
+  `CameraOrbit`, `CameraDesiredPose`, `CameraResolvedPose`.
+- `CameraView`, the public output: eye, rotation, fov, `view_yaw`, `control_yaw`,
+  flat forward/right, desired/actual distance, `target_fade`, `cut_this_frame`.
+
+**Control yaw latch.** A player controller maps the stick against `control_yaw`, not
+`view_yaw`. `control_yaw` holds its value across a cut, or a lock-on swing, for as long
+as the stick stays held, and re-syncs on release or after a timeout. "A cut must not
+remap controls" is a mechanism here, not a guideline.
+
+**Extension points are the per-stage components.** A game system ordered
+`.after(CameraSet::Rig).before(CameraSet::Collide)` may edit `CameraDesiredPose`. That is
+the ECS form of a Cinemachine extension or an Unreal camera modifier, with no trait
+objects.
+
+**Target and world components:**
+- On the target: `CameraTarget { pivot_offset, safe_offsets, exclude }`,
+  `CameraTargetState { velocity, grounded, facing_yaw }`, and `CameraContext` flags or
+  direct `ModeRequest { id, priority, blend }`s.
+- On other entities: `LockOnTarget { radius, priority, aim_offset }`, `CameraFadeable`,
+  `CameraVolume` (pushes a mode request while inside), `CameraIgnore`, `CameraOverride`.
+
+**Bridge.** `bridge.rs` is the only file that knows the walker. It fills
+`CameraTargetState` from `WalkerState`, and reads position from the root `Transform`,
+because `follow_the_fallen_body` copies only x/z into `locomotion.position`.
+
+## Scheduling
+
+1. `CameraSet::Input` runs in `Update`.
+2. In `PostUpdate`, a named set `CameraTargetSources` contains every system that last
+   moves a target: `RagdollSet::ReadBack` today, and any physics-interpolation set later.
+3. The chain `Anchor → Orbit → Rig → Collide → Effects → Write` runs after
+   `CameraTargetSources` and before `TransformSystems::Propagate`.
+
+The chain reads the target's `Transform`, which is final for the frame. `GlobalTransform`
+is still last frame's at that point. A test pins the order: moving the chain before
+`ReadBack` must produce a one-frame lag.
+
+## Collision
+
+`resolve_boom` implements
+[the collision techniques note](./camera-collision-and-occlusion-techniques.md):
+
+0. **Find a free start.** Sweep capsule-centre → safe pivot. If the safe pivot is
+   embedded, walk `safe_offsets` (chest → head → above head), or fall back.
+1. **Slide the shoulder.** Sweep safe pivot → shoulder offset.
+2. **Clear the ground.** Lift the eye over hills.
+3. **Main sweep, pivot → eye**, using a sphere at least as large as the near-plane
+   half-diagonal (derived from `Projection`).
+   - A time of impact of 0 means penetration: snap in.
+   - Otherwise it is occlusion: pull in after `min_occlusion_time`.
+4. **Ease out.** Hold, then ease out on a half-life.
+5. **Feelers.** Amortised, round-robin, including a velocity whisker. They act as soft
+   caps only; yaw swing stays off by default, because intent wins.
+6. **Ceiling.** A probe above the eye sets a soft pitch floor.
+7. **Avatar fade.** `target_fade` is derived from the actual distance.
+8. **Top-down fallback.** Hysteretic.
+
+**Per-mode policy:** `OccluderPolicy { PullIn, Fade, PullInThenFade }`.
+
+**Probes.** Collision goes through a `CameraProbe` trait:
+- `SdfProbe` for unit tests, built from `src/sdf` shapes. A sphere cast against an SDF is
+  sphere tracing minus the radius, so boxes, capsules and CSG come free.
+- `AvianProbe` for runtime: `SpatialQuery::cast_shape` with a blocker mask, excluded
+  entities and a `CameraIgnore` predicate.
+
+**Layers** live in `src/physics_avian/layers.rs`:
+- `TERRAIN_LAYER`;
+- `CAMERA_TRANSPARENT` (foliage, thin props, characters);
+- `RAGDOLL_POOL`.
+
+The default blocker mask excludes the last two.
+
+## Lock-on and framing
+
+- **Select.** Candidates inside a cone around the camera forward, within range, with line
+  of sight. Score by angle, distance and priority.
+- **Switch.** A flick (stick crossing a high threshold after being near rest) picks the
+  candidate whose screen-space offset best matches the flick direction.
+- **Break.** Beyond a distance with hysteresis, after line of sight has been lost for a
+  grace time, or when the target despawns.
+- **Frame.** Emit a yaw/pitch goal toward the target. Pull back distance and FOV from the
+  bounding sphere of the player and all locked targets (target group). Aim at a weighted
+  midpoint inside a dead zone.
+- **Character facing** belongs to the controller, not the camera.
+
+## Profiles and developer experience
+
+**`CameraProfile`** is a `.camera.ron` asset holding:
+- named modes with `inherits`;
+- selection rules (`when context.lock_on → "combat"`);
+- goal priority;
+- anchor, orbit, collision, lock-on and effects parameters.
+
+Behaviour:
+- `CameraProfile::default()` is embedded, so hello-world needs no file.
+- The loader follows `PoseAssetLoader` in `src/character/anim/asset.rs`.
+- Validation errors name the mode and the field.
+- Hot reload keeps rig state, and keeps the old profile when the new file is invalid.
+
+**Tuning values live only in the profile.** Seeds come from Gothic, Skyrim and Lyra; see
+the research notes.
+
+**Debugging tools:**
+- The `camera_debug` feature adds gizmos: safe-pivot chain, pivot, desired vs resolved
+  eye, feelers coloured by hit, hit normals, lock-on candidates with scores. It also adds
+  an egui tuning panel that saves back to RON.
+- `CameraTrace` (`.camtrace.ron`) records per-frame
+  `(real_dt, virtual_dt, CameraInput, CameraTargetState)` from the playground, and
+  replays it into the pure pipeline. A camera bug a player felt becomes a deterministic
+  test from one file.
+
+## Testing strategy
+
+- **Pure stages are tested without a `World`.** A scenario harness runs a trajectory and
+  input script through the pipeline and reports metrics per frame and in aggregate:
+  - maximum eye jerk;
+  - line-of-sight ratio;
+  - occluded frames;
+  - frames with the eye inside a collider;
+  - maximum roll.
+- **Frame-rate independence** compares positions at common timestamps, sampling a
+  time-parameterised input at 30, 60 and 144 Hz.
+- **Golden traces** replay to within 1 cm.
+- **Collision runs at two levels:** analytic (`SdfProbe`, fast) and a headless avian
+  sweep (orbit 360°, corridor, back to wall, under a ceiling) asserting zero
+  inside-collider frames and a line-of-sight ratio of 1.
+- **Every behaviour test is sabotage-checked.** For example, swap the exponential damper
+  for a `lerp(k·dt)`, or move the chain before `ReadBack`, and confirm the test fails.
+
+## Open questions
+
+- **Interiors.** Detect them with space probes that cap distance, or with authored
+  `CameraVolume`s, or both? Probes are generic but can flicker in clutter.
+- **Occluder fade rendering.** Avatar and occluder fade needs a dithered material on
+  Bevy's PBR pipeline. Not designed yet; the camera only emits fade amounts and markers.
+- **Feeler yaw swing.** Journey swings yaw away from side occluders. Is it worth offering
+  when it fights intent? Decide after playtesting.
+- **Mounts.** Mounted riding needs a second anchor and a longer lag. Revisit when mounts
+  exist.
+
+## Status
+
+Nothing is built yet (2026-10-10). The phased roadmap, test gates and measured results
+live in `CAMERA_PROGRESS.md`. Build P0 first: move `src/character/anim/math` up to
+`src/math` (leaving a re-export shim), then write the pure stages and the trace/harness
+tools.
+
+## Related
+
+- [One rig with blended layers](./one-rig-with-blended-layers-over-blending-virtual-cameras.md) — prerequisite: why layers carry parameters, an anchor and a goal.
+- [Camera collision and occlusion techniques](./camera-collision-and-occlusion-techniques.md) — deeper: what each `resolve_boom` stage is for.
+- [Camera damping is exponential, not a per-frame lerp](./camera-damping-is-exponential-not-a-per-frame-lerp.md) — prerequisite: the only allowed smoothing forms.
+- [Fifty camera mistakes digest](./fifty-camera-mistakes-nesky-digest.md) — deeper: the behavioural rules the pipeline enforces.
+- [Shipped action-game camera behaviours](./shipped-action-game-camera-behaviours.md) — example: lock-on, combat framing and the option set.
+- [A jump forward leans out over its toes, and its travel is the root's](../character-animation/ik-and-locomotion/a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md) — applies: root motion is spread across a jump so a following camera doesn't jump.
