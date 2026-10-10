@@ -573,8 +573,14 @@ fn main() {
             wall.top = Some(migera::character::anim::parkour::Ledge::wall(face, Vec3::Z, 4.0, 4.4, 1.0));
             let wall = wall.leaning(2.3, 0.45);
             let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
-            for _ in 0..(12.6 * 60.0) as usize {
+            // On to the end of the first dyno's flight, the catch.
+            let mut flown = false;
+            for _ in 0..(30.0 * 60.0) as usize {
                 climb.advance(Some(Vec2::Y), 1.0 / 60.0);
+                flown |= climb.is_flying();
+                if flown && !climb.is_flying() {
+                    break;
+                }
             }
             Some(climb)
         }

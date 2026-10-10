@@ -59,7 +59,8 @@ pub struct HoldWall {
     pub face: Vec3,
     pub top: Option<Ledge>,
     /// Overhanging from this height, leant out this far from upright,
-    /// radians ([`Self::leaning`]).
+    /// radians, up to a flat roof's quarter turn ([`Self::leaning`],
+    /// [`Self::bent`]).
     pub lean: Option<(f32, f32)>,
 }
 
@@ -70,8 +71,9 @@ impl HoldWall {
     }
 
     /// The same wall overhanging from `from` high up, its face leant out
-    /// `angle` from upright: each hold above that height, and its top,
-    /// carried out with it.
+    /// `angle` from upright (under a quarter turn): each hold above that
+    /// height, and its top, carried straight out with it (so the steeper,
+    /// the farther apart up the face).
     pub fn leaning(mut self, from: f32, angle: f32) -> Self {
         self.lean = Some((from, angle));
         let shift = |y: f32| self.out * (y - from).max(0.0) * angle.tan();
@@ -85,41 +87,75 @@ impl HoldWall {
         self
     }
 
-    /// How far out of the upright face the face is at height `y`, metres.
-    pub fn face_out(&self, y: f32) -> f32 {
-        self.lean.map_or(0.0, |(from, angle)| (y - from).max(0.0) * angle.tan())
+    /// The same wall bent out at `from` high up, its face above leant out
+    /// `angle` from upright, up to a flat roof's quarter turn: each hold
+    /// above that height, and its top, folded over with it, as far up the
+    /// face as it was (so its holds are as far apart as they were). Bent
+    /// past [`BENT_FREE`], nothing under the top's lip to brace the feet on
+    /// (a hang from it is free).
+    pub fn bent(mut self, from: f32, angle: f32) -> Self {
+        self.lean = Some((from, angle));
+        let fold = |p: Vec3| if p.y > from { p.with_y(from) + (Vec3::Y * angle.cos() + self.out * angle.sin()) * (p.y - from) } else { p };
+        for hold in &mut self.holds {
+            hold.at = fold(hold.at);
+        }
+        if let Some(top) = self.top.as_mut() {
+            (top.a, top.b) = (fold(top.a), fold(top.b));
+            if angle > BENT_FREE {
+                top.wall_below = 0.0;
+            }
+        }
+        self
     }
 
-    /// How far up the face height `y` is: the height itself where it is
+    /// How far up the face `point` is: its height where the face is
     /// upright, and on along the leaning face above (so a climb measured on
-    /// it is an upright one turned).
-    pub fn rise(&self, y: f32) -> f32 {
-        match self.lean {
-            Some((from, angle)) if y > from => from + (y - from) / angle.cos(),
-            _ => y,
-        }
+    /// it is an upright one turned); off the face, as the nearer of the two
+    /// faces' nearest points to it is, blended over [`NEARER_BAND`] about
+    /// where they are as near (taken from one or the other, a foot hanging
+    /// free turned with the face that was nearer and changed its step
+    /// 17 cm).
+    pub fn rise(&self, point: Vec3) -> f32 {
+        let Some((from, angle)) = self.lean else { return point.y };
+        let (level, height) = (self.level_out(point), point.y - from);
+        // Up the leaning face from the crease, and off it.
+        let (up, off) = (height * angle.cos() + level * angle.sin(), level * angle.cos() - height * angle.sin());
+        let upright = Vec2::new(level, height.max(0.0)).length();
+        let leaning = Vec2::new(off, up.min(0.0)).length();
+        let w = smoothstep(((upright - leaning) / NEARER_BAND + 0.5).clamp(0.0, 1.0));
+        point.y.min(from) + (from + up.max(0.0) - point.y.min(from)) * w
     }
 
     /// The point on the face `along` it and `rise` up it ([`Self::rise`]).
     pub fn on_face(&self, along: f32, rise: f32) -> Vec3 {
-        let y = match self.lean {
-            Some((from, angle)) if rise > from => from + (rise - from) * angle.cos(),
-            _ => rise,
-        };
-        self.face.with_y(0.0) + self.along() * along + self.out * self.face_out(y) + Vec3::Y * y
+        let base = self.face.with_y(0.0) + self.along() * along;
+        match self.lean {
+            Some((from, angle)) if rise > from => base + Vec3::Y * from + (Vec3::Y * angle.cos() + self.out * angle.sin()) * (rise - from),
+            _ => base + Vec3::Y * rise,
+        }
     }
 
-    /// How far the face leans out at height `y`, radians: eased in over a
-    /// band about the crease, so a hand going over it turns its palm
-    /// smoothly.
-    fn lean_at(&self, y: f32) -> f32 {
-        self.lean.map_or(0.0, |(from, angle)| angle * smoothstep(((y - from) / CREASE_BAND + 0.5).clamp(0.0, 1.0)))
+    /// How far out of the upright face `point` is, level, metres.
+    fn level_out(&self, point: Vec3) -> f32 {
+        (point - self.face).dot(self.out)
     }
 
-    /// The face's normal and its way up it at height `y` (eased over the
-    /// crease, [`Self::lean_at`]).
-    fn frame_at(&self, y: f32) -> (Vec3, Vec3) {
-        let lean = self.lean_at(y);
+    /// How far the face leans out at `point`'s place up it, radians: eased
+    /// in over a band about the crease, so a hand going over it turns its
+    /// palm smoothly; and only as near the face as [`FACE_NEAR`] (a foot
+    /// hanging free out under a leaning face turned with it, and swinging
+    /// changed its step 12-17 cm).
+    fn lean_at(&self, point: Vec3) -> f32 {
+        self.lean.map_or(0.0, |(from, angle)| {
+            let near = 1.0 - smoothstep(((self.place(point).1 - FACE_NEAR.0) / (FACE_NEAR.1 - FACE_NEAR.0)).clamp(0.0, 1.0));
+            angle * smoothstep(((self.rise(point) - from) / CREASE_BAND + 0.5).clamp(0.0, 1.0)) * near
+        })
+    }
+
+    /// The face's normal and its way up it at `point`'s place up it (eased
+    /// over the crease, [`Self::lean_at`]).
+    fn frame_at(&self, point: Vec3) -> (Vec3, Vec3) {
+        let lean = self.lean_at(point);
         if lean == 0.0 {
             return (self.out, Vec3::Y);
         }
@@ -185,18 +221,31 @@ impl HoldWall {
         self.out.cross(Vec3::Y)
     }
 
-    /// `point`'s place on the face: along it from `face`, up (the world's
-    /// height), and out in front of it (overhanging, from the nearer of the
-    /// upright face and the leaning one: the space in front of the two is
-    /// where both are in front, so a point's distance out is the less).
+    /// `point`'s place on the face: along it from `face`, up it
+    /// ([`Self::rise`]), and out in front of it (overhanging, from the
+    /// nearer of the upright face and the leaning one: the space in front of
+    /// the two is where both are in front, so a point's distance out is the
+    /// less).
     pub fn place(&self, point: Vec3) -> (Vec2, f32) {
         let off = point - self.face;
         let level = off.dot(self.out);
         let out = match self.lean {
-            Some((from, angle)) => level.min((level - (point.y - from) * angle.tan()) * angle.cos()),
+            Some((from, angle)) => level.min(level * angle.cos() - (point.y - from) * angle.sin()),
             None => level,
         };
-        (Vec2::new(off.dot(self.along()), point.y), out)
+        (Vec2::new(off.dot(self.along()), self.rise(point)), out)
+    }
+
+    /// The way out of the face nearer `point` ([`Self::place`]'s): the
+    /// upright one's, or the leaning one's, blended over [`NEARER_BAND`]
+    /// about where the two are as near (taken from one or the other, a
+    /// hand turned off the face by it changed its step 16 cm).
+    pub fn normal_nearest(&self, point: Vec3) -> Vec3 {
+        let Some((from, angle)) = self.lean else { return self.out };
+        let level = self.level_out(point);
+        let leaning = level * angle.cos() - (point.y - from) * angle.sin();
+        let w = smoothstep(((level - leaning) / NEARER_BAND + 0.5).clamp(0.0, 1.0));
+        self.out.lerp(self.out * angle.cos() - Vec3::Y * angle.sin(), w).normalize()
     }
 }
 
@@ -209,6 +258,15 @@ const ROUGH_JITTER: f32 = 0.4;
 /// An overhang's lean is eased in over this band about its crease, metres
 /// of height (a hand's palm and a foot's sole turning with the face).
 const CREASE_BAND: f32 = 0.2;
+/// [`HoldWall::normal_nearest`] blends the two faces' over this much
+/// difference in how near they are, metres.
+const NEARER_BAND: f32 = 0.1;
+/// A wall bent out past this, radians, leaves its top's lip with nothing
+/// under it the feet reach ([`HoldWall::bent`]).
+const BENT_FREE: f32 = std::f32::consts::FRAC_PI_4;
+/// A point turns with an overhang's face ([`HoldWall::lean_at`]) within
+/// the first of these of it, metres, and not at all beyond the second.
+const FACE_NEAR: (f32, f32) = (0.15, 0.45);
 
 /// A number in 0-1 drawn for a rough wall's cell `column`, `row` (the
 /// `k`th), from `seed`: SplitMix64's finaliser over the four packed
@@ -251,6 +309,16 @@ const LOCK_OFF: (f32, f32) = (0.2, 0.3);
 /// reaching in from the side bent its wrist 1.7 rad.
 const HOOK_TILT: f32 = 1.4;
 const HOOK_INTO: f32 = 0.9;
+/// Overhanging, this far: the body swung out under both hands on one jug,
+/// a forearm lay along the leaning face, aside and down it, and held to
+/// [`HOOK_TILT`] a wrist bent 0.63 rad sideways (turned back up the face
+/// instead, 1.16).
+const HOOK_TILT_LEANING: f32 = 2.2;
+/// The arms are solved this many times, each hand's fingers turned toward
+/// the forearm the last solve left (twice, the fingers were still settling:
+/// most of a held wrist's sideways bend, up to 0.60 rad on a 40° face, was
+/// that, 0.21 once more).
+const HOOK_PASSES: usize = 3;
 /// A forearm's sideways part under this share of it turns the fingers
 /// aside only as far as it goes, so they pass through straight up as it
 /// crosses over.
@@ -278,7 +346,7 @@ const ELBOW_AVOID: f32 = 0.95;
 /// arm's line, there is no way round that does not flip somewhere: toward
 /// the face's normal an elbow pointing straight at it flipped 30-50 cm,
 /// toward its own side one reaching aside went on in.
-const ELBOW_CLEAR_LEANING: f32 = 0.97;
+const ELBOW_CLEAR_LEANING: f32 = 0.975;
 const ELBOW_AVOID_LEANING: f32 = 0.92;
 /// An arm already past the limit may go this much nearer still on a move.
 /// A hand's move whose arm passes nearer its pole than the first takes
@@ -344,12 +412,22 @@ const DYNO_ASIDE: f32 = 0.5;
 /// elbows); going with the body by this share of the flight.
 const DYNO_BEND: f32 = 0.12;
 const HANDS_FOLLOW: f32 = 0.4;
-/// Flying, each hand this far off the wall halfway, metres.
+/// Flying, each hand this far off the wall halfway, metres; turned out to
+/// it eased in over this either side of where it starts.
 const FLYING_OFF: f32 = 0.12;
+const FLYING_EASE: f32 = 0.06;
+/// A dyno's flight is sampled this many times for how far its arms bow
+/// out ([`DynoArms::bow`]), and bowed this much farther.
+const BOW_SAMPLES: usize = 10;
+const BOW_MARGIN: f32 = 1.15;
 /// A dyno lets go this share of the way from the sink to the catch at most;
 /// under an overhang it is caught at most this far in from hanging at rest,
 /// radians about the hold.
 const RELEASE_AT: f32 = 0.35;
+/// A dyno's flight lasts this long at least, seconds, and crosses no faster
+/// than this, m/s.
+const FLIGHT_LEAST: f32 = 0.2;
+const FLIGHT_ACROSS: f32 = 2.5;
 const CATCH_IN: f32 = 0.5;
 const SINK: f32 = 0.25;
 const DRIVE: f32 = 0.2;
@@ -505,7 +583,35 @@ struct DynoPlan {
     /// an overhang, caught in from it, as its line from the hold leans).
     tilt: f32,
     catch_tilt: f32,
+    /// The arms in its flight ([`DynoArms`]).
+    arms: Option<Box<DynoArms>>,
 }
+
+/// A dyno's arms in its flight: how they hold at the release and at the
+/// catch (posed once, as it is planned).
+#[derive(Debug, Clone, PartialEq)]
+struct DynoArms {
+    released: LocalPose,
+    caught: LocalPose,
+    /// How far each arm is turned out from the wall halfway through the
+    /// flight, metres at the wrist out of the face, eased in and out as
+    /// `sin(πs)`: as far as its path from the release's pose to the
+    /// catch's, sampled, comes nearer the face than [`FLYING_OFF`] would
+    /// have it. (Kept off only where it came too near, the hand came at a
+    /// 52° face's underside at 2.4 m/s and was stopped in a frame or two,
+    /// its step changing 8.9 cm.) Unbowed (`raw`), the path as sampled.
+    bow: [f32; 2],
+    raw: bool,
+}
+
+/// A dyno's hands and feet leave their holds over the drive's last this
+/// long, seconds, carried up with their shoulders and hips, so they let go
+/// going with the body: held to their holds to the release, the body passed
+/// them at 3.4 m/s, the arms folding at 15-23 rad/s, and a forearm's step
+/// changed 6-10 cm in the frame they let go (carried on turning so into the
+/// flight, they overshot by over a radian; turning the elbow's pull down
+/// smoothly through it, 6 cm).
+const CARRY: f32 = 0.15;
 
 impl DynoPlan {
     fn length(&self) -> f32 {
@@ -603,8 +709,10 @@ pub struct FreeClimb {
     /// The way asked, and where in its four-beat order it is.
     way: Option<ClimbWay>,
     next: usize,
-    /// Getting on: where it stood.
+    /// Getting on: where it stood, and the pose it stood in (the standing
+    /// pose unless told, [`Self::set_start`]).
     stood_at: Vec3,
+    start: Option<Box<LocalPose>>,
     floor: f32,
     /// Each hand's own grip, if its fingers are known (for the hang it
     /// tops out into); taking the top's lip.
@@ -652,6 +760,7 @@ impl FreeClimb {
             way: None,
             next: 0,
             stood_at: root,
+            start: None,
             floor: root.y,
             grips: [None; 2],
             topping: None,
@@ -694,6 +803,20 @@ impl FreeClimb {
         (wall.face + wall.along() * place.x + wall.out * GET_ON_OFF).with_y(from.y)
     }
 
+    /// Getting on from `pose` (the walker's as it was, on the same rig and
+    /// in its frame): eased out of it, each hand swept to its hold from
+    /// where it was. From the standing pose, a hand resting on the wall
+    /// beside the body dropped 40 cm to the side and rose again, at
+    /// 2.8 m/s.
+    pub fn set_start(&mut self, pose: &LocalPose) {
+        self.start = Some(Box::new(*pose));
+    }
+
+    /// The pose getting on starts from.
+    fn start_pose(&self) -> &LocalPose {
+        self.start.as_deref().unwrap_or(&self.body.stood)
+    }
+
     /// Each hand placed so its own fingers hook its hold: their grips as
     /// the rig's fingers make them, in each hand's own frame (kept so, for
     /// a hang it hands over to, which turns them itself).
@@ -706,12 +829,32 @@ impl FreeClimb {
         }
     }
 
-    /// The hand's world turn hooked over a hold at height `y`: the palm
-    /// against the face there, the fingers along `along` (in the face's
-    /// plane) over it.
-    fn hook_turn(&self, side: usize, along: Vec3, y: f32) -> Quat {
+    /// The hand's world turn hooked over a hold on a face out along
+    /// `normal`: the palm against the face, the fingers along `along` (in
+    /// the face's plane) over it.
+    fn hook_turn_on(&self, side: usize, along: Vec3, normal: Vec3) -> Quat {
         let grip = &self.body.grips[side];
-        frame_turn(grip.along, grip.palm, along, -self.wall.frame_at(y).0)
+        frame_turn(grip.along, grip.palm, along, -normal)
+    }
+
+    /// The face limb `limb` turns with at `at`: how far it leans, its
+    /// normal and its way up. Moving to a hold, turned from its old hold's
+    /// to its new one's over the move (by where it is, a foot crossing a
+    /// roof's crease turned a quarter turn over 20 cm and changed its step
+    /// 16 cm).
+    fn limb_face(&self, limb: usize, at: Vec3) -> (f32, Vec3, Vec3) {
+        let face = |at: Vec3| {
+            let (normal, up) = self.wall.frame_at(at);
+            (self.wall.lean_at(at), normal, up)
+        };
+        match &self.doing {
+            Doing::Moving { limb: moving, from, to: Some(to), t, seconds, .. } if *moving == limb && self.wall.lean.is_some() => {
+                let s = smoothstep((t / seconds).clamp(0.0, 1.0));
+                let ((lean0, normal0, up0), (lean1, normal1, up1)) = (face(*from), face(self.wall.holds[*to].at));
+                (lean0 + (lean1 - lean0) * s, normal0.lerp(normal1, s).normalize(), up0.lerp(up1, s).normalize())
+            }
+            _ => face(at),
+        }
     }
 
     /// Which way a hand's fingers go over its hold with its forearm along
@@ -719,11 +862,10 @@ impl FreeClimb {
     /// no farther than [`HOOK_TILT`] off straight up (a sidepull's); and
     /// tipped into the wall as far as the forearm comes in toward it, up to
     /// [`HOOK_INTO`], the heel of the hand off the face (laid flat on it,
-    /// a forearm coming in bent the wrist back 1.05 rad).
-    /// (On an overhang, all of it in the face's own plane at the hold's
-    /// height `y`.)
-    fn hook_along(&self, forearm: Vec3, y: f32) -> Vec3 {
-        let (normal, up) = self.wall.frame_at(y);
+    /// a forearm coming in bent the wrist back 1.05 rad). (On an overhang,
+    /// all of it in the face's own plane at the hold, out along `normal`,
+    /// up it `up`.)
+    fn hook_along_on(&self, forearm: Vec3, normal: Vec3, up: Vec3) -> Vec3 {
         let on = forearm - normal * forearm.dot(normal);
         // Overhanging, a forearm pointing nearly into the face has no way
         // along it: eased toward the face's way up as it comes to (at a 40°
@@ -731,7 +873,8 @@ impl FreeClimb {
         let flat = smoothstep((1.0 - on.length() / (HOOK_FLAT * forearm.length()).max(1.0e-6)).clamp(0.0, 1.0));
         let on = if self.wall.lean.is_some() { on + up * (HOOK_FLAT * forearm.length() * flat) } else { on };
         let across = on - up * on.dot(up);
-        let tilt = across.length().atan2(on.dot(up)).clamp(0.0, HOOK_TILT);
+        let most = if self.wall.lean.is_some() { HOOK_TILT_LEANING } else { HOOK_TILT };
+        let tilt = across.length().atan2(on.dot(up)).clamp(0.0, most);
         // Sideways as far as the forearm goes sideways, not by its sign
         // alone: a forearm pointing down, passing straight down, swung the
         // fingers from one side to the other in a frame, and the held wrist
@@ -743,21 +886,37 @@ impl FreeClimb {
     }
 
     /// The wrist for hand `side` hooked on a hold at `at`, its fingers
-    /// along `along` ([`Self::hook_along`]).
+    /// along `along` ([`Self::hook_along_on`]).
     fn wrist_for(&self, side: usize, at: Vec3, along: Vec3) -> Vec3 {
-        at - self.hook_turn(side, along, at.y) * hook_lip(&self.body.grips[side])
+        self.wrist_on(side, at, along, self.wall.frame_at(at).0)
+    }
+
+    /// [`Self::wrist_for`] on a face out along `normal`.
+    fn wrist_on(&self, side: usize, at: Vec3, along: Vec3, normal: Vec3) -> Vec3 {
+        at - self.hook_turn_on(side, along, normal) * hook_lip(&self.body.grips[side])
     }
 
     /// The ankle for foot `side`, its ball on a hold at `at`, and its
     /// world rotation (facing the wall, toes down a little; on an overhang,
     /// turned with the face).
     fn ankle_for(&self, side: usize, at: Vec3) -> (Vec3, Quat) {
+        self.ankle_leaning(side, at, self.wall.lean_at(at), self.wall.frame_at(at).0)
+    }
+
+    /// [`Self::ankle_for`] turned with a face leaning `lean`, out of it
+    /// along `normal`.
+    fn ankle_leaning(&self, side: usize, at: Vec3, lean: f32, normal: Vec3) -> (Vec3, Quat) {
         let axis = self.turn * self.rig.left();
-        let lean = self.wall.lean_at(at.y);
         let face = if lean == 0.0 { Quat::IDENTITY } else { Quat::from_axis_angle(self.wall.along(), -lean) };
         let attitude = face * Quat::from_axis_angle(axis, TOES_DOWN) * self.turn * self.body.attitudes[side];
         let ball_to_ankle = attitude * (self.turn * self.body.attitudes[side]).inverse() * (self.turn * self.body.balls[side]);
-        (at + ball_to_ankle + self.wall.frame_at(at.y).0 * ANKLE_OUT, attitude)
+        (at + ball_to_ankle + normal * ANKLE_OUT, attitude)
+    }
+
+    /// How far a dyno's feet have left their holds `t` seconds in, 0-1
+    /// (from when they are carried, [`CARRY`]).
+    fn feet_left(plan: &DynoPlan, t: f32) -> f32 {
+        smoothstep(((t - (SINK + DRIVE - CARRY)) / (CARRY + FEET_LEAVE * plan.flight)).clamp(0.0, 1.0))
     }
 
     /// Where the hips go held by `limbs`: along the face between the held
@@ -774,30 +933,32 @@ impl FreeClimb {
         // off it along the tilted body (so on the leaning face, all of it is
         // the upright climb turned).
         if !feet.is_empty() && self.wall.lean.is_some() {
-            let rise = |points: &[Vec3]| points.iter().map(|p| self.wall.rise(p.y)).sum::<f32>() / points.len() as f32;
+            let rise = |points: &[Vec3]| points.iter().map(|&p| self.wall.rise(p)).sum::<f32>() / points.len() as f32;
             let (hands, feet) = (rise(&hands), rise(&feet));
             let rise = (feet + FEET_BELOW).clamp(hands - HANDS_ABOVE.1, hands - HANDS_ABOVE.0);
             let tilt = self.tilt_for(limbs);
             let hips = self.wall.on_face(along.x, rise) + self.tilted(self.wall.out, tilt) * HIPS_OUT;
             return self.clear_of_the_face(hips, tilt, HIPS_OUT);
         }
-        // Hanging free, under the hands' face.
+        // Hanging free, under the hands.
         let (height, out) = if feet.is_empty() {
-            (hand_y - HANG_BELOW, HIPS_OUT_FREE + self.wall.face_out(hand_y))
+            (hand_y - HANG_BELOW, HIPS_OUT_FREE + self.wall.level_out(mean(&hands)))
         } else {
             ((mean(&feet).y + FEET_BELOW).clamp(hand_y - HANDS_ABOVE.1, hand_y - HANDS_ABOVE.0), HIPS_OUT)
         };
         self.wall.face.with_y(0.0) + self.wall.along() * along.x + self.wall.out * out + Vec3::Y * height
     }
 
-    /// `hips` (the body tilted `tilt`) moved straight out from the wall as
-    /// far as keeps the head, the chest and the shoulders as far off the
-    /// face as they are off a flat face with the hips `off` it: nowhere on
-    /// a flat face, upright or leaning; at an overhang's crease, the face
-    /// above leaning out over the body. Placed off the upright face there,
-    /// the head went 8 cm into a 52° lean.
+    /// `hips` (the body tilted `tilt`) moved out from the wall as far as
+    /// keeps the head, the chest and the shoulders as far off the face as
+    /// they are off a flat face with the hips `off` it: nowhere on a flat
+    /// face, upright or leaning; at an overhang's crease, the face above
+    /// leaning out over the body. Placed off the upright face there, the
+    /// head went 8 cm into a 52° lean. Moved between the two faces' ways
+    /// out, which takes it off either alike (straight out, it went nowhere
+    /// off a roof).
     fn clear_of_the_face(&self, hips: Vec3, tilt: f32, off: f32) -> Vec3 {
-        let Some((from, lean)) = self.wall.lean else { return hips };
+        let Some((_, lean)) = self.wall.lean else { return hips };
         let points = self.body.upper.iter().chain(self.body.shoulders.iter());
         let short = points
             .map(|&offset| {
@@ -805,26 +966,23 @@ impl FreeClimb {
                 // On a flat face the body is tilted with: off by `off` and
                 // its own offset across the body.
                 let flat = off + world.dot(self.wall.out);
-                let at = hips + self.tilted(world, tilt);
-                let short = flat - self.wall.place(at).1;
-                // Out from a leaning face, a step straight out is that much
-                // less.
-                if at.y > from { short / lean.cos() } else { short }
+                flat - self.wall.place(hips + self.tilted(world, tilt)).1
             })
             .fold(0.0, f32::max);
-        hips + self.wall.out * short
+        let between = self.wall.out * (0.5 * lean).cos() - Vec3::Y * (0.5 * lean).sin();
+        hips + between * (short / (0.5 * lean).cos())
     }
 
     /// How far the body tilts its top out held by `limbs`: as the face
     /// between the feet and the hands leans (none upright, and none hanging
     /// free).
     fn tilt_for(&self, limbs: &[Option<usize>; 4]) -> f32 {
-        let height = |of: [usize; 2]| {
-            let held: Vec<f32> = of.iter().filter_map(|&l| limbs[l]).map(|i| self.wall.holds[i].at.y).collect();
-            (!held.is_empty()).then(|| held.iter().sum::<f32>() / held.len() as f32)
+        let middle = |of: [usize; 2]| {
+            let held: Vec<Vec3> = of.iter().filter_map(|&l| limbs[l]).map(|i| self.wall.holds[i].at).collect();
+            (!held.is_empty()).then(|| held.iter().copied().sum::<Vec3>() / held.len() as f32)
         };
-        match (height([LH, RH]), height([LF, RF])) {
-            (Some(hands), Some(feet)) if self.wall.lean.is_some() => (self.wall.face_out(hands) - self.wall.face_out(feet)).atan2((hands - feet).max(0.1)),
+        match (middle([LH, RH]), middle([LF, RF])) {
+            (Some(hands), Some(feet)) if self.wall.lean.is_some() => (self.wall.level_out(hands) - self.wall.level_out(feet)).atan2((hands.y - feet.y).max(0.0)),
             _ => 0.0,
         }
     }
@@ -844,7 +1002,7 @@ impl FreeClimb {
     /// body tilted `tilt`.
     fn hand_reaches(&self, side: usize, at: Vec3, hips: Vec3, tilt: f32) -> bool {
         let shoulder = self.shoulder(side, hips, tilt);
-        (self.wrist_for(side, at, self.wall.frame_at(at.y).1) - shoulder).length() <= ARM_REACH * self.body.arms[side]
+        (self.wrist_for(side, at, self.wall.frame_at(at).1) - shoulder).length() <= ARM_REACH * self.body.arms[side]
     }
 
     /// How nearly hand `side` on a hold at `at`, the hips at `hips`, points
@@ -853,7 +1011,7 @@ impl FreeClimb {
     /// aside).
     fn against_pole(&self, side: usize, at: Vec3, hips: Vec3, tilt: f32) -> f32 {
         let shoulder = self.shoulder(side, hips, tilt);
-        let wrist = self.wrist_for(side, at, self.wall.frame_at(at.y).1);
+        let wrist = self.wrist_for(side, at, self.wall.frame_at(at).1);
         let reach = (wrist - shoulder).normalize_or_zero();
         let up = self.tilted(Vec3::Y, tilt);
         let low = smoothstep(((LOCK_OFF.0 - (wrist - shoulder).dot(up)) / LOCK_OFF.1).clamp(0.0, 1.0));
@@ -870,6 +1028,14 @@ impl FreeClimb {
         let (clear, avoid) = if self.wall.lean.is_some() { (ELBOW_CLEAR_LEANING, ELBOW_AVOID_LEANING) } else { (ELBOW_CLEAR, ELBOW_AVOID) };
         let now = [LH, RH].iter().filter(|&&hand| self.limbs[hand].is_some()).map(|&hand| self.against_pole(hand, self.limb_at(hand), self.hips, self.tilt)).fold(-1.0, f32::max);
         if now + ELBOW_STAY > clear { (now + ELBOW_STAY, avoid) } else { (clear, avoid) }
+    }
+
+    /// A limb `s` of the way through a move from `from` to `to`, coming
+    /// `arc` off the face on its way (out of the face where it is: straight
+    /// out, a hand moving along a roof went along it).
+    fn on_the_way(&self, from: Vec3, to: Vec3, s: f32, arc: f32) -> Vec3 {
+        let at = from.lerp(to, smoothstep(s));
+        at + self.wall.frame_at(at).0 * (arc * (std::f32::consts::PI * s).sin().powi(2))
     }
 
     /// How nearly moving `limb` to hold `to` from `limbs` takes either arm
@@ -890,7 +1056,7 @@ impl FreeClimb {
                 let tilt = tilts.0 + (tilts.1 - tilts.0) * smoothstep(s);
                 [LH, RH].into_iter().filter_map(move |hand| {
                     let at = if hand == limb {
-                        Some(from.lerp(goal, smoothstep(s)) + self.wall.out * (HAND_ARC * (std::f32::consts::PI * s).sin().powi(2)))
+                        Some(self.on_the_way(from, goal, s, HAND_ARC))
                     } else {
                         limbs[hand].map(|_| self.limb_at(hand))
                     };
@@ -915,7 +1081,7 @@ impl FreeClimb {
     fn foothold_for(&self, foot: usize, limbs: &[Option<usize>; 4]) -> Option<usize> {
         let side = foot - LF;
         // Heights up the face ([`HoldWall::rise`]).
-        let rise = |at: Vec3| self.wall.rise(at.y);
+        let rise = |at: Vec3| self.wall.rise(at);
         let lowest_hand = [LH, RH].iter().filter_map(|&l| limbs[l]).map(|i| rise(self.wall.holds[i].at)).fold(f32::MAX, f32::min);
         let other = limbs[LF + 1 - side].map(|i| self.wall.place(self.wall.holds[i].at).0.x);
         let mut trial = *limbs;
@@ -990,7 +1156,7 @@ impl FreeClimb {
                 let mut with = *limbs;
                 with[limb] = Some(i);
                 // The feet under the hands (up the face).
-                let rise = |j: usize| self.wall.rise(self.wall.holds[j].at.y);
+                let rise = |j: usize| self.wall.rise(self.wall.holds[j].at);
                 let lowest_hand = [LH, RH].iter().filter_map(|&l| with[l]).map(rise).fold(f32::MAX, f32::min);
                 if [LF, RF].iter().filter_map(|&l| with[l]).any(|j| rise(j) > lowest_hand - FEET_UNDER_HANDS) {
                     return None;
@@ -1016,24 +1182,39 @@ impl FreeClimb {
             .map(|(i, _)| i)
     }
 
-    /// A dyno up toward `way` (mostly up): the best hand hold above the
-    /// hands, no more than [`DYNO_ABOVE`] over the higher (none in a move's
-    /// reach, or it would be climbed to).
+    /// A dyno up toward `way` (mostly up): the nearest hand hold above the
+    /// hands, up and aside, no more than [`DYNO_ABOVE`] over the higher, up
+    /// the face (none in a move's reach, or it would be climbed to), that
+    /// the feet can get back onto holds from, hanging on it; with none,
+    /// the nearest.
     fn dyno_for(&self, way: ClimbWay) -> Option<usize> {
         if way.y < 0.7 * way.length() {
             return None;
         }
         let hands = [LH, RH].map(|l| self.limbs[l].map(|i| self.wall.holds[i].at));
-        let top = hands.iter().flatten().map(|at| at.y).fold(f32::MIN, f32::max);
+        let top = hands.iter().flatten().map(|&at| self.wall.rise(at)).fold(f32::MIN, f32::max);
         let middle = hands.iter().flatten().copied().sum::<Vec3>() / 2.0;
-        self.wall
+        let mut near: Vec<(usize, f32)> = self
+            .wall
             .holds
             .iter()
             .enumerate()
-            .filter(|(i, hold)| !self.limbs.contains(&Some(*i)) && hold.kind.hand() && hold.at.y > top + LEAST_PROGRESS && hold.at.y <= top + DYNO_ABOVE)
+            .filter(|(i, hold)| !self.limbs.contains(&Some(*i)) && hold.kind.hand() && (top + LEAST_PROGRESS..=top + DYNO_ABOVE).contains(&self.wall.rise(hold.at)))
             .filter(|(_, hold)| (self.wall.place(hold.at).0.x - self.wall.place(middle).0.x).abs() <= DYNO_ASIDE)
-            .min_by(|(_, a), (_, b)| (self.wall.place(a.at).0.x - self.wall.place(middle).0.x).abs().total_cmp(&(self.wall.place(b.at).0.x - self.wall.place(middle).0.x).abs()))
-            .map(|(i, _)| i)
+            .map(|(i, hold)| (i, self.wall.rise(hold.at) - top + (self.wall.place(hold.at).0.x - self.wall.place(middle).0.x).abs()))
+            .collect();
+        near.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // Hanging from it after, the feet find a hold again (by aside
+        // alone, under a 52° lean one jumped a row too far, 1 m, and hung
+        // with no foothold low enough; to the nearest, it hung where the
+        // only one low enough was across the gap below, out of reach).
+        let feet_back = |to: usize| {
+            let mut hung = self.clone();
+            (hung.limbs[LH], hung.limbs[RH], hung.limbs[LF], hung.limbs[RF]) = (Some(to), Some(to), None, None);
+            (hung.hips, hung.tilt, hung.swing) = (hung.hips_for(&hung.limbs), 0.0, None);
+            [LF, RF].iter().any(|&foot| hung.foothold_for(foot, &hung.limbs).is_some())
+        };
+        near.iter().find(|&&(i, _)| feet_back(i)).or(near.first()).map(|&(i, _)| i)
     }
 
     /// Plans a dyno to hold `to`: sunk toward the wall, driven up, flown to
@@ -1093,14 +1274,64 @@ impl FreeClimb {
             share = low;
         }
         let release = sunk + (catch - sunk) * share;
-        let rise = (catch.y - release.y).max(0.05);
-        let up = (2.0 * GRAVITY * rise).sqrt();
-        let flight = up / GRAVITY;
-        let velocity = (catch - release).with_y(0.0) / flight + Vec3::Y * up;
+        // Flown to the catch at the top of its flight, if it is above; no
+        // shorter than [`FLIGHT_LEAST`] nor faster across than
+        // [`FLIGHT_ACROSS`], falling onto it if it must (along a roof the
+        // catch hangs below the release, and flown up to it, a 0.1 s flight
+        // crossed a metre at 10 m/s and swung the body up through the roof).
+        let rise = catch.y - release.y;
+        let across = (catch - release).with_y(0.0);
+        let flight = (2.0 * rise.max(0.0) / GRAVITY).sqrt().max(FLIGHT_LEAST).max(across.length() / FLIGHT_ACROSS);
+        let velocity = across / flight + Vec3::Y * ((rise + 0.5 * GRAVITY * flight * flight) / flight);
         // Where each hand is, matched ones aside of their hold (from the
         // hold's middle, a matched hand jumped 9 cm as it let go).
         let let_go = [LH, RH].map(|l| self.limb_at(l));
-        DynoPlan { start, sunk, release, velocity, catch, flight, hands, let_go, tilt: self.tilt, catch_tilt }
+        let mut plan = DynoPlan { start, sunk, release, velocity, catch, flight, hands, let_go, tilt: self.tilt, catch_tilt, arms: None };
+        plan.arms = Some(Box::new(self.dyno_arms(to, &plan)));
+        plan
+    }
+
+    /// The arms in a dyno's flight to hold `to` on `plan` ([`DynoArms`]).
+    fn dyno_arms(&self, to: usize, plan: &DynoPlan) -> DynoArms {
+        // Held at the catch.
+        let mut held = self.clone();
+        (held.doing, held.hips, held.tilt, held.swing) = (Doing::Holding, plan.catch, plan.catch_tilt, None);
+        (held.limbs[LH], held.limbs[RH], held.limbs[LF], held.limbs[RF]) = (Some(to), Some(to), None, None);
+        let caught = held.pose();
+        // Posed `t` seconds into the dyno (with `arms`, if flying).
+        let posed_at = |t: f32, arms: Option<DynoArms>| {
+            let mut plan = plan.clone();
+            plan.arms = arms.map(Box::new);
+            let mut at = self.clone();
+            (at.hips, at.tilt, at.swing) = (plan.hips(t), plan.tilt(t), None);
+            at.doing = Doing::Dyno { to, t, plan: Box::new(plan) };
+            (at.climbing_posed().0, at.hips)
+        };
+        // As the drive leaves them (the hands carried up with it).
+        let let_go = SINK + DRIVE;
+        let released = posed_at(let_go - 1.0e-4, None).0;
+        // How far out each arm is bowed: sampled along the flight unbowed.
+        let mut arms = DynoArms { released, caught, bow: [0.0; 2], raw: true };
+        let mut bow = [0.0f32; 2];
+        for k in 1..BOW_SAMPLES {
+            let s = k as f32 / BOW_SAMPLES as f32;
+            let (pose, hips) = posed_at(let_go + plan.flight * s, Some(arms.clone()));
+            let root = hips - self.turn * self.body.hips;
+            let at = forward_kinematics_on(&pose, &self.rig);
+            // Its middle only: by its ends a hand is at its hold.
+            let eased = smoothstep(s);
+            let bowing = (std::f32::consts::PI * eased).sin();
+            if bowing < 0.5 {
+                continue;
+            }
+            for (side, chain) in ARMS.iter().enumerate() {
+                let lacks = FLYING_OFF * bowing - self.wall.place(root + self.turn * at[chain.wrist]).1;
+                bow[side] = bow[side].max(lacks / bowing);
+            }
+        }
+        arms.bow = bow.map(|b| b * BOW_MARGIN);
+        arms.raw = false;
+        arms
     }
 
     /// Moves it on `dt` seconds, asked to climb `way` (or held).
@@ -1222,7 +1453,7 @@ impl FreeClimb {
                 // At the top, asked up, it takes the lip.
                 if let Some(top) = self.wall.top
                     && way.y > 0.5 * way.length()
-                    && [LH, RH].iter().all(|&l| self.limbs[l].is_some_and(|i| top.height() - self.wall.holds[i].at.y <= TOP_REACH))
+                    && [LH, RH].iter().all(|&l| self.limbs[l].is_some_and(|i| self.wall.rise(top.a) - self.wall.rise(self.wall.holds[i].at) <= TOP_REACH))
                 {
                     let (pose, root) = (self.pose(), self.root());
                     let square = Hanging::square(&top, self.rig.forward());
@@ -1336,7 +1567,7 @@ impl FreeClimb {
                 let s = (t / seconds).clamp(0.0, 1.0);
                 let end = to.map_or_else(|| self.hanging_foot(limb % 2), |i| self.wall.holds[i].at);
                 let arc = if *limb < LF { HAND_ARC } else { FOOT_ARC };
-                targets[*limb] = (from.lerp(end, smoothstep(s)) + self.wall.out * (arc * (std::f32::consts::PI * s).sin().powi(2)), false);
+                targets[*limb] = (self.on_the_way(*from, end, s, arc), false);
                 // A hand leaving a hold it matched on: the other slides to
                 // the hold's middle as it goes (at once, it jumped 9 cm).
                 if *limb < LF
@@ -1349,6 +1580,31 @@ impl FreeClimb {
             }
             Doing::Dyno { t, plan, .. } => {
                 let released = *t >= SINK + DRIVE;
+                // Leaving their holds carried with the shoulders and the
+                // hips ([`CARRY`]), no nearer the face; the feet carried on
+                // so as they leave.
+                let from = SINK + DRIVE - CARRY;
+                if *t > from {
+                    let w = smoothstep(((t - from) / CARRY).min(1.0));
+                    let (hips, tilt) = (plan.hips(*t), plan.tilt(*t));
+                    let socket = |side: usize, hips: Vec3, tilt: f32| hips + self.tilted(self.turn * self.body.sockets[side], tilt);
+                    for (limb, target) in targets.iter_mut().enumerate() {
+                        let moved = if limb < LF {
+                            if released {
+                                continue;
+                            }
+                            self.shoulder(limb, hips, tilt) - self.shoulder(limb, plan.hips(from), plan.tilt(from))
+                        } else {
+                            socket(limb - LF, hips, tilt) - socket(limb - LF, plan.hips(from), plan.tilt(from))
+                        };
+                        let (held, at) = (target.0, target.0 + moved * w);
+                        // A hand no nearer the face (a foot goes with the
+                        // hips, off it: held off a leaning face as it came
+                        // near, one changed its step 10 cm).
+                        let short = if limb < LF { self.wall.place(held).1 - self.wall.place(at).1 } else { 0.0 };
+                        *target = (at + self.wall.normal_nearest(at) * short.max(0.0), false);
+                    }
+                }
                 for (side, limb) in [LH, RH].into_iter().enumerate() {
                     if released {
                         // Swept round the shoulder, the elbow bent on the
@@ -1373,15 +1629,17 @@ impl FreeClimb {
                         // into it.
                         let (_, out) = self.wall.place(at);
                         let off = FLYING_OFF * (std::f32::consts::PI * s).sin();
-                        targets[limb] = (at + self.wall.out * (off - out).max(0.0), false);
+                        targets[limb] = (at + self.wall.normal_nearest(at) * (off - out).max(0.0), false);
                     }
                 }
-                if released {
+                if *t > from {
                     // Off their holds over a moment (at once, a foot moved
-                    // 91 cm in a frame).
+                    // 91 cm in a frame), from when they are carried.
                     // Within the flight however short (a 0.2 s one caught
-                    // them nine tenths of the way, and they jumped 10 cm).
-                    let s = smoothstep(((t - SINK - DRIVE) / (FEET_LEAVE * plan.flight)).clamp(0.0, 1.0));
+                    // them nine tenths of the way, and they jumped 10 cm;
+                    // left from the release, a knee changed its step 7 cm
+                    // in a 0.14 s flight).
+                    let s = Self::feet_left(plan, *t);
                     for limb in [LF, RF] {
                         targets[limb] = (targets[limb].0.lerp(self.hanging_foot(limb % 2), s), false);
                     }
@@ -1431,7 +1689,7 @@ impl FreeClimb {
     }
 
     /// The climb's own pose ([`Self::pose`] but taking the lip), and which
-    /// way each hand's fingers go over its hold ([`Self::hook_along`]).
+    /// way each hand's fingers go over its hold ([`Self::hook_along_on`]).
     fn climbing_posed(&self) -> (LocalPose, [Vec3; 2]) {
         let rig = &self.rig;
         let hips = self.hips_now();
@@ -1453,7 +1711,21 @@ impl FreeClimb {
         // it stood, no farther from its hip than its reach.
         for (side, &(_, _, ankle_bone, _)) in LEGS.iter().enumerate() {
             let (ball, _) = targets[LF + side];
-            let (mut ankle, mut attitude) = self.ankle_for(side, ball);
+            // Leaving its hold in a dyno, turned from as on it to as hanging
+            // (by where it is, a foot carried up past the crease turned
+            // with the face in a few frames, its step changing 10 cm).
+            let (mut ankle, mut attitude) = match (&self.doing, self.limbs[LF + side]) {
+                (Doing::Dyno { t, plan, .. }, Some(hold)) if *t > SINK + DRIVE - CARRY => {
+                    let (hold, hanging) = (self.wall.holds[hold].at, self.hanging_foot(side));
+                    let s = Self::feet_left(plan, *t);
+                    let lean = self.wall.lean_at(hold) + (self.wall.lean_at(hanging) - self.wall.lean_at(hold)) * s;
+                    self.ankle_leaning(side, ball, lean, self.wall.frame_at(hold).0.lerp(self.wall.frame_at(hanging).0, s).normalize())
+                }
+                _ => {
+                    let (lean, normal, _) = self.limb_face(LF + side, ball);
+                    self.ankle_leaning(side, ball, lean, normal)
+                }
+            };
             if let Some(w) = getting_on {
                 let stood = self.stood_at + self.turn * self.body.ankles[side];
                 ankle = stood.lerp(ankle, w);
@@ -1480,21 +1752,24 @@ impl FreeClimb {
             pose.rotations[ankle_bone] = delta_after_world_turn(&pose, rig, ankle_bone, (back * attitude) * now.inverse());
         }
         // The arms: each hand hooked over its hold, its fingers on along
-        // its forearm ([`Self::hook_along`]); getting on, raised forward
+        // its forearm ([`Self::hook_along_on`]); getting on, raised forward
         // round the shoulder to it. First hooked fingers up, then turned
         // toward the forearm the arm solved to: fingers up, an arm reaching
         // in from the side bent its wrist 1.7 rad sideways.
         let unarmed = pose;
-        let mut alongs = [0, 1].map(|side| self.wall.frame_at(targets[side].0.y).1);
-        for pass in 0..2 {
+        let started = getting_on.map(|_| forward_kinematics_on(self.start_pose(), rig));
+        let faces = [0, 1].map(|side| self.limb_face(side, targets[side].0));
+        let mut alongs = faces.map(|(_, _, up)| up);
+        for pass in 0..HOOK_PASSES {
         pose = unarmed;
         let at = forward_kinematics_on(&pose, rig);
         let wrists = [0, 1].map(|side| {
-            let hooked = self.wrist_for(side, targets[side].0, alongs[side]);
+            let hooked = self.wrist_on(side, targets[side].0, alongs[side], faces[side].1);
             match getting_on {
                 Some(w) => {
                     let shoulder = at[ARMS[side].shoulder];
-                    let (from, to) = (self.body.hands[side] - shoulder, back * (hooked - root) - shoulder);
+                    let started = started.as_ref().map_or(self.body.hands[side], |at| at[ARMS[side].wrist]);
+                    let (from, to) = (started - shoulder, back * (hooked - root) - shoulder);
                     let swept = Quat::IDENTITY.slerp(Quat::from_rotation_arc(from.normalize(), to.normalize()), w) * from.normalize();
                     let reach = from.length() + (to.length() - from.length()) * w - 0.12 * (std::f32::consts::PI * w).sin();
                     // No nearer the face than the hooked wrist ends (round
@@ -1502,7 +1777,7 @@ impl FreeClimb {
                     // 2.8 cm into the wall on a rough wall).
                     let at = root + self.turn * (shoulder + swept * reach);
                     let short = self.wall.place(hooked).1 - self.wall.place(at).1;
-                    at + self.wall.out * short.max(0.0)
+                    at + self.wall.normal_nearest(at) * short.max(0.0)
                 }
                 None => hooked,
             }
@@ -1537,19 +1812,21 @@ impl FreeClimb {
             let low = smoothstep(((LOCK_OFF.0 - (targets_pose[side] - at[ARMS[side].shoulder]).dot(tilting * Vec3::Y)) / LOCK_OFF.1).clamp(0.0, 1.0));
             let pole = tilting * (rig.left() * (SIGN[side] * 0.7) - rig.forward() * 0.5 - Vec3::Y * (0.2 + 0.8 * low)).normalize();
             let (elbow, wrist) = solve_arm_toward_from(&mut pose, &at, ARMS[side], targets_pose[side], pole, rig);
-            let y = targets[side].0.y;
-            turn_hand(&mut pose, rig, ARMS[side], self.body.hand_binds[side], back * self.hook_turn(side, alongs[side], y), getting_on.unwrap_or(1.0), (wrist - elbow).normalize_or_zero());
-            if pass == 0 {
-                next[side] = self.hook_along(self.turn * (wrist - elbow), y);
+            let (_, normal, up) = faces[side];
+            turn_hand(&mut pose, rig, ARMS[side], self.body.hand_binds[side], back * self.hook_turn_on(side, alongs[side], normal), getting_on.unwrap_or(1.0), (wrist - elbow).normalize_or_zero());
+            if pass + 1 < HOOK_PASSES {
+                next[side] = self.hook_along_on(self.turn * (wrist - elbow), normal, up);
             }
         }
         alongs = next;
         }
         if let Some(w) = getting_on {
             let s = smoothstep((w * GET_ON / GET_ON_EASE).clamp(0.0, 1.0));
+            let start = self.start_pose();
             for bone in Bone::ALL {
-                pose.rotations[bone] = self.body.stood.rotations[bone].slerp(pose.rotations[bone], s);
+                pose.rotations[bone] = start.rotations[bone].slerp(pose.rotations[bone], s);
             }
+            pose.root_translation = start.root_translation.lerp(pose.root_translation, s);
         }
         // In a dyno's flight, the arms turn from how they held at the
         // release to how they hold at the catch (solved toward hands flying
@@ -1558,34 +1835,55 @@ impl FreeClimb {
         if let Doing::Dyno { to, t, plan } = &self.doing
             && *t >= SINK + DRIVE
         {
-            let s = smoothstep(((t - SINK - DRIVE) / plan.flight).clamp(0.0, 1.0));
-            let held_at = |hips: Vec3, limbs: [Option<usize>; 4], tilt: f32| {
-                let mut held = self.clone();
-                (held.doing, held.hips, held.limbs, held.tilt, held.swing) = (Doing::Holding, hips, limbs, tilt, None);
-                held.pose()
+            let flown = (t - SINK - DRIVE).min(plan.flight);
+            let s = smoothstep(flown / plan.flight);
+            let planned;
+            let arms = match plan.arms.as_deref() {
+                Some(arms) => arms,
+                None => {
+                    planned = self.dyno_arms(*to, plan);
+                    &planned
+                }
             };
-            let mut caught = self.limbs;
-            (caught[LH], caught[RH], caught[LF], caught[RF]) = (Some(*to), Some(*to), None, None);
-            let (released, caught) = (held_at(plan.release, self.limbs, plan.tilt(SINK + DRIVE)), held_at(plan.catch, caught, plan.catch_tilt));
             for (chain, clavicle) in ARMS.iter().zip(CLAVICLES) {
                 for bone in [clavicle, chain.shoulder, chain.elbow, chain.wrist] {
-                    pose.rotations[bone] = released.rotations[bone].slerp(caught.rotations[bone], s);
+                    pose.rotations[bone] = arms.released.rotations[bone].slerp(arms.caught.rotations[bone], s);
                 }
             }
             // Each hand kept off the wall, the arm turned out about its
             // shoulder: none at either end (the body rising under turning
             // arms carried a hand 5.6 cm into the wall).
             let clear = FLYING_OFF * (std::f32::consts::PI * s).sin();
-            for chain in ARMS {
+            for (side, chain) in ARMS.iter().enumerate() {
+                if arms.raw {
+                    break;
+                }
                 let at = forward_kinematics_on(&pose, rig);
-                let (shoulder, wrist) = (root + self.turn * at[chain.shoulder], root + self.turn * at[chain.wrist]);
-                let short = clear - self.wall.place(wrist).1;
-                let arm = wrist - shoulder;
-                let axis = arm.cross(self.wall.out).normalize_or_zero();
-                if short > 0.0 && axis != Vec3::ZERO {
-                    // About `arm x out`, a positive turn takes the wrist out.
-                    let turn = Quat::from_axis_angle(back * axis, short / arm.length().max(0.1));
-                    pose.rotations[chain.shoulder] = delta_after_world_turn(&pose, rig, chain.shoulder, turn);
+                let wrist = root + self.turn * at[chain.wrist];
+                // Bowed out as far as the flight's path needs
+                // ([`DynoArms::bow`]), smoothly; anything left eased in over
+                // a band about where it starts, so it starts smoothly (from
+                // at once, a hand's step changed 5.7 cm as it came within
+                // its clearance; a hand coming at the face at 2.4 m/s, held
+                // off it exactly, changed its step 8.9 cm).
+                let bowed = arms.bow[side] * (std::f32::consts::PI * s).sin();
+                let short = clear - self.wall.place(wrist).1 - bowed;
+                let short = if short.abs() < FLYING_EASE { (short + FLYING_EASE).powi(2) / (4.0 * FLYING_EASE) } else { short.max(0.0) };
+                let by = bowed + short;
+                if by <= 0.0 {
+                    continue;
+                }
+                // Out of the nearer face (out level, from a leaning face's
+                // underside, a hand cleared only cos 52° of what it lacked
+                // and stayed 9 mm in), the elbow bent the way it is bent
+                // (turned out about the shoulder instead, an arm reaching up
+                // into the face hardly moved its hand off it).
+                let target = back * (wrist + self.wall.normal_nearest(wrist) * by - root);
+                let (shoulder, elbow) = (at[chain.shoulder], at[chain.elbow]);
+                let line = (target - shoulder).normalize_or_zero();
+                let bend = (elbow - shoulder) - line * (elbow - shoulder).dot(line);
+                if bend.length() > 1.0e-3 {
+                    solve_arm_toward_from(&mut pose, &at, *chain, target, bend.normalize(), rig);
                 }
             }
         }
@@ -1709,13 +2007,10 @@ mod tests {
         hand_off: f32,
         foot_off: f32,
         /// The deepest a joint goes into the wall; the fastest about the
-        /// hips; the most a joint's step changes in a frame.
+        /// hips; the most a joint's step changes in a frame (a dyno's too).
         into: f32,
         fastest: f32,
         kink: f32,
-        /// The most a joint's step changes in a frame outside a dyno (whose
-        /// release changes an elbow's step 7 cm on an upright wall).
-        kink_climbing: f32,
         /// The fewest limbs held outside a dyno's flight; the longest a
         /// dyno's flight holds none, seconds.
         fewest: usize,
@@ -1780,9 +2075,6 @@ mod tests {
             m.fastest = m.fastest.max(Bone::ALL.iter().map(|&bone| ((now[bone] - now[Bone::Hips]) - (b[bone] - b[Bone::Hips])).length() / DT).fold(0.0, f32::max));
             let kink = Bone::ALL.iter().map(|&bone| (now[bone] - 2.0 * b[bone] + a[bone]).length()).fold(0.0, f32::max);
             m.kink = m.kink.max(kink);
-            if !matches!(climb.doing, Doing::Dyno { .. }) {
-                m.kink_climbing = m.kink_climbing.max(kink);
-            }
             let places = climb.held_places();
             if !matches!(climb.doing, Doing::GettingOn { .. }) {
                 // A hand moving, the other three held.
@@ -1857,7 +2149,9 @@ mod tests {
 
     /// A gap of 1.1 m in the hand holds above, footholds going on through
     /// it: jumped (a dyno), caught with both hands, the feet finding holds
-    /// after; never no hand held for under 0.15 s nor over 0.4.
+    /// after; never no hand held for under 0.15 s nor over 0.4; no step
+    /// changing more than 4.5 cm through it (holding the hands and feet to
+    /// their holds to the release, 8.5 cm).
     #[test]
     fn a_hold_out_of_reach_is_jumped_for() {
         let (stood, rig) = real_stood();
@@ -1884,6 +2178,47 @@ mod tests {
         assert!(climb.hips.y > top + 0.3, "stuck under the gap, the hips at {:.2}", climb.hips.y);
         assert!((0.15..0.4).contains(&m.flight), "no hand held for {:.2} s", m.flight);
         assert!(m.hand_off < 1.0e-3 && m.into < 0.005 && m.fastest < 14.0, "{m:?}");
+        assert!(m.kink < 0.045, "a joint's step changed {:.4} m in a frame", m.kink);
+    }
+
+    /// Got on from a walker standing with a hand resting on a wall beside
+    /// it: the first frame is the pose it stood in, and the hand goes from
+    /// where it rested to its hold, never back down to the standing pose's
+    /// on the way. Eased out of the standing pose instead, it jumped there
+    /// in the first frame (52 cm).
+    #[test]
+    fn getting_on_starts_from_the_pose_it_stood_in() {
+        let (stood, rig) = real_stood();
+        let wall = HoldWall::grid(Vec3::new(0.0, 0.0, -0.6), Vec3::Z, 9, 18, 0.4, 0.3, 0.35);
+        let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
+        climb.set_grips(crate::character::anim::hand::puppet_grips());
+        let turn = Quat::from_rotation_y(climb.facing());
+        let mut start = stood;
+        let beside = crate::character::anim::parkour::wallhand::Beside { side: 0, distance: 0.4, out: -(turn * rig.left()) };
+        crate::character::anim::parkour::wallhand::rest_hand(&mut start, Vec3::ZERO, climb.facing(), &rig, &beside, 1.0);
+        climb.set_start(&start);
+        let at = forward_kinematics_on(&start, &rig);
+        let was = BoneSet::from_fn(|bone| turn * at[bone]);
+        let hand = Bone::LeftHand;
+        let standing = turn * forward_kinematics_on(&stood, &rig)[hand];
+        let mut frames = vec![was];
+        while matches!(climb.doing, Doing::GettingOn { .. }) {
+            climb.advance(None, DT);
+            frames.push(world(&climb));
+        }
+        let first = Bone::ALL.iter().map(|&bone| (frames[1][bone] - was[bone]).length()).fold(0.0, f32::max);
+        // The most a joint's step changes in a frame (standing still before).
+        frames.insert(0, was);
+        let kink = frames.windows(3).map(|w| Bone::ALL.iter().map(|&bone| (w[2][bone] - 2.0 * w[1][bone] + w[0][bone]).length()).fold(0.0, f32::max)).fold(0.0, f32::max);
+        // The hand's nearest to where the standing pose has it, against where
+        // it started from.
+        let nearest = frames.iter().map(|f| (f[hand] - standing).length()).fold(f32::MAX, f32::min);
+        let rested = (was[hand] - standing).length();
+        eprintln!("first frame {first:.4}, a step changing {kink:.4} at most, hand nearest the standing pose's {nearest:.3} (rested {rested:.3} off it)");
+        assert!(rested > 0.3, "the hand rested only {rested:.3} from where standing has it");
+        assert!(first < 0.01, "a joint moved {first:.3} m in the first frame");
+        assert!(nearest > 0.5 * rested, "the hand went back to within {nearest:.3} of the standing pose's");
+        assert!(kink < 0.02, "a joint's step changed {kink:.3} m in a frame");
     }
 
     /// Climbed down to the floor it steps off and lands; up to the top's lip
@@ -1926,6 +2261,18 @@ mod tests {
     }
 
     fn overhang_at(gap: f32, lean: f32) -> HoldWall {
+        upright_then(gap).leaning(2.3, lean)
+    }
+
+    /// The same wall bent out at 2.3 m `lean` from upright, up to a flat
+    /// roof, its holds as far apart up the face as they were.
+    fn bent_at(gap: f32, lean: f32) -> HoldWall {
+        upright_then(gap).bent(2.3, lean)
+    }
+
+    /// An upright wall of holds 0.3 m apart but for a gap of `gap` 0.15 m
+    /// under 2.3 m, its top a ledge.
+    fn upright_then(gap: f32) -> HoldWall {
         let face = Vec3::new(0.0, 0.0, -0.6);
         let mut wall = HoldWall::grid(face, Vec3::Z, 9, 7, 0.4, 0.3, 0.35);
         let top_row = wall.holds.iter().map(|h| h.at.y).fold(f32::MIN, f32::max);
@@ -1933,16 +2280,17 @@ mod tests {
         wall.holds.extend(upper.holds);
         let top = top_row + gap + 6.0 * 0.3;
         wall.top = Some(Ledge::wall(face, Vec3::Z, 4.0, top, 1.0));
-        wall.leaning(2.3, lean)
+        wall
     }
 
     /// Overhangs leant 26° to 52° over gaps of 0.3-0.6 m in their holds at
     /// the crease: each climbed to the top (by dynos and swings where it
     /// must), held limbs on their holds, nothing into either face, no step
-    /// changing more than 4.5 cm outside a dyno's flight, a held wrist bent
-    /// no more than 0.75 rad sideways. Before, a 0.6 m gap ended hanging
-    /// with no foothold, 40° pulled a held foot 15 cm off, and 52° put the
-    /// head 3.7 cm into the face.
+    /// changing more than 4.5 cm (a dyno's too), a held wrist bent no more
+    /// than 0.6 rad sideways (the upright grid's bound). Before, a 0.6 m gap
+    /// ended hanging with no foothold, 40° pulled a held foot 15 cm off, 52°
+    /// put the head 3.7 cm into the face, a dyno changed a step 10 cm, and a
+    /// wrist bent 0.70 rad.
     #[test]
     fn steep_overhangs_and_wide_gaps_are_climbed() {
         let (stood, rig) = real_stood();
@@ -1959,8 +2307,45 @@ mod tests {
             if !climb.topped_out() {
                 faults.push(format!("{name}: stuck, the hips at {:.2}", climb.hips.y));
             }
-            if m.hand_off > 1.0e-3 || m.foot_off > 0.01 || m.into > 0.005 || m.kink_climbing > 0.045 || m.bend > 0.75 {
+            if m.hand_off > 1.0e-3 || m.foot_off > 0.01 || m.into > 0.005 || m.kink > 0.045 || m.bend > 0.6 {
                 faults.push(format!("{name}: {m:?}"));
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
+
+    /// Steeper still, the wall bent over at 2.3 m (its holds as far apart up
+    /// the face as below), 65°, 78° and a flat roof, over a gap of 0.3 m at
+    /// the crease: each climbed out to its top's lip and taken into a hang,
+    /// held as the overhangs are (held limbs on their holds, nothing into
+    /// either face, no step changing more than 4.5 cm, a held wrist bent no
+    /// more than 0.6 rad); under the roof, the body flat under it with the
+    /// feet on its holds. Before, measured by height rather than up the
+    /// face, a roof's holds were all as high and none was progress up it.
+    /// (Over a 0.6 m gap the roof is climbed too, but near its lip a held
+    /// elbow goes 1.7 cm into it and a moving one flips: see the note.)
+    #[test]
+    fn steeper_overhangs_and_roofs_are_climbed() {
+        let (stood, rig) = real_stood();
+        let mut faults = Vec::new();
+        let roof = std::f32::consts::FRAC_PI_2;
+        for (gap, lean) in [(0.3f32, 65.0f32.to_radians()), (0.3, 78.0f32.to_radians()), (0.3, roof)] {
+            let name = format!("{gap} m gap, {:.0}°", lean.to_degrees());
+            let wall = bent_at(gap, lean);
+            let mut climb = FreeClimb::get_on(&wall, Vec3::ZERO, &stood, &rig).expect("got on");
+            climb.set_grips(crate::character::anim::hand::puppet_grips());
+            let mut m = Climbed { fewest: 4, ..Default::default() };
+            let mut frames = vec![world(&climb), world(&climb)];
+            run(&mut climb, Some(Vec2::Y), 40.0, &mut m, &mut frames);
+            eprintln!("{name}: topped out {}, {m:?}", climb.topped_out());
+            if !climb.topped_out() {
+                faults.push(format!("{name}: stuck, the hips at {:.2}", climb.hips));
+            }
+            if m.hand_off > 1.0e-3 || m.foot_off > 0.01 || m.into > 0.005 || m.kink > 0.045 || m.bend > 0.6 {
+                faults.push(format!("{name}: {m:?}"));
+            }
+            if lean == roof && (m.tilt - roof).abs() > 0.01 {
+                faults.push(format!("{name}: the body tilted {:.3} at most, not flat under the roof", m.tilt));
             }
         }
         assert!(faults.is_empty(), "{faults:#?}");
@@ -2040,7 +2425,7 @@ mod tests {
         assert!(climb.topped_out(), "stuck, the hips at {:.2}", climb.hips.y);
         assert!(m.hand_off < 1.0e-3 && m.foot_off < 0.01, "a held hand {:.4}, a foot {:.4} off its hold", m.hand_off, m.foot_off);
         assert!(m.into < 0.005, "a joint {:.4} m into the wall", m.into);
-        assert!(m.fastest < 14.0 && m.kink_climbing < 0.06, "{m:?}");
+        assert!(m.fastest < 14.0 && m.kink < 0.045, "{m:?}");
     }
 
     /// A rough wall grows the same holds from the same seed, and others

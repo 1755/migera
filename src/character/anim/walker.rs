@@ -2804,6 +2804,9 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
                         if let Some(hands) = hands.as_ref() {
                             climb.set_grips(hands.grips);
                         }
+                        // Eased out of the pose it stands in (a hand on the
+                        // wall beside it, say), not the standing pose.
+                        climb.set_start(&target.pose);
                         state.free_climbing = Some(climb);
                     }
                     None => walker.free_climb = None,

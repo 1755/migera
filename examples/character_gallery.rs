@@ -1722,11 +1722,13 @@ impl HangSchedule {
                 // LOWER rows upright, a gap of GAP, UPPER rows on above, the
                 // face leaning out LEAN degrees from 0.15 m over the upright
                 // rows, its top a lip: `--overhang X,Z,HEADING,COLUMNS,
-                // LOWER,GAP,UPPER,LEAN`.
+                // LOWER,GAP,UPPER,LEAN[,FOLD]`; FOLD 1, the wall bent over
+                // instead (`HoldWall::bent`, up to a flat roof at 90).
                 "--overhang" => {
                     use migera::character::anim::parkour::holds::HoldWall;
                     let numbers: Vec<f32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
-                    if let [x, z, heading, columns, lower, gap, upper, lean] = numbers[..] {
+                    if let [x, z, heading, columns, lower, gap, upper, lean, ref fold @ ..] = numbers[..] {
+                        let fold = fold.first().is_some_and(|f| *f > 0.5);
                         let face = Vec3::new(x, 0.0, z);
                         let out = approach::direction_of(heading.to_radians());
                         let mut wall = HoldWall::grid(face, out, columns as usize, lower as usize, 0.4, 0.3, 0.35);
@@ -1735,11 +1737,14 @@ impl HangSchedule {
                         let width = columns * 0.4 + 0.4;
                         let crease = top_row + 0.15;
                         wall.top = Some(Ledge::wall(face, out, width, top_row + gap + upper * 0.3, 1.0));
-                        let wall = wall.leaning(crease, lean.to_radians());
+                        let wall = if fold { wall.bent(crease, lean.to_radians()) } else { wall.leaning(crease, lean.to_radians()) };
                         // The upright part a block to the crease; the top a
-                        // slab (the leaning face is drawn by `place_holds`).
+                        // slab (the leaning face is drawn by `place_holds`;
+                        // folded steeper than 60°, a board out to its lip,
+                        // nothing under that).
                         schedule.others.push(Ledge::wall(face, out, width, crease, 1.0));
-                        schedule.others.extend(wall.top.map(|top| Ledge { wall_below: 0.3, ..top }));
+                        let below = if fold && lean > 60.0 { 0.0 } else { 0.3 };
+                        schedule.others.extend(wall.top.map(|top| Ledge { wall_below: below, ..top }));
                         schedule.holds = Some(wall);
                     }
                 }
@@ -2115,12 +2120,14 @@ fn place_holds(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let colour = materials.add(StandardMaterial { base_color: Color::srgb(0.85, 0.45, 0.2), perceptual_roughness: 0.7, ..default() });
     let mesh = meshes.add(Cuboid::new(0.12, 0.035, 0.05));
     let turn = Quat::from_rotation_arc(Vec3::Z, wall.out);
-    // An overhang's leaning face: a slab 0.3 m thick behind it, from the
-    // crease up to the top's underside.
+    // An overhang's leaning face: a slab behind it, from the crease up to
+    // the top's underside (0.3 m thick; folded steeper than 60°, a board
+    // 5 cm thick out to its lip, the top's own block left out).
     if let (Some((from, lean)), Some(top)) = (wall.lean, wall.top) {
         let stone = materials.add(StandardMaterial { base_color: Color::srgb(0.62, 0.58, 0.52), perceptual_roughness: 0.9, ..default() });
-        let (width, thick) = ((top.b - top.a).length(), 0.3);
-        let length = (top.height() - 0.3 - from) / lean.cos();
+        let board = lean > 60f32.to_radians();
+        let (width, thick) = ((top.b - top.a).length(), if board { 0.05 } else { 0.3 });
+        let length = wall.rise(top.a) - from - if board { 0.0 } else { 0.3 / lean.cos() };
         let up = Vec3::Y * lean.cos() + wall.out * lean.sin();
         let normal = wall.out * lean.cos() - Vec3::Y * lean.sin();
         let middle = wall.face.with_y(from) + up * (0.5 * length) - normal * (0.5 * thick);

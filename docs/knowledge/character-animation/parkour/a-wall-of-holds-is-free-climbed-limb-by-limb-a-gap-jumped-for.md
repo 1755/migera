@@ -15,7 +15,8 @@ code:
   - examples/anim_bench.rs
   - examples/character_gallery.rs
 sources:
-  - "tests parkour::holds::tests::{a_wall_of_holds_is_climbed_limb_by_limb_every_way, a_hold_out_of_reach_is_jumped_for, it_steps_off_at_the_bottom_and_tops_out_into_a_hang}"
+  - "tests parkour::holds::tests::{a_wall_of_holds_is_climbed_limb_by_limb_every_way, a_hold_out_of_reach_is_jumped_for, it_steps_off_at_the_bottom_and_tops_out_into_a_hang, getting_on_starts_from_the_pose_it_stood_in}"
+  - "sabotage: the carry off, the dyno test's step bound failed (10.7 cm); getting on from the standing pose, the get-on test failed (52 cm in the first frame)"
   - "live: character_gallery --step-seconds 0.0333333 --holds-wall 0,-1.2,180,7,10,3.6 --free-climb 1,0,1, Xvfb, gizmos on/mesh off Left and Back, mesh on; BRP capture of pelvis, hands and feet"
   - "anim_bench --gait free-climb --characters 100"
 aliases:
@@ -64,24 +65,37 @@ Each held limb is posed exactly:
   under the hips;
 - a knee near the face is turned out, smoothly by its clearance;
 - a hand hooks over its edge, the arm kept softly within 0.95-0.99 of its
-  length;
+  length; the arms are solved three times, the fingers turned each time
+  toward the forearm the last solve left (`HOOK_PASSES`);
 - the elbow is held out and back from the wall, pulled down as its hand
   comes down to its shoulder (a lock-off).
 
 **A dyno** (a climb hop) is used when no hand hold is in a move's reach
-but one is up to 1.3 m over the higher hand and within 0.5 m aside. It
+but one is up to 1.3 m over the higher hand and within 0.5 m aside: the
+nearest, up and aside, from which the feet can get back onto a hold. It
 runs:
 1. a 0.25 s sink, no lower than the hands still reach;
-2. a 0.2 s drive;
-3. a ballistic flight to the catch at its top, both hands matched 9 cm
-   either side of the hold.
+2. a 0.2 s drive, over whose last 0.15 s the hands and feet leave their
+   holds carried with the shoulders and the hips (`CARRY`), so they let go
+   going with the body;
+3. a ballistic flight (at least 0.2 s, no faster across than 2.5 m/s) to
+   the catch, at its top if it is above, both hands matched 9 cm either
+   side of the hold.
 
-The feet leave over the first 0.7 of the flight and find holds again
-after. A dyno is driven off the feet only: with them free there is none.
+In the flight the arms' local rotations are slerped from the drive's last
+pose to the catch's, each bowed out from the face by `bow·sin(πs)`, sized
+when the dyno is planned by sampling the unbowed flight
+(`DynoArms::bow`), and bent at the elbow (solved toward its hand moved
+out, the pole its own bend) rather than turned about the shoulder. The
+feet leave from the carry over it and 0.7 of the flight, and find holds
+again after. A dyno is driven off the feet only: with them free there is
+none.
 
 **The ends:**
-- **Getting on** (1 s): from standing 0.4 m out, the hands swept up round
-  the shoulders to the nearest holds over them, the feet lifted to holds.
+- **Getting on** (1 s): from standing 0.4 m out, eased out of the pose it
+  stood in (the walker's, `set_start`), the hands swept up round the
+  shoulders from where they were to the nearest holds over them, the feet
+  lifted to holds.
 - **Stepping off**: at the bottom, asked down, with the lower foot's hold
   0.45 m or less over the floor, it hands over to a fall that lands.
 - **Topping out**: at the top, asked up, with both hands on lip holds, it
@@ -102,13 +116,32 @@ asked (zero holds still).
   hips passes its shoulder as the body rises, and the elbow flipped.
 - **Dyno arms solved to hands flying on a path**: the arm passed through
   straight and an elbow flipped 50 cm in a frame. Instead, the arms' local
-  rotations are slerped from the held pose at release to the held pose at
+  rotations are slerped from the drive's last pose to the held pose at
   the catch.
+- **At a dyno's release, hands and feet held to their holds** (2026-10-10):
+  the body passed them at 3.4 m/s, the arms folding at 15-23 rad/s, and an
+  elbow's step changed 6-10 cm. What failed: carrying those spins on into
+  the flight (overshot by over a radian, flipped 70 cm); holding the arms
+  toward the old holds for part of the flight (16 cm); turning the elbow's
+  pull down smoothly over the drive (6 cm); a longer drive (the release
+  speed is the flight's, so no change). Carrying them off their holds over
+  the drive's end brought the whole dyno to 1.5 cm.
+- **A dyno's hands kept off the face only where they came too near**:
+  off a 52° face's underside the hand came at it at 2.4 m/s and was
+  stopped in a frame or two (5.7-8.9 cm); bowed out over the whole flight
+  instead, 3 cm.
 
 ## Traps
 
 - **Getting on searched from the root**, on the floor, found no holds.
   Search from the hips placed out from the face.
+- **Getting on eased out of the standing pose**, not the walker's: a hand
+  resting on the wall beside the body jumped 52 cm to the standing pose's
+  in the first frame, then rose again.
+- **Two arm passes**: the fingers were still settling on the forearm, and
+  most of a held wrist's sideways bend (0.59 rad on the upright grid, 0.60
+  on a 40° face) was that; with three, 0.20 and 0.21. It costs 0.026 ms a
+  character.
 - **Hanging free 1.0 m under the hands** left the arms straight, and an
   elbow flipped 22 cm in a frame as it bent. Hang 0.9 m under them.
 - **A high foothold folded the knee forward 10 cm into the wall.** The fix
@@ -150,11 +183,18 @@ asked (zero holds still).
 - three limbs were held while a hand moved;
 - no joint went over 0.9 mm into the wall;
 - no joint moved over 2.4 m/s about the hips;
-- no joint's step changed over 1.3 cm in a frame.
+- no joint's step changed over 1.3 cm in a frame;
+- a held wrist bent at most 0.20 rad sideways.
 
-**A 1.1 m gap** with footholds through it was jumped for. No hand was held
-for 0.37 s; the hands stayed within 1 µm when held. The flight is the
-fastest part, 7.3 m/s and a 6 cm kink, neither asserted.
+**A 1.1 m gap** with footholds through it was jumped for (four dynos). No
+hand was held for 0.37 s; the hands stayed within 1 µm when held; no step
+changed over 1.5 cm, the dynos' own included (8.5 cm before the carry).
+
+**Getting on from a hand resting on the wall** beside the body: the first
+frame is the pose it stood in (0.4 mm), the hand never nearer the
+standing pose's than where it rested (0.52 m), no step changing over
+1.1 cm. Live, walking up to a wall it comes off as the body turns to face
+it (the wall hand's own 0.3 s ease), then goes up from there.
 
 **Climbed down**, it stepped off and landed. **Climbed up**, it took a lip
 into a hang with no joint moving over 3 cm in the frame.
@@ -170,9 +210,10 @@ the lip, topped out into the hang and climbed up onto it. Seen Back and
 Left mid-wall: hands on holds, feet on holds below the hips, knees turned
 out clear of the face.
 
-**Cost**: `anim_bench --gait free-climb --characters 100`, 68 µs a
-character at p50. Most is `pose_led` posing a clone per spring lead, as for
-the pole (39 µs), the bar swing (63) and the hang (58).
+**Cost**: `anim_bench --gait free-climb --characters 100`, 136 µs a
+character at p50 (2026-10-10, three arm passes; 68 µs at step 13). Most
+is `pose_led` posing a clone per spring lead, as for the pole (39 µs), the
+bar swing (63) and the hang (58).
 
 ## Revisit when
 

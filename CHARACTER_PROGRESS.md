@@ -41,6 +41,47 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Roofs, smooth dynos, straighter wrists, and getting on from the walker's pose
+
+The limits left by the last entry. Notes: [an overhang is climbed as the
+upright climb turned with its
+face](docs/knowledge/character-animation/parkour/an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md),
+[a wall of holds is free climbed limb by limb, a gap jumped
+for](docs/knowledge/character-animation/parkour/a-wall-of-holds-is-free-climbed-limb-by-limb-a-gap-jumped-for.md).
+
+- **Overhangs past 52°, and roofs.** Every measure the climb takes is up
+  the face from any point (`HoldWall::rise(point)`), out of it along its
+  normal, finite to a quarter turn; `HoldWall::bent` folds a wall over
+  keeping its holds as far apart up it. A moving limb turns from its old
+  hold's face to its new one's, a foot turns with a face only near it, a
+  dyno's flight may fall onto its catch (no faster across than 2.5 m/s),
+  and its target is the nearest the feet can get back on from.
+  - Headless (`steeper_overhangs_and_roofs_are_climbed`): 65°, 78° and a
+    flat roof over a 0.3 m gap top out, the body flat under the roof;
+    nothing into a face, no step over 3.4 cm, wrists at most 0.33 rad.
+  - Live: the roof climbed and topped out, nothing within 1.7 cm of a face
+    until the hang; Left, Back, Right with gizmos, and the mesh.
+  - Not fixed: over a 0.6 m gap the roof tops out but near its lip a held
+    elbow goes 1.7 cm into it and a reaching one flips (14 cm).
+- **A dyno's steps** (10 cm at release and in flight): the hands and feet
+  leave their holds over the drive's last 0.15 s carried with the body; in
+  flight the arms bow off the face by an amount planned from the unbowed
+  flight, bent at the elbow. Every dyno now steps under 3.4 cm (upright
+  1.5 cm, from 8.5); the tests bound them at 4.5 cm.
+- **The wrist bend** (0.70 rad at 52°): mostly the fingers still settling
+  after two arm passes. Three passes: 0.20 rad upright, 0.41 at most on
+  overhangs; on overhangs the fingers also follow up to 2.2 rad off up the
+  face (0.63 at 52° without).
+- **Getting on** eases out of the walker's own pose (`set_start`): from a
+  hand on the wall it jumped 52 cm to the standing pose in the first
+  frame.
+- **Cost** (`anim_bench --characters 100`, p50): free-climb 0.136 ms
+  (0.110), overhang from its first catch 0.187 ms; the third arm pass is
+  0.026 ms of it.
+- Sabotage: the carry off fails the dyno test (10.7 cm); world heights
+  fail the roof test (8-10 cm); getting on from the standing pose fails
+  the get-on test (52 cm).
+
 ### Overhangs to 52°, wide gaps, and hands kept out of walls
 
 The limits left by step 15, and a walk-up fault found by it. Notes: [an
