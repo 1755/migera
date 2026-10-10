@@ -9,6 +9,9 @@ tags:
   - correctness
   - prior-art
 updated: 2026-10-10
+code:
+  - src/camera/collision.rs
+  - src/camera/probe.rs
 sources:
   - "Cinemachine Deoccluder / Decollider / ThirdPersonFollow docs: https://docs.unity3d.com/Packages/com.unity.cinemachine@3.1/manual/CinemachineDeoccluder.html"
   - "Lyra LyraCameraMode_ThirdPerson (PreventCameraPenetration, feelers): https://github.com/LeNidViolet/Lyra/tree/main/Source/LyraGame/Camera"
@@ -50,6 +53,10 @@ to a known failure.
    short chain of candidates (chest → head → above head) and take the first free one.
    Sweep capsule-centre → safe point → shoulder offset → eye, so a shoulder offset that
    points into a wall slides in instead of tunnelling.
+
+   **Stop each slide a skin short of the hit**, and let a sweep that starts in contact
+   ignore it while moving away. Otherwise every later sweep reads a hit at distance 0: see
+   [a sweep from contact reads as a hit at zero](./a-sweep-from-contact-reads-as-a-hit-at-zero.md).
 2. **Probe with a sphere at least as large as the near plane.**
    - The near-plane corners lie at distance
      `r = near · sqrt(1 + tan²(fovY/2)·(1 + aspect²))` from the eye.
@@ -60,11 +67,16 @@ to a known failure.
      - A box cast of the near-plane rectangle is exact.
    - Derive the radius from the live `Projection`, never as a constant, so a FOV change
      can't shrink it.
-3. **Separate penetration from obstruction.**
-   - A sweep whose time of impact is 0 (it starts already overlapping) is a collision:
-     snap in.
-   - Otherwise it is occlusion: pull in only after the line of sight has been blocked for
-     a **minimum occlusion time**. Cinemachine has this; ≈0.1 s works; use 0 in combat.
+3. **Separate collision from occlusion by what moved.**
+   - **Collision: snap in.** The camera's position at its current boom is inside
+     geometry, *or the camera's own move since last frame passed through some*. The second
+     case matters: a fast swing across a wall leaves the eye in free space on the far side,
+     and only the path shows it went through.
+   - **Occlusion: wait.** Something came between a camera in free space and the
+     character. Pull in only after the line of sight has been blocked for a **minimum
+     occlusion time**. Cinemachine has this; ≈0.1 s works; use 0 in combat.
+   - migera's first version classed the swing as occlusion and let the camera sit behind
+     the wall for the grace time.
 
 ## Timing: snap in, hold, ease out
 
@@ -105,6 +117,16 @@ to a known failure.
   character.
 - **Moving platforms and mounts.** Keep the pivot's lag as an *offset from the target*,
   added back each frame. A pivot stored in world space gets left behind by a moving base.
+- **A shoulder against a wall: swap sides.**
+  - With the character beside a wall and the camera turned along it, an over-the-shoulder
+    offset toward the wall plus a boom angled slightly into it leaves the boom no room:
+    0 m in migera's playground. Pulling in cannot fix that.
+  - Ease over to the other shoulder while this side's boom is short and the other gives
+    clearly more. Ease back once this side has room. In migera this triggers below 50% of
+    the boom, needs a quarter boom more on the other side, and returns at 90%.
+  - Judge by the *boom's* room, not by how far the shoulder slid: in that case the
+    shoulder kept 64% of its offset while the boom had nothing.
+  - TLOU and Gears-style shooters swap shoulders near cover [unverified detail].
 
 ## What must not block the camera
 
@@ -133,16 +155,25 @@ to a known failure.
 - **Last-resort fallback.** If the boom stays below a minimum for a while, blend to a
   high, near-overhead view. Gothic switches to 1.5 m at 80° once collision forces the range
   under 0.8 m. Use hysteresis so the camera does not flip at the threshold.
+  - Backed against a wall, the high boom at 70–80° still runs into the wall behind. Try a
+    near-vertical boom too and take whichever reaches further, or the "high view" ends
+    up half a metre above the head.
 
 ## Cost budget
 
 Haigh-Hutchinson gives cameras a budget of roughly 5% of CPU, and recommends amortising
-rays across frames with hysteresis statistics. One sphere sweep plus one feeler per frame
-is far below that. Measure it rather than assume it.
+rays across frames with hysteresis statistics.
+
+Measured in migera on 2026-10-10 with `camera_bench --collision`: 500 static avian boxes,
+the whole pipeline including the boom, shoulder slide, one feeler, the ceiling and the
+overlap tests. It came to about 9 µs per camera alone and 14 µs per camera at 64, against
+0.2 µs without collision. Collision is almost all of the camera's cost, and still far
+inside budget.
 
 ## Related
 
 - [Third-person camera design](./third-person-camera-design.md) — applies: the `resolve_boom` stages implement this note in order.
+- [A sweep from contact reads as a hit at zero](./a-sweep-from-contact-reads-as-a-hit-at-zero.md) — same-trap: why slides stop a skin short.
 - [Gothic's ZenGin camera](./gothic-zengin-camera-modes-and-collision.md) — example: the ray grid and fallback, and the symmetric-timing defect.
 - [Engine camera architectures compared](./engine-camera-architectures-compared.md) — deeper: the Deoccluder and Lyra feeler sources.
 - [Fifty camera mistakes digest](./fifty-camera-mistakes-nesky-digest.md) — deeper: items 5–13 in their original grouping.

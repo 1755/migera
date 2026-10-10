@@ -7,7 +7,7 @@
 //!                                    last moves a target belongs here)
 //!              CameraSet::Target    clocks, target bridges
 //!              CameraSet::Rig       stack → anchor → orbit → rig pose
-//!              CameraSet::Collide   (P2)
+//!              CameraSet::Collide   collision and occlusion (avian, if present)
 //!              CameraSet::Effects   (P5)
 //!              CameraSet::Write     Transform, Projection, CameraView
 //!              TransformSystems::Propagate
@@ -19,10 +19,14 @@
 //! it was a frame ago (`the_camera_follows_a_ragdoll_read_back_in_the_same_frame`).
 
 use super::bridge::bridge_walkers;
+use super::collision::near_plane_radius;
 use super::components::{
-    update_latch, CameraDesiredPose, CameraGoals, CameraModeRequests, CameraRecorder,
-    CameraRigState, CameraTarget, CameraTargetState, CameraView, LatchParams, ThirdPersonCamera,
+    update_latch, CameraDesiredPose, CameraGoals, CameraIgnore, CameraModeRequests,
+    CameraRecorder, CameraResolvedPose, CameraRigState, CameraTarget, CameraTargetState,
+    CameraView, LatchParams, ThirdPersonCamera,
 };
+use super::probe::{AvianProbe, NoProbe};
+use avian3d::prelude::{LayerMask, SpatialQuery, SpatialQueryFilter};
 use super::device::{map_devices, CameraDeviceInput};
 use super::pipeline::{CameraFrame, CameraRig, TargetSample};
 use super::{CameraClock, CameraInput, CameraInputSettings};
@@ -83,7 +87,10 @@ impl Plugin for ThirdPersonCameraPlugin {
             )
             .add_systems(Update, map_devices.in_set(CameraSet::Input))
             .add_systems(PostUpdate, (update_clocks, bridge_walkers).in_set(CameraSet::Target))
+            .register_type::<CameraResolvedPose>()
+            .register_type::<CameraIgnore>()
             .add_systems(PostUpdate, run_rigs.in_set(CameraSet::Rig))
+            .add_systems(PostUpdate, collide_cameras.in_set(CameraSet::Collide))
             .add_systems(PostUpdate, write_cameras.in_set(CameraSet::Write));
     }
 }
@@ -157,8 +164,54 @@ fn run_rigs(
     }
 }
 
-type WriteQuery<'a> = (
+type CollideQuery<'a> = (
+    &'a ThirdPersonCamera,
+    &'a mut CameraRigState,
     &'a CameraDesiredPose,
+    &'a CameraClock,
+    &'a Projection,
+    &'a mut CameraResolvedPose,
+);
+
+/// Collision on the (possibly edited) desired pose. Uses avian's spatial
+/// query when the app has physics, and an empty world otherwise, so fade
+/// and fallback logic run the same either way.
+fn collide_cameras(
+    mut cameras: Query<CollideQuery, With<Camera3d>>,
+    targets: Query<(&Transform, Option<&CameraTarget>)>,
+    spatial: Option<SpatialQuery>,
+    ignored: Query<(), With<CameraIgnore>>,
+) {
+    for (camera, mut state, desired, clock, projection, mut resolved) in &mut cameras {
+        let Some(mut output) = state.output else { continue };
+        output.pose = desired.0;
+        let Ok((transform, target)) = targets.get(camera.target) else { continue };
+        let root = transform.translation;
+        let radius = match projection {
+            Projection::Perspective(p) => near_plane_radius(p.near, output.pose.fov, p.aspect_ratio),
+            _ => 0.0,
+        };
+        let exclude: &[Entity] = target.map_or(&[], |t| t.exclude.as_slice());
+        let ignore = |entity: Entity| ignored.contains(entity) || exclude.contains(&entity);
+        let config = &camera.config;
+        let Some(rig) = state.rig.as_mut() else { continue };
+        let pose = match &spatial {
+            Some(query) => {
+                let probe = AvianProbe {
+                    query,
+                    filter: SpatialQueryFilter::from_mask(LayerMask(config.collision.blockers)),
+                    ignore: &ignore,
+                };
+                rig.resolve(&output, root, &probe, radius, config, clock.real_dt)
+            }
+            None => rig.resolve(&output, root, &NoProbe, radius, config, clock.real_dt),
+        };
+        resolved.0 = pose;
+    }
+}
+
+type WriteQuery<'a> = (
+    &'a CameraResolvedPose,
     &'a CameraRigState,
     &'a CameraInput,
     &'a CameraClock,
@@ -170,9 +223,9 @@ type WriteQuery<'a> = (
 /// The pose onto the camera's `Transform` and `Projection`, and the
 /// published [`CameraView`].
 fn write_cameras(mut cameras: Query<WriteQuery, (With<ThirdPersonCamera>, With<Camera3d>)>) {
-    for (desired, state, input, clock, mut transform, mut projection, mut view) in &mut cameras {
+    for (resolved, state, input, clock, mut transform, mut projection, mut view) in &mut cameras {
         let Some(output) = state.output else { continue };
-        let pose = desired.0;
+        let pose = resolved.0;
         *transform = Transform::from_translation(pose.eye).with_rotation(pose.rotation);
         if let Projection::Perspective(perspective) = projection.as_mut() {
             perspective.fov = pose.fov;
@@ -182,6 +235,10 @@ fn write_cameras(mut cameras: Query<WriteQuery, (With<ThirdPersonCamera>, With<C
         view.fov = pose.fov;
         view.pivot = pose.pivot;
         view.pitch = output.pitch;
+        view.distance = pose.distance;
+        view.desired_distance = pose.desired_distance;
+        view.target_fade = pose.target_fade;
+        view.fallback = pose.fallback;
         update_latch(
             &mut view,
             output.yaw,
@@ -301,6 +358,107 @@ mod tests {
         assert!((va.view_yaw + 0.4).abs() < 1.0e-5, "camera A turned {}", va.view_yaw);
         assert_eq!(vb.view_yaw, 0.0, "camera B must not see A's input");
         assert!(vb.pivot.x > 4.0, "and follows its own target");
+    }
+
+    /// A headless avian world (avian's own harness: asset and mesh plugins
+    /// are needed even without a renderer).
+    fn physics_app() -> App {
+        use avian3d::prelude::PhysicsPlugins;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            PhysicsPlugins::default(),
+            TransformPlugin,
+            ThirdPersonCameraPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)));
+        app.finish();
+        app
+    }
+
+    fn static_box(app: &mut App, at: Vec3, size: Vec3) -> Entity {
+        use avian3d::prelude::{Collider, RigidBody};
+        app.world_mut()
+            .spawn((RigidBody::Static, Collider::cuboid(size.x, size.y, size.z), Transform::from_translation(at)))
+            .id()
+    }
+
+    /// Whether a sphere at `point` overlaps any collider, asked of avian
+    /// directly (not through the camera's own probe).
+    fn overlaps_anything(app: &mut App, point: Vec3, radius: f32) -> bool {
+        use avian3d::prelude::{Collider, SpatialQuery, SpatialQueryFilter};
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut()
+            .run_system_once(move |query: SpatialQuery| {
+                !query
+                    .shape_intersections(&Collider::sphere(radius), point, Quat::IDENTITY, &SpatialQueryFilter::default())
+                    .is_empty()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_full_turn_against_an_avian_wall_never_puts_the_eye_inside_it() {
+        let mut app = physics_app();
+        // A wall 1.5 m behind the character, across the camera's start.
+        static_box(&mut app, Vec3::new(0.0, 1.5, 1.65), Vec3::new(10.0, 3.0, 0.3));
+        for _ in 0..3 {
+            app.update();
+        }
+        let target = app.world_mut().spawn(Transform::default()).id();
+        let cam = camera(&mut app, target);
+        let (mut shortest, mut longest) = (f32::INFINITY, 0.0f32);
+        for _ in 0..240 {
+            app.world_mut().get_mut::<CameraInput>(cam).unwrap().look_delta = Vec2::new(0.04, 0.0);
+            app.update();
+            let view = *app.world().get::<CameraView>(cam).unwrap();
+            assert!(!overlaps_anything(&mut app, view.eye, 0.1), "the eye is inside the wall: {view:?}");
+            shortest = shortest.min(view.distance);
+            longest = longest.max(view.distance);
+        }
+        assert!(shortest < 1.5, "facing the wall must pull the boom in, shortest {shortest}");
+        assert!(longest > 3.0, "facing away it must ease back out, longest {longest}");
+    }
+
+    #[test]
+    fn transparent_ignored_ragdoll_and_own_colliders_never_shorten_the_boom() {
+        use crate::physics_avian::layers::{CAMERA_TRANSPARENT, RAGDOLL_LAYER_POOL};
+        use avian3d::prelude::{CollisionLayers, LayerMask};
+        let mut app = physics_app();
+        let behind = |z: f32| Vec3::new(0.0, 1.8, z);
+        let size = Vec3::new(3.0, 3.0, 0.2);
+        let foliage = static_box(&mut app, behind(1.2), size);
+        app.world_mut().entity_mut(foliage).insert(CollisionLayers::new(CAMERA_TRANSPARENT, LayerMask::ALL));
+        let ignored = static_box(&mut app, behind(1.8), size);
+        app.world_mut().entity_mut(ignored).insert(CameraIgnore);
+        let ragdoll = static_box(&mut app, behind(2.4), size);
+        app.world_mut().entity_mut(ragdoll).insert(CollisionLayers::new(LayerMask(RAGDOLL_LAYER_POOL.0 & (1 << 16)), LayerMask::ALL));
+        let own = static_box(&mut app, behind(0.6), size);
+        for _ in 0..3 {
+            app.update();
+        }
+        let target = app.world_mut().spawn((Transform::default(), CameraTarget { exclude: vec![own], ..default() })).id();
+        let cam = camera(&mut app, target);
+        for _ in 0..30 {
+            app.update();
+        }
+        let view = *app.world().get::<CameraView>(cam).unwrap();
+        assert!(
+            (view.distance - view.desired_distance).abs() < 1.0e-3,
+            "none of these may shorten the boom: {} of {}",
+            view.distance,
+            view.desired_distance,
+        );
+        // The control: the same box with no exemption does.
+        app.world_mut().entity_mut(own).despawn();
+        static_box(&mut app, behind(0.6), size);
+        for _ in 0..30 {
+            app.update();
+        }
+        let view = *app.world().get::<CameraView>(cam).unwrap();
+        assert!(view.distance < 1.0, "an ordinary box must block, distance {}", view.distance);
     }
 
     #[test]

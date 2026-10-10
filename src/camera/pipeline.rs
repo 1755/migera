@@ -8,7 +8,9 @@
 
 use super::anchor::{AnchorInput, AnchorParams, PivotState};
 use super::clock::CameraClock;
+use super::collision::{CollisionInput, CollisionParams, CollisionState, ResolvedPose};
 use super::input::{CameraInput, CameraInputSettings};
+use super::probe::CameraProbe;
 use super::orbit::{OrbitContext, OrbitGoal, OrbitParams, OrbitState};
 use super::rig::{desired_pose, yaw_of, DesiredPose, ModeParams};
 use super::stack::{CameraStack, ModeId, ModeRequest};
@@ -62,6 +64,8 @@ pub struct CameraConfig {
     pub orbit: OrbitParams,
     /// The pivot's offset from the target's root, world space: eye height.
     pub pivot_offset: Vec3,
+    #[serde(default)]
+    pub collision: CollisionParams,
 }
 
 impl Default for CameraConfig {
@@ -75,6 +79,7 @@ impl Default for CameraConfig {
             anchor: AnchorParams::default(),
             orbit: OrbitParams::default(),
             pivot_offset: Vec3::new(0.0, 1.6, 0.0),
+            collision: CollisionParams::default(),
         }
     }
 }
@@ -105,6 +110,7 @@ pub struct CameraRig {
     pub pivot: PivotState,
     pub orbit: OrbitState,
     pub stack: CameraStack,
+    pub collision: CollisionState,
     /// Target position last frame, for its velocity.
     last_target: Option<Vec3>,
 }
@@ -117,8 +123,43 @@ impl CameraRig {
             pivot: PivotState::default(),
             orbit: OrbitState::new(yaw, pitch),
             stack: CameraStack::new(config.base_mode.clone(), base),
+            collision: CollisionState::default(),
             last_target: None,
         }
+    }
+
+    /// Collision on this frame's desired pose (`step`'s output). Separate
+    /// from `step` so the ECS can run it in its own stage, after systems
+    /// that edit the desired pose.
+    pub fn resolve(
+        &mut self,
+        output: &CameraOutput,
+        target_root: Vec3,
+        probe: &dyn CameraProbe,
+        probe_radius: f32,
+        config: &CameraConfig,
+        dt: f32,
+    ) -> ResolvedPose {
+        self.collision.resolve(
+            &CollisionInput { desired: output.pose, target_root, probe_radius, cut: output.cut, dt },
+            &config.collision,
+            probe,
+        )
+    }
+
+    /// `step` then `resolve`: one whole frame against `probe`.
+    pub fn step_resolved(
+        &mut self,
+        frame: &CameraFrame,
+        settings: &CameraInputSettings,
+        config: &CameraConfig,
+        probe: &dyn CameraProbe,
+        probe_radius: f32,
+    ) -> (CameraOutput, ResolvedPose) {
+        let output = self.step(frame, settings, config);
+        let resolved =
+            self.resolve(&output, frame.target.position, probe, probe_radius, config, frame.clock.real_dt);
+        (output, resolved)
     }
 
     pub fn step(
@@ -163,6 +204,7 @@ impl CameraRig {
             speed,
             facing: target.facing_yaw,
             goals: &frame.goals,
+            pitch_cap: self.collision.pitch_cap,
         };
 
         let orbit_shape = self.stack.orbit_shape();

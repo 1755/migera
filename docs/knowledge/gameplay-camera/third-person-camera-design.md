@@ -74,7 +74,9 @@ Each stage below owns its outputs; no later stage writes them.
    - Mouse delta is integrated without `dt`. Stick rate goes through deadzone → S-curve →
      acceleration, then is integrated.
    - Soft pitch limits ease in, then a hard clamp.
-   - Recentre behind movement after a delay, only while moving.
+   - Recentre behind movement after a delay, only while moving *away* from the camera.
+     Strafing would otherwise turn "sideways" with the camera and spiral the character;
+     moving toward the camera would flip the view.
    - Goal arbitration (lock-on, dialog, assist, recentre): one owner per degree of freedom,
      player offset decays under a goal.
 4. **Rig.** Evaluates the stack's blended parameters at the current pitch (distance,
@@ -174,22 +176,28 @@ read-back first, so the test still passed.
 `resolve_boom` implements
 [the collision techniques note](./camera-collision-and-occlusion-techniques.md):
 
-0. **Find a free start.** Sweep capsule-centre → safe pivot. If the safe pivot is
-   embedded, walk `safe_offsets` (chest → head → above head), or fall back.
-1. **Slide the shoulder.** Sweep safe pivot → shoulder offset.
-2. **Clear the ground.** Lift the eye over hills.
-3. **Main sweep, pivot → eye**, using a sphere at least as large as the near-plane
+0. **Find a free start.** Use the pivot, or if it is embedded, the first free point of
+   `safe_heights` above the target's root.
+1. **Slide the shoulder**, a skin short of any hit.
+   - Swap to the other shoulder while this side's boom has under half its length and the
+     other side gives clearly more; swap back at 90%.
+2. **Main sweep, shoulder → eye**, using a sphere at least as large as the near-plane
    half-diagonal (derived from `Projection`).
-   - A time of impact of 0 means penetration: snap in.
+   - Snap in when the eye would be inside geometry, or its own move crossed some.
    - Otherwise it is occlusion: pull in after `min_occlusion_time`.
-4. **Ease out.** Hold, then ease out on a half-life.
-5. **Feelers.** Amortised, round-robin, including a velocity whisker. They act as soft
-   caps only; yaw swing stays off by default, because intent wins.
-6. **Ceiling.** A probe above the eye sets a soft pitch floor.
-7. **Avatar fade.** `target_fade` is derived from the actual distance.
-8. **Top-down fallback.** Hysteretic.
+3. **Ease out.** Hold, then ease out on a half-life.
+4. **Feelers.** Lyra's table, one re-traced per frame. They act as soft caps; yaw swing
+   is off, because intent wins.
+5. **Ceiling.** An up sweep gives a pitch cap; the orbit eases under it next frame.
+6. **Avatar fade.** `target_fade` comes from the eye-to-pivot distance.
+7. **Fallback.** A hysteretic high view, at the configured pitch or near-vertical,
+   whichever reaches further.
 
-**Per-mode policy:** `OccluderPolicy { PullIn, Fade, PullInThenFade }`.
+Not built yet:
+- hill lift (rise over terrain instead of shortening);
+- velocity whiskers;
+- per-mode `OccluderPolicy { PullIn, Fade, PullInThenFade }`, which waits for a fade
+  renderer.
 
 **Probes.** Collision goes through a `CameraProbe` trait:
 - `SdfProbe` for unit tests, built from `src/sdf` shapes. A sphere cast against an SDF is
@@ -276,8 +284,9 @@ the research notes.
 
 What is built, phase by phase, with test gates and measurements, is in
 `CAMERA_PROGRESS.md`.
-- **Built (P0, P1):** the pipeline, the ECS plugin, input and `examples/camera_playground.rs`.
-- **Not built:** collision, profiles, lock-on, effects and library debug tools.
+- **Built (P0–P2):** the pipeline, the ECS plugin, input, collision and occlusion, and
+  `examples/camera_playground.rs`.
+- **Not built:** profiles, lock-on, effects and library debug tools.
 
 ## Related
 

@@ -1,9 +1,9 @@
 //! The third-person camera with a walking character you control.
 //!
 //! A walker on a flat field among walls, pillars, a roofed corridor, a low
-//! tunnel and crates, followed by `ThirdPersonCameraPlugin`. The geometry
-//! has static colliders already, for the camera collision of the next phase;
-//! the character walks on flat ground and does not collide with it yet.
+//! tunnel and crates, followed by `ThirdPersonCameraPlugin`. The camera
+//! collides with all of it; the character slides along it
+//! (`keep_out_of_walls`, a stand-in for a character controller).
 //!
 //! Controls (click the window to grab the mouse, Esc to release):
 //! - mouse or right stick: look; scroll or D-pad up/down: zoom;
@@ -16,8 +16,8 @@
 //! Run: `cargo run --release --example camera_playground`
 //!
 //! Flags:
-//! - `--script orbit|walk|tour`: scripted input instead of devices, for
-//!   reproducible shots;
+//! - `--script orbit|walk|tour|wall|along|corridor`: scripted input instead of
+//!   devices, for reproducible shots;
 //! - `--shot PATH --at-frame N`: a screenshot, then exit;
 //! - `--step-seconds S`: a fixed step per frame (offscreen runs);
 //! - `--debug-view`: a top-down inset with the rig drawn (pivot, shoulder,
@@ -47,7 +47,9 @@ use migera::camera::{
 };
 use migera::character::anim::asset::AnimAssetPlugin;
 use migera::character::anim::jump::JumpAsk;
-use migera::character::anim::{spawn_gltf_humanoid, AnimPlugin, HumanoidPlugin, Steer, Walker, WalkerPlugin, WalkerSet};
+use migera::character::anim::{
+    spawn_gltf_humanoid, AnimPlugin, AnimSet, HumanoidPlugin, Steer, Walker, WalkerPlugin, WalkerSet, WalkerState,
+};
 
 #[derive(Resource, Clone, Default)]
 struct Config {
@@ -109,6 +111,7 @@ fn main() {
     .init_gizmo_group::<RigGizmos>()
     .add_systems(Startup, (spawn_world, spawn_player_and_camera, rig_gizmos_on_their_layer))
     .add_systems(Update, (grab_cursor, read_controls, run_script, apply_controls).chain().before(WalkerSet::Drive))
+    .add_systems(Update, keep_out_of_walls.after(WalkerSet::Ride).before(AnimSet::Ik))
     .add_systems(Update, (draw_rig, update_debug_view, update_hud, save_recording, auto_shot))
     .run();
 }
@@ -246,7 +249,7 @@ fn spawn_world(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
 fn spawn_player_and_camera(mut commands: Commands, asset_server: Res<AssetServer>, config: Res<Config>) {
     // `puppet_base.gltf` faces +Z; this crate's forward is −Z.
     let player = spawn_gltf_humanoid(&mut commands, &asset_server, "models/puppet_base.gltf", PI, Transform::from_xyz(0.0, 0.0, 4.0));
-    commands.entity(player).insert((Player, Walker { speed: 0.0, ..default() }, CameraTarget::default()));
+    commands.entity(player).insert((Player, Walker { speed: 0.0, ..default() }, CameraTarget::default(), LastRoot::default()));
 
     let camera = commands
         .spawn((Camera3d::default(), ThirdPersonCamera::follow(player), Transform::from_xyz(0.0, 2.5, 8.0), PlayerCamera))
@@ -346,7 +349,33 @@ fn run_script(time: Res<Time>, config: Res<Config>, mut controls: ResMut<Control
             (4.0..6.0).contains(&t),
             (7.0..10.0).contains(&t),
         ),
-        other => panic!("unknown script {other}: orbit, walk or tour"),
+        // Walk west up to the long wall, then swing the camera round until
+        // it would sit in the wall (about 90°) and stop: the boom must pull
+        // in or go high, the wall never fill the view.
+        "wall" => (
+            if (0.5..5.0).contains(&t) { Vec2::NEG_X } else { Vec2::ZERO },
+            if (5.5..7.1).contains(&t) { Vec2::new(0.6, 0.0) } else { Vec2::ZERO },
+            false,
+            false,
+        ),
+        // The same, swinging on until the boom runs along the wall (about
+        // 165°) and stopping: the camera should be over the open shoulder
+        // with room for its boom.
+        "along" => (
+            if (0.5..5.0).contains(&t) { Vec2::NEG_X } else { Vec2::ZERO },
+            if (5.5..8.5).contains(&t) { Vec2::new(0.6, 0.0) } else { Vec2::ZERO },
+            false,
+            false,
+        ),
+        // Run into the roofed corridor and look down: the pitch must stay
+        // under the roof instead of the boom crushing in.
+        "corridor" => (
+            if (0.5..7.5).contains(&t) { Vec2::Y } else { Vec2::ZERO },
+            if t > 8.0 { Vec2::new(0.0, -0.8) } else { Vec2::ZERO },
+            (0.5..7.5).contains(&t),
+            false,
+        ),
+        other => panic!("unknown script {other}: orbit, walk, tour, wall, along or corridor"),
     };
     controls.movement = movement;
     controls.run = run;
@@ -360,11 +389,11 @@ fn run_script(time: Res<Time>, config: Res<Config>, mut controls: ResMut<Control
 /// Camera-relative movement onto the walker, and the camera's own asks.
 fn apply_controls(
     mut controls: ResMut<Controls>,
-    mut players: Query<(&mut Walker, &mut Transform), With<Player>>,
+    mut players: Query<(&mut Walker, &mut WalkerState, &mut LastRoot), With<Player>>,
     mut cameras: Query<(&CameraView, &mut CameraInput, &mut CameraModeRequests), With<PlayerCamera>>,
 ) {
     let Ok((view, mut input, mut requests)) = cameras.single_mut() else { return };
-    let Ok((mut walker, mut transform)) = players.single_mut() else { return };
+    let Ok((mut walker, mut state, mut last_root)) = players.single_mut() else { return };
     let held = controls.movement.length() > 0.1;
     input.move_held = held;
     if let Some(look) = controls.look_stick {
@@ -387,20 +416,79 @@ fn apply_controls(
         requests.0.push(ModeRequest { id: ModeId::new(id), blend: 0.5 });
     }
     if controls.teleport {
-        // Not how a game should move a character (root motion owns it);
-        // here only to make a cut.
-        transform.translation += view.control_forward() * 8.0;
+        // Root motion owns the position (`ride_rendered_feet` writes the root
+        // from it every frame), so a teleport moves that. Here only to make a
+        // cut; the wall slide is told the jump is not a walk.
+        state.locomotion.position += view.control_forward() * 8.0;
+        last_root.0 = Some(state.locomotion.position);
+    }
+}
+
+/// The character's body as the walls see it: a capsule from 0.15 m to
+/// 1.75 m, its root's previous position.
+const BODY_RADIUS: f32 = 0.3;
+const BODY_CENTRE: f32 = 0.95;
+const BODY_SEGMENT: f32 = 1.0;
+
+#[derive(Component, Default)]
+struct LastRoot(Option<Vec3>);
+
+/// Keeps the character out of the walls: its root motion this frame is
+/// swept as a capsule against the static geometry and slid along whatever
+/// it meets. A stand-in for a character controller, which is not the
+/// camera's business; root motion still owns the position, this only
+/// trims the move (the feet may slip a little against a wall).
+fn keep_out_of_walls(spatial: SpatialQuery, mut players: Query<(&mut WalkerState, &mut Transform, &mut LastRoot), With<Player>>) {
+    let flat = Vec3::new(1.0, 0.0, 1.0);
+    let body = Collider::capsule(BODY_RADIUS, BODY_SEGMENT);
+    let filter = SpatialQueryFilter::from_mask(migera::physics_avian::layers::CAMERA_BLOCKERS);
+    for (mut state, mut transform, mut last) in &mut players {
+        let now = state.locomotion.position;
+        let Some(previous) = last.0 else {
+            last.0 = Some(now);
+            continue;
+        };
+        let mut at = previous * flat + Vec3::Y * BODY_CENTRE;
+        let mut remaining = (now - previous) * flat;
+        for _ in 0..3 {
+            let Ok(direction) = Dir3::new(remaining) else { break };
+            let length = remaining.length();
+            let config = ShapeCastConfig { max_distance: length, ..ShapeCastConfig::DEFAULT };
+            match spatial.cast_shape(&body, at, Quat::IDENTITY, direction, &config, &filter) {
+                Some(hit) => {
+                    let travel = (hit.distance - 0.01).max(0.0);
+                    at += direction * travel;
+                    let normal = (hit.normal1 * flat).normalize_or_zero();
+                    let left = remaining - direction * travel;
+                    remaining = left - normal * left.dot(normal).min(0.0);
+                }
+                None => {
+                    at += remaining;
+                    break;
+                }
+            }
+        }
+        state.locomotion.position.x = at.x;
+        state.locomotion.position.z = at.z;
+        transform.translation.x = at.x;
+        transform.translation.z = at.z;
+        last.0 = Some(state.locomotion.position);
     }
 }
 
 /// The rig drawn as gizmos: pivot, shoulder point, boom, eye.
-fn draw_rig(mut gizmos: Gizmos<RigGizmos>, cameras: Query<(&CameraView, &migera::camera::CameraDesiredPose), With<PlayerCamera>>) {
-    for (view, desired) in &cameras {
-        let pose = desired.0;
+fn draw_rig(
+    mut gizmos: Gizmos<RigGizmos>,
+    cameras: Query<(&CameraView, &migera::camera::CameraDesiredPose, &migera::camera::CameraResolvedPose), With<PlayerCamera>>,
+) {
+    for (view, desired, resolved) in &cameras {
+        let (want, pose) = (desired.0, resolved.0);
         gizmos.sphere(Isometry3d::from_translation(pose.pivot), 0.08, Color::srgb(1.0, 0.8, 0.1));
-        gizmos.line(pose.pivot, pose.shoulder, Color::srgb(1.0, 0.5, 0.1));
+        gizmos.line(pose.origin, pose.shoulder, Color::srgb(1.0, 0.5, 0.1));
+        // Where the mode wants the eye (grey), and where it is (cyan).
+        gizmos.line(want.shoulder, want.eye, Color::srgb(0.5, 0.5, 0.5));
         gizmos.line(pose.shoulder, pose.eye, Color::srgb(0.2, 0.8, 1.0));
-        gizmos.sphere(Isometry3d::from_translation(pose.eye), 0.12, Color::srgb(0.2, 0.8, 1.0));
+        gizmos.sphere(Isometry3d::from_translation(pose.eye), pose.probe_radius, Color::srgb(0.2, 0.8, 1.0));
         let flat = view.control_forward();
         gizmos.arrow(pose.pivot - Vec3::Y * 1.5, pose.pivot - Vec3::Y * 1.5 + flat * 1.2, Color::srgb(0.4, 1.0, 0.4));
     }
@@ -427,12 +515,15 @@ fn update_debug_view(
 fn update_hud(cameras: Query<(&CameraView, &migera::camera::CameraRigState), With<PlayerCamera>>, mut hud: Query<&mut Text, With<Hud>>) {
     let (Ok((view, state)), Ok(mut text)) = (cameras.single(), hud.single_mut()) else { return };
     let mode = state.rig.as_ref().map(|rig| rig.stack.top().id.0.clone()).unwrap_or_default();
-    let distance = state.output.map(|o| o.pose.distance).unwrap_or_default();
     text.0 = format!(
-        "mode {mode}  yaw {:6.1} deg  pitch {:5.1} deg  boom {distance:.2} m  fov {:.0} deg{}\n\
+        "mode {mode}  yaw {:6.1} deg  pitch {:5.1} deg  boom {:.2}/{:.2} m  fade {:.2}  high {:.2}  fov {:.0} deg{}\n\
          click: grab mouse | WASD/stick: walk | Shift: run | C: combat | R: recentre | Tab: shoulder | T: teleport",
         view.view_yaw.to_degrees(),
         view.pitch.to_degrees(),
+        view.distance,
+        view.desired_distance,
+        view.target_fade,
+        view.fallback,
         view.fov.to_degrees(),
         if view.latched { "  [controls latched]" } else { "" },
     );

@@ -22,6 +22,7 @@
 //! wrapping it would be an indirection with no payoff.
 
 pub mod gravity;
+pub mod layers;
 
 use avian3d::prelude::Collider;
 

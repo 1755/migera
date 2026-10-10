@@ -12,6 +12,8 @@
 //! counts.
 
 use super::clock::CameraClock;
+use super::collision::ResolvedPose;
+use super::probe::CameraProbe;
 use super::input::CameraInput;
 use super::pipeline::{CameraFrame, CameraOutput, TargetSample};
 use super::stack::ModeRequest;
@@ -116,6 +118,54 @@ pub fn measure(trace: &CameraTrace, outputs: &[CameraOutput]) -> Metrics {
         } else {
             previous = Some((out.pose.eye, None));
         }
+    }
+    metrics
+}
+
+/// What collision achieved over a run.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CollisionMetrics {
+    pub frames: usize,
+    /// Frames with the eye's probe sphere inside geometry. Must be 0.
+    pub inside_frames: usize,
+    /// Frames where the sight line (origin → shoulder → eye) is blocked.
+    pub blocked_frames: usize,
+    /// The longest unbroken run of blocked frames, seconds: occlusion is
+    /// allowed to last only `min_occlusion_time` before the camera acts.
+    pub longest_blocked: f32,
+    pub min_distance: f32,
+}
+
+/// Checks every resolved pose of a run against the geometry.
+pub fn measure_collision(
+    trace: &CameraTrace,
+    resolved: &[ResolvedPose],
+    probe: &dyn CameraProbe,
+) -> CollisionMetrics {
+    // A thin sight line, and a sphere a hair smaller than the probe so a
+    // camera resting exactly on contact is not counted as inside.
+    const SIGHT: f32 = 0.01;
+    let clear = |from: Vec3, to: Vec3| {
+        let step = to - from;
+        match step.try_normalize() {
+            Some(direction) => probe.sweep(from, direction, step.length(), SIGHT).is_none(),
+            None => true,
+        }
+    };
+    let mut metrics = CollisionMetrics { frames: resolved.len(), min_distance: f32::INFINITY, ..default() };
+    let mut run = 0.0;
+    for (frame, pose) in trace.frames.iter().zip(resolved) {
+        if probe.overlaps(pose.eye, pose.probe_radius * 0.98) {
+            metrics.inside_frames += 1;
+        }
+        if clear(pose.origin, pose.shoulder) && clear(pose.shoulder, pose.eye) {
+            run = 0.0;
+        } else {
+            metrics.blocked_frames += 1;
+            run += frame.clock.real_dt;
+            metrics.longest_blocked = metrics.longest_blocked.max(run);
+        }
+        metrics.min_distance = metrics.min_distance.min(pose.distance);
     }
     metrics
 }
@@ -259,6 +309,73 @@ mod tests {
         let back = CameraTrace::from_ron(&text).expect("parse");
         assert_eq!(back, trace);
         assert_eq!(back.replay(&settings, &config), trace.replay(&settings, &config));
+    }
+
+    /// The playground's geometry as SDF boxes, plus a 2 cm fence.
+    fn playground() -> crate::camera::probe::SdfProbe {
+        let mut probe = crate::camera::probe::SdfProbe::default()
+            .with_box(Vec3::new(0.0, -0.1, 0.0), Vec3::new(80.0, 0.2, 80.0))
+            .with_box(Vec3::new(-6.0, 1.5, -4.0), Vec3::new(0.6, 3.0, 20.0))
+            .with_box(Vec3::new(-1.4, 1.3, -20.0), Vec3::new(0.4, 2.6, 10.0))
+            .with_box(Vec3::new(1.4, 1.3, -20.0), Vec3::new(0.4, 2.6, 10.0))
+            .with_box(Vec3::new(0.0, 2.75, -20.0), Vec3::new(3.2, 0.3, 10.0))
+            .with_box(Vec3::new(3.0, 1.25, 2.0), Vec3::new(0.02, 2.5, 3.0));
+        for k in 0..6 {
+            probe = probe.with_box(Vec3::new(5.0, 2.0, -2.0 - 3.0 * k as f32), Vec3::new(0.6, 4.0, 0.6));
+        }
+        probe
+    }
+
+    /// Walks the given waypoints in order at `speed`, then stands.
+    fn route(points: Vec<Vec3>, speed: f32) -> PathFn {
+        Box::new(move |t| {
+            let mut left = t * speed;
+            for pair in points.windows(2) {
+                let length = pair[0].distance(pair[1]);
+                if left <= length {
+                    return (pair[0].lerp(pair[1], left / length), true);
+                }
+                left -= length;
+            }
+            (*points.last().unwrap(), true)
+        })
+    }
+
+    #[test]
+    fn a_camera_orbiting_through_the_playground_never_enters_geometry() {
+        let (settings, config) = (CameraInputSettings::default(), CameraConfig::default());
+        let probe = playground();
+        // Into and through the roofed corridor, out west along the long
+        // wall with the camera backed against it, then east past the
+        // pillars and the thin fence, while the stick keeps orbiting and
+        // nodding the camera.
+        let path = route(
+            vec![
+                Vec3::new(0.0, 0.0, 4.0),
+                Vec3::new(0.0, 0.0, -26.0),
+                Vec3::new(0.0, 0.0, -14.0),
+                Vec3::new(-5.3, 0.0, -10.0),
+                Vec3::new(-5.3, 0.0, 4.0),
+                Vec3::new(4.2, 0.0, 2.0),
+                Vec3::new(4.2, 0.0, -18.0),
+            ],
+            2.0,
+        );
+        let look: InputFn = Box::new(|t| CameraInput {
+            look_stick: Vec2::new(0.55, if ((t / 3.0) as usize).is_multiple_of(2) { 0.5 } else { -0.5 }),
+            ..Default::default()
+        });
+        let trace = Scenario::new(40.0, path, look).sample(60.0);
+        let resolved: Vec<_> =
+            trace.replay_resolved(&settings, &config, &probe, 0.13).into_iter().map(|(_, r)| r).collect();
+        let metrics = measure_collision(&trace, &resolved, &probe);
+        assert_eq!(metrics.inside_frames, 0, "the eye entered geometry: {metrics:?}");
+        let allowed = config.collision.min_occlusion_time + 2.0 / 60.0;
+        assert!(
+            metrics.longest_blocked <= allowed,
+            "the character was hidden for {:.3} s at a stretch (allowed {allowed:.3}): {metrics:?}",
+            metrics.longest_blocked,
+        );
     }
 
     const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/camera/walk_turn_combat.camtrace.ron");

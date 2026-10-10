@@ -91,7 +91,7 @@ const WALL_HEIGHT: f32 = 3.0;
 const WALL_THICKNESS: f32 = 0.5;
 /// The static terrain's own collision layer (floor, walls, ramps, stairs,
 /// fences), which the steering's rays look for alone, never a prop.
-const TERRAIN_LAYER: LayerMask = LayerMask(1 << 1);
+use migera::physics_avian::layers::TERRAIN_LAYER;
 /// How far ahead a walker looks for a wall, metres: at 1.2 m/s and a turn
 /// of [`BOUNCE_TURN_RATE`] it turns within ~1 m.
 const LOOK_AHEAD: f32 = 2.0;

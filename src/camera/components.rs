@@ -17,6 +17,7 @@
 //! and [`CameraTargetState`] (grounded, facing), which the walker bridge
 //! fills for a walking character.
 
+use super::collision::ResolvedPose;
 use super::pipeline::{CameraConfig, CameraOutput, CameraRig};
 use super::orbit::OrbitGoal;
 use super::rig::DesiredPose;
@@ -36,6 +37,7 @@ use bevy::prelude::*;
     CameraModeRequests,
     CameraGoals,
     CameraDesiredPose,
+    CameraResolvedPose,
     CameraView
 )]
 pub struct ThirdPersonCamera {
@@ -53,19 +55,29 @@ impl ThirdPersonCamera {
 }
 
 /// How the followed entity presents itself to the camera.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Reflect)]
+#[derive(Component, Debug, Clone, PartialEq, Reflect)]
 #[reflect(Component)]
 #[require(CameraTargetState)]
 pub struct CameraTarget {
     /// The pivot's offset from the entity's root, world space: eye height.
     pub pivot_offset: Vec3,
+    /// Colliders that belong to the target (its capsule, a carried shield)
+    /// and so never block its camera. Ragdoll bodies are excluded by layer
+    /// already.
+    pub exclude: Vec<Entity>,
 }
 
 impl Default for CameraTarget {
     fn default() -> Self {
-        Self { pivot_offset: Vec3::new(0.0, 1.6, 0.0) }
+        Self { pivot_offset: Vec3::new(0.0, 1.6, 0.0), exclude: Vec::new() }
     }
 }
+
+/// A collider that never blocks or occludes any camera, whatever its
+/// layers: for props that cannot change layer.
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct CameraIgnore;
 
 /// What the camera knows about its target beyond its transform. Filled by
 /// a bridge (the walker's, `bridge.rs`) or by the game.
@@ -125,6 +137,17 @@ impl Default for CameraDesiredPose {
     }
 }
 
+/// The pose after collision: what is written to the camera.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Reflect)]
+#[reflect(Component)]
+pub struct CameraResolvedPose(pub ResolvedPose);
+
+impl Default for CameraResolvedPose {
+    fn default() -> Self {
+        Self(ResolvedPose::unresolved(&CameraDesiredPose::default().0))
+    }
+}
+
 /// What the camera did this frame: read this, not the camera's
 /// `Transform`, from gameplay.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default, Reflect)]
@@ -149,6 +172,14 @@ pub struct CameraView {
     pub latched_for: f32,
     /// The camera snapped this frame.
     pub cut_this_frame: bool,
+    /// Boom length in use and the one the mode wants, metres.
+    pub distance: f32,
+    pub desired_distance: f32,
+    /// How much to fade the target: 0 visible, 1 gone (the eye is inside
+    /// its personal space).
+    pub target_fade: f32,
+    /// How far into the high fallback view, 0-1.
+    pub fallback: f32,
 }
 
 impl CameraView {

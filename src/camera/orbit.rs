@@ -55,6 +55,8 @@ pub struct OrbitParams {
     pub zoom_halflife: f32,
     /// Half-life of a shoulder swap, seconds.
     pub shoulder_halflife: f32,
+    /// Half-life of the pitch easing under a low ceiling, seconds.
+    pub ceiling_halflife: f32,
 }
 
 impl Default for OrbitParams {
@@ -73,6 +75,7 @@ impl Default for OrbitParams {
             zoom_step: 0.1,
             zoom_halflife: 0.08,
             shoulder_halflife: 0.1,
+            ceiling_halflife: 0.2,
         }
     }
 }
@@ -98,6 +101,10 @@ pub struct OrbitContext<'a> {
     pub facing: Option<f32>,
     /// Goals active this frame (lock-on, dialog, assist).
     pub goals: &'a [OrbitGoal],
+    /// The steepest pitch at which the full boom fits under the ceiling,
+    /// from last frame's collision: the pitch eases under it rather than the
+    /// boom crushing in.
+    pub pitch_cap: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
@@ -188,11 +195,15 @@ impl OrbitState {
         // Looking right turns yaw negative (yaw is about +Y); looking up
         // lowers the elevation.
         let yaw_change = -look.x;
+        let pitch_max = match context.pitch_cap {
+            Some(cap) => shape.pitch_max.min(cap.max(shape.pitch_min)),
+            None => shape.pitch_max,
+        };
         let pitch_change = soft_limit_rate(
             self.pitch(),
             -look.y,
             shape.pitch_min,
-            shape.pitch_max,
+            pitch_max,
             params.pitch_soft_band,
         );
 
@@ -268,7 +279,15 @@ impl OrbitState {
             }
         } else if let Some(heading) = context.heading {
             let span = (params.recenter_full_speed - params.recenter_min_speed).max(1.0e-3);
+            // Only travel *away* from the camera pulls it round. Moving
+            // sideways, recentring would turn "sideways" with it and the
+            // character would spiral; moving toward the camera it would
+            // flip the view. Full strength within ~25° of straight away,
+            // none from ~60°.
+            let away = angle_delta(self.base_yaw, heading).cos();
+            let alignment = ((away - 0.5) / 0.4).clamp(0.0, 1.0);
             let strength = shape.recenter
+                * alignment
                 * ((context.speed - params.recenter_min_speed) / span).clamp(0.0, 1.0);
             if strength > 0.0 && settle_dt > 0.0 {
                 let halflife = params.recenter_halflife / strength;
@@ -285,6 +304,11 @@ impl OrbitState {
         // Hard pitch limits, on the total.
         let total = self.pitch().clamp(shape.pitch_min, shape.pitch_max);
         self.base_pitch = total - self.pitch_offset;
+        // A ceiling eases the pitch down rather than snapping it.
+        if pitch_max < shape.pitch_max && self.pitch() > pitch_max {
+            self.base_pitch =
+                damp(self.base_pitch, pitch_max - self.pitch_offset, params.ceiling_halflife, dt);
+        }
 
         // Zoom.
         self.zoom_target = (self.zoom_target - input.zoom * params.zoom_step)
@@ -417,7 +441,7 @@ mod tests {
 
     #[test]
     fn recentring_waits_for_the_delay_after_input() {
-        let moving = OrbitContext { heading: Some(1.0), speed: 4.0, facing: Some(1.0), goals: &[] };
+        let moving = OrbitContext { heading: Some(1.0), speed: 4.0, facing: Some(1.0), ..Default::default() };
         let mut orbit = OrbitState::new(0.0, 0.2);
         run(&mut orbit, &stick(0.0, 0.0), &moving, &[], 1.4, 60.0);
         assert!(orbit.yaw().abs() < 1.0e-6, "recentred before the delay: yaw {}", orbit.yaw());
@@ -430,7 +454,7 @@ mod tests {
         // A delay that ends mid-frame at 30 Hz: crediting the whole frame
         // that crosses it would start the swing up to 1/30 s early.
         let params = OrbitParams { recenter_delay: 1.45, ..OrbitParams::default() };
-        let moving = OrbitContext { heading: Some(1.5), speed: 4.0, facing: None, goals: &[] };
+        let moving = OrbitContext { heading: Some(1.5), speed: 4.0, ..Default::default() };
         let yaw_at = |hz: f32| {
             let mut orbit = OrbitState::new(0.0, 0.2);
             for i in 0..(3.0 * hz).round() as usize {
@@ -445,8 +469,33 @@ mod tests {
     }
 
     #[test]
+    fn a_ceiling_cap_eases_the_pitch_down_and_blocks_looking_further_up() {
+        let mut orbit = OrbitState::new(0.0, 0.8);
+        let capped = OrbitContext { pitch_cap: Some(0.3), ..Default::default() };
+        let mut previous = orbit.pitch();
+        for _ in 0..90 {
+            run(&mut orbit, &stick(0.0, -1.0), &capped, &[], 1.0 / 60.0, 60.0);
+            let step = previous - orbit.pitch();
+            assert!(step < 0.05, "the pitch must ease, not snap: dropped {step} rad in a frame");
+            previous = orbit.pitch();
+        }
+        assert!(orbit.pitch() < 0.31, "pitch {} must settle under the 0.3 cap", orbit.pitch());
+    }
+
+    #[test]
+    fn walking_sideways_or_toward_the_camera_does_not_pull_it_round() {
+        // Camera at yaw 0; walking at yaw ±90° is sideways, at π toward it.
+        for heading in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2, std::f32::consts::PI] {
+            let context = OrbitContext { heading: Some(heading), speed: 4.0, ..Default::default() };
+            let mut orbit = OrbitState::new(0.0, 0.2);
+            run(&mut orbit, &stick(0.0, 0.0), &context, &[], 5.0, 60.0);
+            assert!(orbit.yaw().abs() < 1.0e-6, "heading {heading}: the camera swung to {}", orbit.yaw());
+        }
+    }
+
+    #[test]
     fn standing_still_never_recentres() {
-        let standing = OrbitContext { heading: Some(1.0), speed: 0.0, facing: Some(1.0), goals: &[] };
+        let standing = OrbitContext { heading: Some(1.0), speed: 0.0, facing: Some(1.0), ..Default::default() };
         let mut orbit = OrbitState::new(0.0, 0.2);
         run(&mut orbit, &stick(0.0, 0.0), &standing, &[], 10.0, 60.0);
         assert!(orbit.yaw().abs() < 1.0e-6, "a standing character must not pull the camera");
@@ -454,7 +503,7 @@ mod tests {
 
     #[test]
     fn the_recentre_button_swings_behind_the_character_quickly() {
-        let standing = OrbitContext { heading: None, speed: 0.0, facing: Some(2.0), goals: &[] };
+        let standing = OrbitContext { facing: Some(2.0), ..Default::default() };
         let mut orbit = OrbitState::new(0.0, 0.2);
         let press = CameraInput { recenter: true, ..Default::default() };
         run(&mut orbit, &press, &standing, &[], 1.0 / 60.0, 60.0);

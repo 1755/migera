@@ -8,7 +8,9 @@
 //!
 //! Format: RON, extension `.camtrace.ron`.
 
+use super::collision::ResolvedPose;
 use super::input::CameraInputSettings;
+use super::probe::CameraProbe;
 use super::pipeline::{CameraConfig, CameraFrame, CameraOutput, CameraRig};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,21 @@ impl CameraTrace {
     pub fn replay(&self, settings: &CameraInputSettings, config: &CameraConfig) -> Vec<CameraOutput> {
         let mut rig = CameraRig::new(config, self.start_yaw);
         self.frames.iter().map(|frame| rig.step(frame, settings, config)).collect()
+    }
+
+    /// Replays the trace with collision against `probe`.
+    pub fn replay_resolved(
+        &self,
+        settings: &CameraInputSettings,
+        config: &CameraConfig,
+        probe: &dyn CameraProbe,
+        probe_radius: f32,
+    ) -> Vec<(CameraOutput, ResolvedPose)> {
+        let mut rig = CameraRig::new(config, self.start_yaw);
+        self.frames
+            .iter()
+            .map(|frame| rig.step_resolved(frame, settings, config, probe, probe_radius))
+            .collect()
     }
 
     pub fn to_ron(&self) -> Result<String, ron::Error> {
