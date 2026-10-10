@@ -10,8 +10,9 @@ tags:
   - correctness
 updated: 2026-10-10
 code:
-  - src/character/anim/math/spring.rs
-  - src/character/anim/math/inertialize.rs
+  - src/math/spring.rs
+  - src/math/angle.rs
+  - src/math/inertialize.rs
 sources:
   - "Cinemachine Predictor.cs (StandardDamp, StableDamp): https://github.com/Unity-Technologies/com.unity.cinemachine/blob/main/com.unity.cinemachine/Runtime/Core/Predictor.cs"
   - "Daniel Holden, Spring-It-On / spring-roll-call: https://theorangeduck.com/page/spring-roll-call"
@@ -34,9 +35,11 @@ nothing else:
 - **closed-form exponential decay**, `x = g + (x − g)·exp(−λ·dt)`, or
 - **a closed-form critically damped spring**.
 
-Parameterise both by **half-life**. migera already has both forms, stable at any
-`dt`: `SpringParams` + `spring_scalar` / `spring_vec3` in `math/spring.rs`, and
-`decay_exponential` in `math/inertialize.rs`.
+Parameterise both by **half-life**. migera has both forms, stable at any `dt`:
+- `SpringParams` + `spring_scalar` / `spring_vec3` in `src/math/spring.rs`;
+- `spring_*_tracking` there, for a goal that moves during the frame;
+- `damp` / `damp_angle` in `src/math/angle.rs`;
+- `decay_exponential` in `src/math/inertialize.rs`.
 
 ## The broken forms
 
@@ -68,16 +71,23 @@ All of these are the same exponential with a different name for its rate:
 
 ## Moving goals still drift with frame rate
 
-Even an exact exponential step is frame-rate dependent when the *goal* moves during the
-frame, because the step assumes the goal held still. Cinemachine's `StableDamp`
-sub-steps at 1/1024 s for exactly this reason.
+Even an exact spring step is frame-rate dependent when the *goal* moves during the
+frame, because the step holds the goal still: a staircase. At 5 m/s with a 0.05 s
+half-life, the staircase follower ends more than 5 cm apart at 30 Hz and at 144 Hz
+(`the_staircase_spring_trails_a_moving_target_by_frame_rate`). Cinemachine's `StableDamp`
+sub-steps at 1/1024 s to hide this.
 
-For migera:
-- A critically damped spring tracking a target that moves at constant velocity converges
-  to the same lag at any frame rate. That is the property to test.
-- Compare positions at **common timestamps** while sampling a *time-parameterised* target
-  trajectory at 30, 60 and 144 Hz. Comparing frame N against frame N across rates tests
-  nothing.
+migera solves it exactly instead:
+- With damping on absolute velocity, the error to a goal moving at `v` settles at a
+  constant lag `−2ζv/ω`. The deviation from that lag is a plain homogeneous spring.
+- `spring_scalar_tracking` / `spring_vec3_tracking` advance that deviation in closed form
+  over the interval the goal moved in. The goal moves from last frame's sample to this
+  frame's, so this is interpolation, never extrapolation.
+- The result is identical at any frame rate for a goal that moves linearly between frames.
+
+The other ways a camera built from exact dampers still drifts with frame rate are
+covered in [frame-rate independence needs exact events and thresholds, not just exact
+dampers](./frame-rate-independence-needs-exact-events-and-thresholds.md).
 
 ## Angles
 
@@ -90,14 +100,16 @@ For migera:
 
 ## Relevance to migera
 
-- Reuse `SpringParams`, `spring_scalar` / `spring_vec3` and `decay_exponential`. Don't
-  write new damping code.
-- Every camera test of smoothing should include a 30/60/144 Hz common-timestamp
-  comparison. To show the test can fail, swap in a `lerp(k·dt)` variant: it must fail.
+- Reuse the forms above. Don't write new damping code.
+- Every camera test of smoothing should include a 30/60/144 Hz comparison at common
+  timestamps: every 1/6 s is a frame boundary at all three rates. To show the test can
+  fail, swap in a staircase or `lerp(k·dt)` variant: it must fail.
 
 ## Related
 
+- [Frame-rate independence needs exact events and thresholds](./frame-rate-independence-needs-exact-events-and-thresholds.md) — deeper: the drifts left once every damper is exact, and the tests that missed them.
 - [The rational exp approximation in spring code diverges](../character-animation/animation-core/spring-exp-approximation-diverges.md) — same-trap: why migera's springs call `f32::exp`.
+- [A pinned ragdoll tracks its target's velocity](../character-animation/ragdoll-and-physics/a-pinned-ragdoll-tracks-its-targets-velocity.md) — same-trap: the same `2ζv/ω` lag behind a moving target, in the ragdoll's PD.
 - [Measuring curve continuity at a seam](../engineering-practice/measurement/measuring-curve-continuity-at-a-seam.md) — deeper: how to measure the velocity kink without fooling yourself.
 - [Third-person camera design](./third-person-camera-design.md) — applies: which stages use decay and which use springs.
 - [Engine camera architectures compared](./engine-camera-architectures-compared.md) — example: how Cinemachine, Unreal and dolly each damp.

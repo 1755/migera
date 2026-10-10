@@ -10,7 +10,7 @@ tags:
 updated: 2026-10-07
 verified: 2026-10-07
 code:
-  - src/character/anim/math/ik.rs
+  - src/math/ik.rs
   - src/character/anim/legik.rs
   - src/character/anim/armik.rs
 sources:

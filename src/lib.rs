@@ -1,5 +1,7 @@
+pub mod camera;
 pub mod character;
 pub mod hybrid;
+pub mod math;
 pub mod physics;
 pub mod physics_avian;
 pub mod prepass_probe;

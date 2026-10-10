@@ -37,13 +37,14 @@
 //! exposes, so Stage 1 and the Stage 4 ragdoll share one vocabulary.
 
 use bevy::math::Vec3;
+use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
 /// `ln(2)`, the constant relating a half-life to an exponential decay rate.
 const LN_2: f32 = std::f32::consts::LN_2;
 
 /// Per-joint spring tuning. Hot-reloadable via RON.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Reflect)]
 pub struct SpringParams {
     /// Seconds for the remaining distance to halve. Smaller is snappier.
     pub halflife: f32,
@@ -217,6 +218,80 @@ pub fn spring_vec3(
     }
 
     (new_offset + target, new_velocity.clamp_length_max(params.max_speed))
+}
+
+/// Advances a scalar spring over an interval in which its target moves
+/// *linearly* from `target_start` at `target_velocity`, in closed form.
+///
+/// [`spring_scalar`] holds the target still for the whole step. When the
+/// target really moves during the step, that staircase approximation makes
+/// the follower's lag depend on the frame rate: about `v·dt/2` of extra
+/// trail, which is 8 cm at 30 Hz for a target moving at 5 m/s. Something
+/// that tracks a moving body every frame, like a camera pivot, sees this as
+/// the follow feeling heavier on a slow machine.
+///
+/// The fix is exact. With damping on the follower's absolute velocity, the
+/// error `e = x − target(t)` obeys `e'' = −2ζω(e' + v) − ω²e`, whose
+/// steady state is the constant lag `e* = −2ζv/ω`. The deviation `e − e*`
+/// is then a plain homogeneous spring, which [`solve_offset`] advances
+/// exactly. A target that moves linearly between frames is followed
+/// identically at any frame rate.
+#[inline]
+pub fn spring_scalar_tracking(
+    position: f32,
+    velocity: f32,
+    target_start: f32,
+    target_velocity: f32,
+    params: &SpringParams,
+    dt: f32,
+) -> (f32, f32) {
+    if dt <= 0.0 {
+        return (position, velocity);
+    }
+    let lag = tracking_lag(target_velocity, params);
+    let (deviation, new_velocity) =
+        solve_offset(position - target_start - lag, velocity - target_velocity, params, dt);
+    (
+        target_start + target_velocity * dt + lag + deviation,
+        (new_velocity + target_velocity).clamp(-params.max_speed, params.max_speed),
+    )
+}
+
+/// [`spring_scalar_tracking`] for a [`Vec3`], componentwise, with the speed
+/// clamp on the vector magnitude.
+#[inline]
+pub fn spring_vec3_tracking(
+    position: Vec3,
+    velocity: Vec3,
+    target_start: Vec3,
+    target_velocity: Vec3,
+    params: &SpringParams,
+    dt: f32,
+) -> (Vec3, Vec3) {
+    if dt <= 0.0 {
+        return (position, velocity);
+    }
+    let mut new_position = Vec3::ZERO;
+    let mut new_velocity = Vec3::ZERO;
+    for axis in 0..3 {
+        let lag = tracking_lag(target_velocity[axis], params);
+        let (deviation, v) = solve_offset(
+            position[axis] - target_start[axis] - lag,
+            velocity[axis] - target_velocity[axis],
+            params,
+            dt,
+        );
+        new_position[axis] = target_start[axis] + target_velocity[axis] * dt + lag + deviation;
+        new_velocity[axis] = v + target_velocity[axis];
+    }
+    (new_position, new_velocity.clamp_length_max(params.max_speed))
+}
+
+/// The steady-state offset `−2ζv/ω` of a spring behind a target moving at
+/// `target_velocity`: negative means it trails.
+#[inline]
+pub fn tracking_lag(target_velocity: f32, params: &SpringParams) -> f32 {
+    -2.0 * params.damping_ratio.max(0.0) * target_velocity / params.decay_rate()
 }
 
 #[cfg(test)]
@@ -458,5 +533,84 @@ mod tests {
 
         assert!(position.is_finite(), "a zero halflife must not produce {position}");
         assert!(velocity.is_finite(), "a zero halflife must not produce v = {velocity}");
+    }
+
+    /// Follows `target(t) = speed * t` from rest at 0 for `duration`, stepped
+    /// at `hz`, with either the tracking spring or the staircase spring.
+    fn follow_ramp(hz: f32, duration: f32, speed: f32, tracking: bool) -> (f32, f32) {
+        let params = SpringParams { halflife: 0.05, damping_ratio: 1.0, max_speed: 1.0e4 };
+        let steps = (duration * hz).round() as usize;
+        let dt = duration / steps as f32;
+        let (mut p, mut v) = (0.0, 0.0);
+        for i in 0..steps {
+            let start = speed * i as f32 * dt;
+            (p, v) = if tracking {
+                spring_scalar_tracking(p, v, start, speed, &params, dt)
+            } else {
+                // The target as a staircase: where it is at the end of the step.
+                spring_scalar(p, v, start + speed * dt, &params, dt)
+            };
+        }
+        (p, v)
+    }
+
+    #[test]
+    fn a_tracking_spring_follows_a_moving_target_identically_at_any_frame_rate() {
+        // The camera pivot's whole frame-rate-independence claim rests here.
+        let at_30 = follow_ramp(30.0, 2.0, 5.0, true);
+        let at_60 = follow_ramp(60.0, 2.0, 5.0, true);
+        let at_144 = follow_ramp(144.0, 2.0, 5.0, true);
+        for (hz, (p, _)) in [(30, at_30), (60, at_60)] {
+            assert!(
+                (p - at_144.0).abs() < 1.0e-3,
+                "a target moving at 5 m/s must be followed to the same place at {hz} Hz as at \
+                 144 Hz: {p} vs {}",
+                at_144.0,
+            );
+        }
+    }
+
+    #[test]
+    fn the_staircase_spring_trails_a_moving_target_by_frame_rate() {
+        // The reason the tracking form exists: holding the target still for
+        // each step leaves the follower somewhere different at 30 Hz than at
+        // 144 Hz. If this ever stops failing to agree, the tracking variant
+        // is no longer buying anything and the test above proves nothing.
+        let (p30, _) = follow_ramp(30.0, 2.0, 5.0, false);
+        let (p144, _) = follow_ramp(144.0, 2.0, 5.0, false);
+        assert!(
+            (p30 - p144).abs() > 0.05,
+            "the staircase spring was expected to drift with frame rate (> 5 cm), got \
+             {p30} vs {p144}",
+        );
+    }
+
+    #[test]
+    fn a_tracking_spring_settles_at_its_predicted_lag() {
+        let params = SpringParams { halflife: 0.05, damping_ratio: 1.0, max_speed: 1.0e4 };
+        let (p, v) = follow_ramp(60.0, 2.0, 5.0, true);
+        let expected = 5.0 * 2.0 + tracking_lag(5.0, &params);
+        assert!(
+            (p - expected).abs() < 1.0e-3,
+            "after settling the follower should trail by tracking_lag: {p} vs {expected}",
+        );
+        assert!((v - 5.0).abs() < 1.0e-3, "and move at the target's speed, got {v}");
+    }
+
+    #[test]
+    fn a_tracking_spring_with_a_still_target_is_the_plain_spring() {
+        let params = SpringParams::critical(0.1);
+        let plain = spring_scalar(2.0, -1.0, 0.5, &params, 1.0 / 60.0);
+        let tracking = spring_scalar_tracking(2.0, -1.0, 0.5, 0.0, &params, 1.0 / 60.0);
+        assert!((plain.0 - tracking.0).abs() < 1.0e-6 && (plain.1 - tracking.1).abs() < 1.0e-5);
+        let v3 = spring_vec3_tracking(
+            Vec3::new(2.0, 0.0, 1.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(0.5, 0.0, 1.0),
+            Vec3::ZERO,
+            &params,
+            1.0 / 60.0,
+        );
+        assert!((v3.0.x - plain.0).abs() < 1.0e-6, "vec3 and scalar tracking must agree");
     }
 }

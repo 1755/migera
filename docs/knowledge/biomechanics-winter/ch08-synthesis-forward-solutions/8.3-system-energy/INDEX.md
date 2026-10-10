@@ -44,7 +44,7 @@ generalized force directly.
 ## Relevance to migera
 
 This section gives the continuous-time energy vocabulary behind migera's
-springs (`src/character/anim/math/spring.rs`, `dho.rs`) and the ragdoll's
+springs (`src/math/spring.rs`, `dho.rs`) and the ragdoll's
 PD terms. A PD controller is a torsional spring
 $\tfrac12 k_t(\theta - \theta_s)^2$ plus a Rayleigh damper
 $\tfrac12 c\,\dot\theta^2$, with the target angle as $\theta_s$. What the

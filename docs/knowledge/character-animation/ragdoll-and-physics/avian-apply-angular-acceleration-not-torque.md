@@ -12,7 +12,7 @@ tags:
 updated: 2026-09-24
 code:
   - src/character/anim/ragdoll_plugin.rs
-  - src/character/anim/math/pd.rs
+  - src/math/pd.rs
 aliases:
   - apply_torque
   - Forces

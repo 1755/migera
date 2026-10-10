@@ -79,7 +79,10 @@ pub mod locomotion;
 pub mod lookat;
 pub mod pelvis;
 pub mod slide;
-pub mod math;
+/// The pure math moved to crate level (`crate::math`) so the camera can use
+/// it without depending on the animation stack. Re-exported here so every
+/// `super::math::…` path inside `anim` keeps working.
+pub use crate::math;
 pub mod parkour;
 pub mod passive;
 pub mod phase;

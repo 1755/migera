@@ -10,7 +10,7 @@ tags:
 updated: 2026-09-24
 verified: 2026-09-28
 code:
-  - src/character/anim/math/quat_ext.rs
+  - src/math/quat_ext.rs
 sources:
   - Claude memory quat_angle_between_precision_floor (2026-09-24)
 aliases:
@@ -45,13 +45,13 @@ a measurement of the rotations and becomes a measurement of f32 rounding.
   staying safely above the f32 floor (a perfect round trip still lands 1 ULP,
   about 1.19e-7, away).
 - In this crate, use `rotation_mismatch` with the `EXACT` bound from
-  `src/character/anim/math/quat_ext.rs` (added 2026-09-24).
+  `src/math/quat_ext.rs` (added 2026-09-24).
 - `angle_between` is also unsigned. For rates or directions, use a signed
   angle.
 
 ## Evidence
 
-- `rotation_mismatch` and `EXACT` in `src/character/anim/math/quat_ext.rs`,
+- `rotation_mismatch` and `EXACT` in `src/math/quat_ext.rs`,
   used by `dho.rs` and `inertialize.rs`.
 
 ## Related

@@ -29,6 +29,7 @@ This domain covers how the player's camera follows, frames and avoids the world.
 - Store the camera as orbit scalars. Derive distance and FOV from pitch "like gears". Give each degree of freedom one owner ([Nesky digest](./fifty-camera-mistakes-nesky-digest.md)).
 - Smoothing must be closed-form exponential or a critically damped spring. `lerp(k·dt)` (Gothic `veloTrans`, UE `VInterpTo`) changes feel with frame rate ([damping](./camera-damping-is-exponential-not-a-per-frame-lerp.md)).
 - Modes are layers on one rig. Collision runs once, after blending ([decision](./one-rig-with-blended-layers-over-blending-virtual-cameras.md)).
+- Exact dampers aren't enough. A goal moving within the frame, event order, and thresholds crossed mid-frame each drift the camera 3–5 cm between 30 and 144 Hz ([lesson](./frame-rate-independence-needs-exact-events-and-thresholds.md)).
 
 ## Notes
 
@@ -38,6 +39,7 @@ This domain covers how the player's camera follows, frames and avoids the world.
 | [Third-person camera design](./third-person-camera-design.md) | The pipeline, components, scheduling, collision stages, lock-on, profiles, trace replay and test strategy | Before building or extending `src/camera` |
 | [Camera collision and occlusion techniques](./camera-collision-and-occlusion-techniques.md) | Safe pivot, probe size, timing, feelers, hills, ceilings, layers, fades and the fallback | Before building or tuning camera collision, or when the camera clips or pumps |
 | [Camera damping is exponential, not a per-frame lerp](./camera-damping-is-exponential-not-a-per-frame-lerp.md) | The only allowed smoothing forms, unit conversions, moving goals and angle damping | Before writing any camera smoothing, or when feel changes with frame rate |
+| [Frame-rate independence needs exact events and thresholds, not just exact dampers](./frame-rate-independence-needs-exact-events-and-thresholds.md) | Five in-frame timing drifts (staircase goals, event order, input sampling, mid-frame thresholds, Euler rates) measured at 3–5 cm, and the test blind spots that hid two of them | Before writing time-dependent camera logic or a frame-rate test |
 | [Gothic's ZenGin camera](./gothic-zengin-camera-modes-and-collision.md) | Per-mode parameter tables, the 9-ray grid and top-down fallback, and their weaknesses | When choosing mode parameters or a collision fallback |
 | [Fifty game camera mistakes (Nesky) — digest](./fifty-camera-mistakes-nesky-digest.md) | Nesky's 50 practitioner rules, grouped | Before designing camera degrees of freedom, auto-recentre or input curves |
 | [Engine camera architectures compared](./engine-camera-architectures-compared.md) | Cinemachine, Unreal, Lyra, the Gameplay Camera System, dolly and Godot, with a feature table | When comparing blend models or looking for a reference implementation |

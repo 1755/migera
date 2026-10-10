@@ -72,7 +72,7 @@ rather than a built feature:
 
 1. **Activation dynamics** — pass the strength command through the
    linear-envelope filter; migera already has it as a critically damped
-   `SpringParams` in `src/character/anim/math/spring.rs` (halflife
+   `SpringParams` in `src/math/spring.rs` (halflife
    ≈ 0.03–0.07 s). Testable: impulse peaks at $T$, step never overshoots.
 2. **Force-velocity gain** — more torque when resisting motion, less when
    assisting it (10.4.2, grounded in ch. 9).

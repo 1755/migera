@@ -1,6 +1,6 @@
 ---
 title: The camera is one rig with blended layers, not blended virtual cameras
-description: "migera's third-person camera is one rig per camera. Modes are layers that blend rig parameters, the anchor the pivot follows, and yaw/pitch goals in a push-only stack. Collision runs once after the blend. Cinemachine-style N-camera pose blending and per-mode spring arms lost. Read before adding a camera mode or blend."
+description: "migera's third-person camera is one rig per camera. Modes are layers blending rig parameters in a push-only stack; anchors hand off by inertialization; yaw/pitch goals own axes by priority; collision runs once after the blend. Cinemachine-style pose blending lost. Read before adding a camera mode or blend."
 type: decision
 status: current
 tags:
@@ -9,6 +9,10 @@ tags:
   - correctness
   - integration
 updated: 2026-10-10
+code:
+  - src/camera/stack.rs
+  - src/camera/anchor.rs
+  - src/camera/orbit.rs
 sources:
   - "Lyra ULyraCameraModeStack: https://github.com/LeNidViolet/Lyra/tree/main/Source/LyraGame/Camera"
   - "UE5 Gameplay Camera System layers (Epic staff): https://forums.unrealengine.com/t/2668478"
@@ -24,11 +28,10 @@ aliases:
 
 Each gameplay camera is **one rig**: one pivot, one orbit, one collision pass.
 A camera mode (exploration, combat, aim, swim, mount, dialog) is a **layer** in a
-push-only stack. A layer may carry three things, each blended by the layer's
-weight:
-- rig **parameters**;
-- an **anchor**, the entity and offset the pivot follows;
-- a yaw/pitch **goal**.
+push-only stack that blends rig **parameters** by weight. Two other inputs
+change in their own ways:
+- an **anchor** (what the pivot follows) is handed off by inertialization;
+- a yaw/pitch **goal** (lock-on, dialog, assist) owns its axis by priority.
 
 Collision runs once, on the blended result. Only scripted shots blend in output
 space, through a separate override layer.
@@ -48,8 +51,8 @@ designs reviewed.
 
 ## Decision
 
-- **One rig, a stack of layers.** `Layer { params, anchor, goal, weight }`. The stack is
-  push-only:
+- **One rig, a stack of layers.** `Layer { id, params, progress, blend }`, with weight
+  `smoothstep(progress)` (`src/camera/stack.rs`). The stack is push-only:
   - pushing a mode that is already present keeps its current weight (no pop);
   - the top layer's weight ramps up with a C1 curve;
   - layers under a full-weight top are dropped;
@@ -58,13 +61,22 @@ designs reviewed.
   settings, collision policy) are interpolated. Because distance and angles are blended
   as *orbit scalars*, the blended eye stays on an orbit around the pivot. It never travels
   the chord between two eye positions, which can pass through the character.
-- **Anchors** are blended as world points with the same weights. An anchor *switch*
-  (mounting, the target dying into a ragdoll, a dialog midpoint) inertializes the offset
-  rather than crossfading: switch the source immediately, then decay the old-to-new offset.
-  This keeps velocity continuous.
-- **Goals** (lock-on, dialog, aim assist, recentre) drive yaw and pitch toward a target
-  with a strength. **Each degree of freedom has one owner per frame.** Player input under
-  a goal becomes a sprung offset that decays (Nesky: intent wins, no fighting forces).
+- **Anchors are handed off, not blended.** An anchor switch (mounting, the target dying
+  into a ragdoll, a dialog midpoint) restarts the follow on the new goal, at its steady
+  trail. The old pivot's position and velocity, relative to that, become an offset that
+  decays on its own softer spring. This keeps velocity continuous and sets the hand-off's
+  pace independently of the stiff follow spring: a 3 m switch accelerates the pivot at
+  under 50 m/s², against about 1200 m/s² if it rode the follow spring
+  (`an_anchor_switch_is_velocity_continuous`).
+  - Blending anchors as weighted world points was the first design. It was dropped
+    because it needs every layer's anchor resolved every frame, and the hand-off gives
+    the same continuity with one goal.
+- **Goals** (lock-on, dialog, aim assist, recentre) are supplied per frame, because their
+  targets move. They drive yaw and pitch toward a target with a half-life. **Each degree
+  of freedom has one owner per frame**: the highest-priority goal. Player input under a
+  goal becomes an offset that decays once the player lets go. When the goal ends, the
+  offset folds into the base angle, so nothing jumps (Nesky: intent wins, no fighting
+  forces).
 - **Collision runs once, after the blend.** This is the Gameplay Camera System's "Global"
   layer. A blend between two collision-free poses can still pass through a wall, so
   correcting each mode before blending is not enough.

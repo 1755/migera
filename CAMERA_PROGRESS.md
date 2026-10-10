@@ -38,7 +38,90 @@ roadmap, its test gates, and dated entries.
 | P5 | Effects (trauma² shake, FOV kick), fade markers, `CameraVolume`, look-ahead, interior and ledge probes | zero trauma → zero shake, trauma² scaling; comfort scale 0 removes shake; no roll with effects off; fadeables marked and unmarked; volume push/pop; the interior distance cap has hysteresis |
 | P6 | `camera_debug` feature: gizmos, egui tuning panel, save profile | the playground runs with the feature; a saved profile round-trips |
 
+## Baseline
+
+`cargo run --release --example camera_bench -- --cameras N --frames 3000`
+(Linux 6.18, release). One frame per rig: mode stack, anchor, orbit, rig
+pose; no collision yet. Each rig follows a target round a circle with the
+stick moving and a mode switch every 2 s.
+
+| Cameras | p50 | p99 | per-camera p50 |
+|---:|---:|---:|---:|
+| 1 | 0.0014–0.0019 ms | 0.0015–0.0024 ms | 1.4–1.9 µs (fixed overhead dominates) |
+| 64 | 0.0134 ms | 0.0214 ms | 0.21 µs |
+| 1000 | 0.195 ms | 0.315 ms | 0.20 µs |
+
 ## Log
+
+### 2026-10-10 — P0: pure pipeline, trace replay, scenario harness
+
+**What was built.**
+- **Math moved up.** `src/character/anim/math` is now `src/math`. `character::anim::math`
+  remains as a re-export, so no animation code changed.
+- **New math.**
+  - `src/math/angle.rs`: wrapping, shortest-arc `damp_angle`, `damp`, radial deadzone,
+    stick curve, soft limit.
+  - `spring_scalar_tracking` / `spring_vec3_tracking`: exact follow of a goal that moves
+    linearly over the frame.
+  - `SpringParams` derives `Reflect`.
+- **`src/camera`: the pure stages.**
+  - `stack` is the push-only mode stack, with smoothstep weights and a re-push that keeps
+    its contribution.
+  - `anchor` is the pivot:
+    - follow and leashes: tracking spring, horizontal and vertical leashes;
+    - jumps and cuts: air deadband with a ratchet, teleport cut;
+    - inertialized anchor rebase; look-ahead.
+  - `orbit` handles look and goals:
+    - input: exact stick integral, mouse not scaled by `dt`, soft and hard pitch limits;
+    - goals own axes by priority, with a decaying player offset;
+    - recentring: button, and delayed auto-recentre on the part of the frame past the delay;
+    - zoom.
+  - `rig` is pitch curves, `ModeParams` exploration/combat, and the eye pose.
+  - `pipeline` (`CameraRig`, `CameraFrame`, `CameraConfig`) chains them over plain data.
+- **Tooling.**
+  - `trace`: `CameraTrace`, `.camtrace.ron`, one frame per line, plus golden traces.
+  - `harness`: time-parameterised `Scenario` sampled at any rate, and `Metrics`.
+  - Golden trace at `tests/golden/camera/walk_turn_combat.camtrace.ron`.
+  - `examples/camera_bench.rs`.
+
+**Gates, all passing (35 camera tests and 4 new spring tests, inside a full lib run of 1361):**
+- The eye agrees at 30/60/144 Hz every 1/6 s for 6 s, within 2 cm; measured
+  sub-millimetre. The scenario includes a walk, a turn, stick looks and two mode blends.
+- No roll anywhere in the scenario: `max_roll` < 1e-5.
+- Pitch stays inside its limits under full stick for 10 s.
+- Angle damping takes the short way across ±π.
+- No recentring before the delay or while standing still.
+- A hop inside the air band leaves the pivot height unchanged; a 4.9 m fall is tracked.
+- The leash caps lag at a 12 m/s sprint. A counter-test without the leash trails further.
+- The golden trace replays within 1 cm, and a trace round-trips through RON and replays
+  bit-identically.
+- Paused clock: the stick still turns the camera by more than 1 rad, and the pivot does
+  not move.
+- A re-pushed layer keeps its contribution, to within 1e-4 m of distance.
+- A layer under a full-weight top is dropped.
+- An anchor switch of 3 m: under 0.06 m of pivot motion in its frame, and under 50 m/s²
+  of acceleration.
+- A mode blend's eye acceleration stays within 1.15 × the smoothstep bound `6Δ/T²`.
+
+**Sabotage checks.** Each fix was undone and its test had to fail:
+- staircase follow → 3.95 cm frame-rate gap, golden trace fails;
+- linear blend weight → 98.8 m/s² against a bound of 28.4, plus the spike and re-push tests;
+- Euler stick → 3.54 cm, and held yaw 0.668 vs 0.651 rad;
+- push before step → 4.88 cm mid-blend;
+- whole-frame recentre → 0.787 vs 0.780 rad.
+
+**Dead ends and lessons.**
+- Exact dampers alone still left the eye 2.9 cm apart between 30 and 144 Hz. The causes
+  were event order, input sampling time and mid-frame thresholds.
+- Two tests passed under sabotage at first. One sampled at whole seconds, outside the
+  blends; the other compared only after ramp errors had cancelled.
+- Written up as `docs/knowledge/gameplay-camera/frame-rate-independence-needs-exact-events-and-thresholds.md`.
+- The first rebase put the restarted follow *on* the goal instead of at its steady trail.
+  The stiff spring then yanked it 0.2 m, at about 1200 m/s² for a 3 m switch.
+- The decision note's "blend anchors as weighted points" became an inertialized hand-off.
+
+**Next: P1.** `ThirdPersonCameraPlugin`, components and systems, mouse/gamepad mapping,
+the walker bridge, and `examples/camera_playground.rs`, with an Xvfb visual check.
 
 ### 2026-10-10 — Research and design (no code)
 

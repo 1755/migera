@@ -11,7 +11,7 @@ tags:
 updated: 2026-10-01
 verified: 2026-10-01
 code:
-  - src/character/anim/math/pd.rs
+  - src/math/pd.rs
   - src/character/anim/ragdoll.rs
   - src/character/anim/ragdoll_plugin.rs
 sources:

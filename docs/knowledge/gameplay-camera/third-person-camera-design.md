@@ -10,7 +10,8 @@ tags:
   - testing
 updated: 2026-10-10
 code:
-  - src/character/anim/math
+  - src/camera
+  - src/math
   - src/character/anim/walker.rs
   - src/character/anim/ragdoll_plugin.rs
 sources:
@@ -60,13 +61,14 @@ Each stage below owns its outputs; no later stage writes them.
 1. **Input** (`Update`). Devices are mapped to a `CameraInput` component. Tests, replay
    and AI write the same component.
 2. **Anchor.**
-   - The pivot follows the anchor as an *offset from the target*, so moving bases can't
-     unhook it.
-   - Horizontal: critically damped spring plus a hard leash, so the camera can't trail
-     further back at speed.
-   - Vertical: grounded spring. Airborne: a deadband above take-off, so jumps aren't
-     followed but falls are.
+   - The pivot follows a goal point (target plus eye-height offset) with a critically
+     damped spring. It is solved exactly over the interval the goal moved in, so it does
+     not stick to a moving base, and its lag is the same at any frame rate.
+   - Horizontal: a hard leash, so the camera can't trail further back at speed.
+   - Vertical: its own leash, so a fall can't leave the character below the frame.
+   - Airborne: a deadband above take-off, so jumps aren't followed but falls are.
    - Look-ahead along velocity, sprung and clamped.
+   - An anchor switch is inertialized (see the decision note).
    - A teleport snaps everything and sets `cut_this_frame`.
 3. **Orbit.**
    - Mouse delta is integrated without `dt`. Stick rate goes through deadzone → S-curve →
@@ -89,6 +91,10 @@ Each stage below owns its outputs; no later stage writes them.
   game must still let the player look around.
 - **Virtual time:** follow springs and look-ahead, so the pivot freezes with the world.
 - The profile can override per stage group.
+- **Within a frame:** existing blends advance over the frame before that frame's mode
+  requests apply. A threshold on accumulated time (the recentre delay) acts only on the
+  part of the frame past it. See
+  [frame-rate independence needs exact events and thresholds](./frame-rate-independence-needs-exact-events-and-thresholds.md).
 
 ### Damping
 
@@ -250,16 +256,25 @@ the research notes.
 
 ## Status
 
-Nothing is built yet (2026-10-10). The phased roadmap, test gates and measured results
-live in `CAMERA_PROGRESS.md`. Build P0 first: move `src/character/anim/math` up to
-`src/math` (leaving a re-export shim), then write the pure stages and the trace/harness
-tools.
+The phased roadmap, test gates and measured results live in `CAMERA_PROGRESS.md`.
+
+**Built in P0 (2026-10-10):**
+- the pure stages: `anchor`, `orbit`, `rig`, `stack`;
+- `pipeline` chaining them over plain data;
+- `trace` and `harness`.
+
+The math moved to `src/math`, leaving a re-export at `character::anim::math`.
+
+**Not built yet:** ECS components and systems, input mapping, collision, profiles, lock-on,
+effects and debug tools. In the pure stages the per-stage component names above are still
+plain structs: `PivotState`, `OrbitState`, `CameraStack`, `DesiredPose`.
 
 ## Related
 
 - [One rig with blended layers](./one-rig-with-blended-layers-over-blending-virtual-cameras.md) — prerequisite: why layers carry parameters, an anchor and a goal.
 - [Camera collision and occlusion techniques](./camera-collision-and-occlusion-techniques.md) — deeper: what each `resolve_boom` stage is for.
 - [Camera damping is exponential, not a per-frame lerp](./camera-damping-is-exponential-not-a-per-frame-lerp.md) — prerequisite: the only allowed smoothing forms.
+- [Frame-rate independence needs exact events and thresholds](./frame-rate-independence-needs-exact-events-and-thresholds.md) — prerequisite: the in-frame timing rules every stage follows.
 - [Fifty camera mistakes digest](./fifty-camera-mistakes-nesky-digest.md) — deeper: the behavioural rules the pipeline enforces.
 - [Shipped action-game camera behaviours](./shipped-action-game-camera-behaviours.md) — example: lock-on, combat framing and the option set.
 - [A jump forward leans out over its toes, and its travel is the root's](../character-animation/ik-and-locomotion/a-jump-forward-leans-out-over-its-toes-and-travels-as-root-motion.md) — applies: root motion is spread across a jump so a following camera doesn't jump.

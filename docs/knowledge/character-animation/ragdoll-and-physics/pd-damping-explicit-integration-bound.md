@@ -10,7 +10,7 @@ tags:
   - correctness
 updated: 2026-09-25
 code:
-  - src/character/anim/math/pd.rs
+  - src/math/pd.rs
   - src/character/anim/ragdoll.rs
 sources:
   - test ragdoll::tests::every_default_joint_is_well_conditioned_for_the_physics_timestep

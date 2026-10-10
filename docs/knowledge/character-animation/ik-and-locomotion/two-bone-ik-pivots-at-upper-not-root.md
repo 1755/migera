@@ -10,7 +10,7 @@ tags:
 updated: 2026-09-25
 code:
   - src/character/anim/studio/effector.rs
-  - src/character/anim/math/ik.rs
+  - src/math/ik.rs
   - src/character/anim/armik.rs
   - src/character/anim/legik.rs
 aliases:

@@ -50,7 +50,7 @@ and follows the operating point through a real walking stride.
 
 ## Relevance to migera
 
-The ragdoll's `pd_torque_at` (`src/character/anim/math/pd.rs`) clamps torque to
+The ragdoll's `pd_torque_at` (`src/math/pd.rs`) clamps torque to
 a velocity-independent `max_torque`. This section supplies the shape of a
 better ceiling: fall off Hill-style when the joint already moves with the
 torque (a natural speed limit and "weight"), rise to ~1.5× when the joint is

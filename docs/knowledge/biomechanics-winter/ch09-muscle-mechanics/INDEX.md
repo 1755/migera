@@ -77,7 +77,7 @@ mechanics.
 ## Relevance to migera
 
 migera's active ragdoll (`src/character/anim/ragdoll.rs`,
-`src/character/anim/math/pd.rs`) drives each of its joints with one quaternion
+`src/math/pd.rs`) drives each of its joints with one quaternion
 PD controller whose output is clamped to `max_torque` (an angular
 acceleration), scaled by a continuous `RagdollStrength` dial borrowed from
 Lugaru's per-muscle `strength`. Measured against this chapter, that actuator

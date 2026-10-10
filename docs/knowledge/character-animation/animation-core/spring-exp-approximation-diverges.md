@@ -9,7 +9,7 @@ tags:
   - correctness
 updated: 2026-09-24
 code:
-  - src/character/anim/math/spring.rs
+  - src/math/spring.rs
 sources:
   - test a_spring_converges_to_its_target_from_any_start
 aliases:
@@ -51,7 +51,7 @@ the accurate range.
 
 ## Evidence
 
-Fixed in `src/character/anim/math/spring.rs` on 2026-09-24. Caught by
+Fixed in `src/math/spring.rs` on 2026-09-24. Caught by
 `a_spring_converges_to_its_target_from_any_start`.
 
 ## Related

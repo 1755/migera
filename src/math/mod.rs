@@ -1,4 +1,7 @@
-//! Pure, ECS-free math for the rotation-space animation stack.
+//! Pure, ECS-free math shared by the animation stack and the camera.
+//!
+//! It lived at `character::anim::math` until the camera needed the same
+//! springs; that path is now a re-export of this module.
 //!
 //! Every function here is a plain function over plain values — no `World`,
 //! no `Component`, no Bevy schedule. That is deliberate: it makes the whole
@@ -12,6 +15,7 @@
 //! - [`inertialize`] — velocity-preserving transitions, replacing the
 //!   crossfade (Stage 1 transitions, Stage 3 foot locking).
 
+pub mod angle;
 pub mod ik;
 pub mod inertialize;
 pub mod pd;
@@ -26,4 +30,7 @@ pub use quat_ext::{
     canonical, from_scaled_angle_axis, neighborhood, quat_exp, quat_log, rotation_delta,
     to_scaled_angle_axis,
 };
-pub use spring::{spring_scalar, spring_vec3, SpringParams};
+pub use spring::{
+    spring_scalar, spring_scalar_tracking, spring_vec3, spring_vec3_tracking, tracking_lag,
+    SpringParams,
+};

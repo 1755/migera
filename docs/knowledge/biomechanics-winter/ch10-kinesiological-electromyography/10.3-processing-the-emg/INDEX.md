@@ -53,7 +53,7 @@ measure accumulated activity.
 The section supplies a ready, physiologically justified model of **activation
 dynamics**: command → rectify → critically damped low-pass at the twitch time
 → force. migera already owns that filter (critical `SpringParams` in
-`src/character/anim/math/spring.rs`), so applying it to the ragdoll's
+`src/math/spring.rs`), so applying it to the ragdoll's
 strength dial in `src/character/anim/ragdoll.rs` would give muscle-like
 40–100 ms force build-up and release instead of instant strength changes.
 The integrators suggest the complementary signal — accumulated |effort| — as

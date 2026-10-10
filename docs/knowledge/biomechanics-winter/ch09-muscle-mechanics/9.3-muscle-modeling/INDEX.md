@@ -71,7 +71,7 @@ EMG ([9.3.1](./9.3.1-emg-driven-model-example.md)).
 
 ## Relevance to migera
 
-migera's ragdoll PD (`src/character/anim/math/pd.rs`) is itself a linear
+migera's ragdoll PD (`src/math/pd.rs`) is itself a linear
 spring (kp) and damper (kd) acting in parallel between target and body,
 with a hard clamp. This section's vocabulary maps onto proposed additions: a
 **series spring** between controller and body (compliance), **nonlinear
