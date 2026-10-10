@@ -214,6 +214,11 @@ pub struct AnimFootIk {
     /// with [`Self::legs_free`], the pose is not lifted clear of the floor
     /// at the root's height, which on a ladder is in the air at the feet.
     pub off_floor: bool,
+    /// Any hand that the sprung pose takes into a wall swung out of it
+    /// (`parkour::wallhand::keep_hands_off`): for a body walking or
+    /// standing, its hands on nothing. Held at a wall's face in the target,
+    /// the springs' lag still carried a hand 7 cm in.
+    pub hands_off_walls: bool,
 }
 
 /// Where a landing has each foot down this frame, in the pose's frame
@@ -800,6 +805,10 @@ fn solve_foot_ik(
         };
 
         let mut solved = pose.pose();
+        if foot_ik.hands_off_walls {
+            let blocks = |point: Vec3, low: f32| ground.0.blocks(point, low, low + 2.0);
+            super::parkour::wallhand::keep_hands_off(&mut solved, &rig, origin, frame, &blocks);
+        }
         let pelvis_config = foot_ik.pelvis;
 
         // Legs posed as authored, untouched (`AnimFootIk::legs_free`); the

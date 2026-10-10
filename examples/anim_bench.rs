@@ -924,11 +924,21 @@ fn main() {
     let away = std::env::args().any(|a| a == "--walls-away");
     let way = if away { Vec3::Z } else { Vec3::NEG_Z };
     let mut walkers: Vec<Vec3> = (0..characters).map(|i| Vec3::new(3.0 * (i % walls.max(1)) as f32, 0.0, -0.5)).collect();
+    // Its shoulders too (`walker::keep_shoulders_off`), found along their
+    // chains on its pose each frame as the walker finds them.
     let keep_off = |walkers: &mut Vec<Vec3>| {
-        use migera::character::anim::walker::{keep_off_walls, way_round};
+        use migera::character::anim::walker::{keep_off_walls, keep_shoulders_off, way_round};
         for at in walkers.iter_mut() {
             std::hint::black_box(way_round(*at, 0.0, 0.0, 0.77, way, &ground));
-            *at += keep_off_walls(*at, way * (1.4 * DT), &ground).0;
+            let moved = keep_off_walls(*at, way * (1.4 * DT), &ground).0;
+            use migera::character::skeleton::Bone;
+            let shoulders = [Bone::LeftArm, Bone::RightArm].map(|bone| (migera::character::anim::rig::frame_from(&base, &rig, Bone::Head, bone).0 + base.root_translation).with_y(0.0));
+            *at += moved + keep_shoulders_off(*at + moved, shoulders, &ground);
+            // And its hands (`wallhand::keep_hands_off`, after the springs).
+            let mut posed = base;
+            let blocks = |point: Vec3, low: f32| migera::character::anim::ground::GroundProbe::blocks(&ground, point, low, low + 2.0);
+            migera::character::anim::parkour::wallhand::keep_hands_off(&mut posed, &rig, *at, Quat::IDENTITY, &blocks);
+            std::hint::black_box(posed);
         }
     };
 

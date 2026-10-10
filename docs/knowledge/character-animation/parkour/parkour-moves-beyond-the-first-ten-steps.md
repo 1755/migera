@@ -253,8 +253,9 @@ climbing is the heart of the style; perches and agility make it feel right.
   [windows, in and out](./a-window-is-climbed-through-crouched-on-its-sill.md);
   [overhangs, the feet cut loose and swinging, and hand over hand under a
   roof](./an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md).
-  Not built: a French window, overhangs steeper than about 30°, a
-  cut-loose without a dyno, a roof of holds in two dimensions.
+  Overhangs are climbed from 26° to 52° over gaps up to 0.6 m. Not built:
+  a French window, overhangs past 52° and roofs, a cut-loose without a
+  dyno, a roof of holds in two dimensions.
 
 All eight steps are built (2026-10-10). What each left unbuilt is listed
 above and in its notes.

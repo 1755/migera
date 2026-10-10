@@ -482,6 +482,10 @@ const STOOD_HOLD: f32 = 0.3;
 /// many ways round. It stops for a wall straight ahead this much further
 /// off, and as far as it goes in this long at its speed.
 pub const BODY_RADIUS: f32 = 0.2;
+/// Each shoulder joint is kept this far from a wall too, metres (a
+/// deltoid's thickness over the joint, and room for the arm hanging under
+/// it): the shoulders stand about as far either side as the body's circle.
+pub const SHOULDER_RADIUS: f32 = 0.08;
 /// On a beam, it turns back onto its line at this rate, rad/s.
 const BEAM_TURN: f32 = 2.0;
 /// Asked to slide under a slab, too slow to yet, it gives up nearer than
@@ -2035,6 +2039,12 @@ pub fn drive_walkers(time: Res<Time>, mut rigs: Query<WalkingRig>) {
             }
             if let Some(wall) = state.wall_beside {
                 wallhand::rest_hand(&mut target.pose, state.locomotion.position, state.facing.yaw, &gait_rig, &wall, super::gait::smoothstep(state.wall_hand));
+            }
+            // Any hand still in a wall (one ahead, not leant on) swung out
+            // of it, in the sprung pose (`AnimFootIk::hands_off_walls`).
+            let hands_off = !state.on_holds() && state.jump.is_none() && state.posture.is_standing() && walker.reach.is_none();
+            if foot_ik.hands_off_walls != hands_off {
+                foot_ik.hands_off_walls = hands_off;
             }
         }
         // Asked to perch, standing still: crouched down into it, up again
@@ -3854,6 +3864,47 @@ pub fn keep_off_walls(at: Vec3, moved: Vec3, ground: &dyn super::ground::GroundP
     (to - at, out)
 }
 
+/// How far a body standing at `at`, its shoulders `shoulders` from it
+/// (level, the world), must move to keep each shoulder [`SHOULDER_RADIUS`]
+/// off any wall [`keep_off_walls`] would stop it at: pushed straight out
+/// from the nearest, each shoulder in turn.
+pub fn keep_shoulders_off(at: Vec3, shoulders: [Vec3; 2], ground: &dyn super::ground::GroundProbe) -> Vec3 {
+    let wall = |point: Vec3| ground.blocks(point, at.y + super::parkour::fall::STEP_DOWN, at.y + HEADROOM);
+    let mut push = Vec3::ZERO;
+    for shoulder in shoulders {
+        let centre = at + push + shoulder;
+        // Clear of every fourth probe, the rest not looked at (a wall can
+        // come 0.6 cm in between them at this radius): on open floor, all
+        // 32 cost 2 µs a frame.
+        let coarse = (0..WALL_PROBES).step_by(4).any(|k| {
+            let angle = std::f32::consts::TAU * k as f32 / WALL_PROBES as f32;
+            wall(centre + Vec3::new(angle.cos(), 0.0, angle.sin()) * SHOULDER_RADIUS)
+        });
+        if !coarse {
+            continue;
+        }
+        let nearest = (0..WALL_PROBES)
+            .map(|k| {
+                let angle = std::f32::consts::TAU * k as f32 / WALL_PROBES as f32;
+                Vec3::new(angle.cos(), 0.0, angle.sin())
+            })
+            .filter(|&way| wall(centre + way * SHOULDER_RADIUS))
+            .map(|way| {
+                let (mut low, mut high) = (0.0, SHOULDER_RADIUS);
+                for _ in 0..8 {
+                    let middle = 0.5 * (low + high);
+                    if wall(centre + way * middle) { high = middle } else { low = middle }
+                }
+                (high, way)
+            })
+            .fold((SHOULDER_RADIUS, Vec3::ZERO), |nearest, found| if found.0 < nearest.0 { found } else { nearest });
+        if nearest.1 != Vec3::ZERO {
+            push -= nearest.1 * (SHOULDER_RADIUS - nearest.0 + 1.0e-3);
+        }
+    }
+    push
+}
+
 /// What [`ride_rendered_feet`] moves: the walker's own for its platforms.
 type RiddenRig = (&'static AnimPose, &'static mut WalkerState, &'static mut AnimFootIk, &'static mut Transform, &'static AnimGround, Option<&'static Walker>);
 
@@ -3920,6 +3971,18 @@ pub fn ride_rendered_feet(time: Res<Time>, mut rigs: Query<RiddenRig>) {
         // went on straight through the block. (On holds or jumping, the
         // move places the body itself.)
         let moved = if state.on_holds() || state.jump.is_some() { moved } else { keep_off_walls(state.locomotion.position, moved, ground.0.as_ref()).0 };
+        // And its shoulders, wider than the body's circle: turning beside a
+        // wall at that circle, a shoulder swept 2 cm into it, and its arm
+        // hung 8 cm in.
+        let moved = if state.on_holds() || state.jump.is_some() {
+            moved
+        } else {
+            // Each along its own chain, not the whole skeleton (`frame_from`
+            // measures from the root when its first bone is not on the
+            // chain): forward kinematics each frame cost 2 µs on open floor.
+            let shoulders = [Bone::LeftArm, Bone::RightArm].map(|bone| state.facing.rotation() * (super::rig::frame_from(&now, &rig, Bone::Head, bone).0 + now.root_translation).with_y(0.0));
+            moved + keep_shoulders_off(state.locomotion.position + moved, shoulders, ground.0.as_ref())
+        };
         state.locomotion.position += moved;
         // The foot locks keep a planted foot where it is in the WORLD only if
         // they know the body moved over it.
@@ -4206,5 +4269,35 @@ mod tests {
         assert!(at.z > 3.0 && held.is_none(), "away, ended at {at:?}, held {held:?}");
         let (moved, held) = keep_off_walls(Vec3::new(0.0, 3.0, -1.2), Vec3::Z * 0.5, &ground);
         assert!((moved.z - 0.5).abs() < 1.0e-6 && held.is_none(), "on the top to its edge, moved {moved:?}, held {held:?}");
+    }
+
+    /// Kept `BODY_RADIUS` off a wall, the body turned from facing it to
+    /// side-on, a quarter turn at a time: each shoulder (0.18 m either side)
+    /// stays `SHOULDER_RADIUS` off its face, the body pushed straight out,
+    /// no further than that needs; facing the wall, not pushed at all.
+    #[test]
+    fn the_shoulders_are_kept_out_of_walls() {
+        use crate::character::anim::ground::FlatGround;
+        use crate::character::anim::parkour::{geometry::LedgeGround, Ledge};
+        let block = Ledge::block(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 4.0, 2.0, 3.0);
+        let ground = LedgeGround::new(Box::new(FlatGround::default()), block.to_vec());
+        let mut at = Vec3::new(0.0, 0.0, -1.0 + BODY_RADIUS);
+        for k in 0..=16 {
+            // From facing -z (the wall) round to facing +x.
+            let yaw = -std::f32::consts::FRAC_PI_2 * k as f32 / 16.0;
+            let turn = Quat::from_rotation_y(yaw);
+            let shoulders = [Vec3::X * -0.18, Vec3::X * 0.18].map(|s| turn * s);
+            let push = keep_shoulders_off(at, shoulders, &ground);
+            if k == 0 {
+                assert!(push == Vec3::ZERO, "facing the wall, pushed {push:?}");
+            }
+            assert!(push.x.abs() < 1.0e-6 && push.z >= 0.0, "turned {yaw:.2}, pushed {push:?}, not straight out");
+            at += push;
+            let off = shoulders.iter().map(|&shoulder| (at + shoulder).z - (-1.0)).fold(f32::MAX, f32::min);
+            assert!(off >= SHOULDER_RADIUS - 1.0e-3, "turned {yaw:.2}, a shoulder {off:.3} off the face");
+            if push != Vec3::ZERO {
+                assert!(off < SHOULDER_RADIUS + 0.01, "turned {yaw:.2}, pushed the nearer shoulder {off:.3} off");
+            }
+        }
     }
 }

@@ -1,19 +1,22 @@
 ---
 title: A hand rests on a wall beside the body
-description: "Step 11, fifth part: beside a tall wall within 0.62 m of a shoulder, standing or walking, that hand rests on it palm flat, a little ahead of the shoulder and under it, 3 cm off the face; eased in by distance and over 0.3 s. Read before changing parkour/wallhand.rs."
+description: "Step 11, fifth part: beside a tall wall within 0.62 m of a shoulder, that hand rests on it palm flat, 3 cm off the face found square (slanting too); any other hand in a wall is swung out of it after the springs. Read before changing parkour/wallhand.rs or a walker's arms near walls."
 type: decision
 status: current
 tags:
   - locomotion
   - ik
-updated: 2026-10-09
-verified: 2026-10-09
+  - correctness
+updated: 2026-10-10
+verified: 2026-10-10
 code:
   - src/character/anim/parkour/wallhand.rs
   - src/character/anim/walker.rs
+  - src/character/anim/plugin.rs
   - examples/anim_bench.rs
 sources:
-  - "test parkour::wallhand::tests::a_hand_rests_on_a_wall_beside_it"
+  - "tests parkour::wallhand::tests::{a_hand_rests_on_a_wall_beside_it, a_hand_rests_on_a_wall_met_slanting, a_hand_is_kept_out_of_a_wall}"
+  - "live: character_gallery --holds-wall 0,-0.6,180,9,13 --free-climb 1,0,1, BRP over the walk-up"
   - "live: character_gallery --side-ledge 0.62,0,90,2.5,6 (standing) and --side-ledge 0.62,0,90,2.5,20 --anim-speed 1.0 (walking), Xvfb, gizmos on/mesh off Front, Back and Left, mesh on"
   - "anim_bench --gait wall-hand --characters 100"
 aliases:
@@ -22,6 +25,9 @@ aliases:
   - brushing a wall
   - wallhand
   - Beside
+  - keep_hands_off
+  - hands_off_walls
+  - hand in a wall
 ---
 
 # A hand rests on a wall beside the body
@@ -36,15 +42,30 @@ the hand's place are by eye.
 **The wall** (`wallhand::beside`) is probed straight out from each
 shoulder, level, every 2 cm to 0.62 m, then narrowed to its face by
 bisection. The probe uses the walker's ground (`blocks`, solid higher than
-0.2 m under the shoulder). The nearer side wins. Its face is taken as
-square to the probe.
+0.2 m under the shoulder). The nearer side wins.
+- **Its face's own way out** comes from two more probes 0.2 rad either
+  side, reaching twice as far: the line through their hits. The distance
+  is measured square to that face.
+- **A face turned more than 60° toward the front or the back** is ahead
+  or behind, not beside, and is not leant on.
+
+**Any hand in a wall** (`wallhand::keep_hands_off`), one ahead that is not
+leant on, is swung out about its shoulder, the arm whole:
+- just far enough to keep the wrist 3 cm off the face, held there from
+  the moment it comes within 3 cm, so it never jumps;
+- in the sprung pose, after the springs, in `solve_foot_ik`, whenever the
+  walker sets `AnimFootIk::hands_off_walls` (standing, off holds, not
+  jumping, no reach);
+- a shoulder already in the wall is left alone: the walker keeps the
+  shoulders out ([walking is kept out of
+  walls](./walking-is-kept-out-of-walls.md)).
 
 **The weight** (`Beside::weight`): 0 at 0.62 m, eased to 1 by 0.45 m; none
 nearer than 0.18 m, with the arm folded against it.
 
 **The hand** (`rest_hand`):
-- the wrist goes 0.12 m ahead of the shoulder, 0.08 m under it, 3 cm off
-  the face;
+- the wrist goes 0.12 m ahead of the shoulder along the face, 0.08 m
+  under it, 3 cm off the face;
 - the arm is solved to it with the elbow pole down and back;
 - the palm is turned flat onto the face, the fingers up and a little
   ahead;
@@ -71,6 +92,17 @@ passes.
 - **The face found a probe step late** (2 cm) put the wrist 2 cm nearer
   it than asked. The probe's last step is narrowed by bisection to within
   0.02 mm.
+- **A face met slanting, taken square to the probe**, with "ahead" taken
+  straight ahead, put the wrist into it. The test had only walls parallel
+  to the body, and could not see it.
+- **The hands go into walls the rest never sees.** Walking up to a hold
+  wall 0.6 m away, the approach loops along the face, turns back and
+  turns to face it. As it turned, the face came ahead (not leant on) and
+  a swinging hand hung 8 cm into it.
+  - Held off the face in the target pose, the springs' lag still carried
+    it 7 cm in. Hence after the springs.
+  - It went no further once its shoulder, swept round in the turn, was
+    itself 2 cm into the face. The shoulders are now kept out too.
 
 ## Consequences
 
@@ -81,7 +113,20 @@ shoulder):
   shoulder;
 - no joint went through the wall;
 - a wall 0.9 m out, or one waist high, was not leant on;
-- the wrist moved under 3 cm for each 5 mm the wall came nearer.
+- the wrist moved under 3 cm for each 5 mm the wall came nearer;
+- walls slanting 20-45° toward the front (0.35 m square off): found
+  square to within 1 cm and its way out within 0.01, the wrist 3 cm off
+  the face, nothing into it; at 70° it is ahead and not leant on
+  (`a_hand_rests_on_a_wall_met_slanting`; taken square to the probe, it
+  fails);
+- a wall brought in on a hanging hand, square, slanting 45° and 80°, 5 mm
+  a step: the hand untouched while 3 cm clear; then held 3 cm off the
+  face (within 2 mm), the wrist and elbow never in it, no step over 1 cm
+  (`a_hand_is_kept_out_of_a_wall`).
+
+**Live** walk-up to a hold wall 0.6 m ahead (`--holds-wall
+0,-0.6,180,9,13 --free-climb 1,0,1`, BRP): a hand went 11 cm into the face
+before, and now comes no nearer it than 1.6 cm.
 
 **Live**: standing beside a 2.5 m wall 0.44 m from the shoulder, the hand
 rested on its face (seen front, back and on the mesh, in front of the
@@ -94,9 +139,9 @@ frame).
 
 ## Revisit when
 
-- **Walls not square to the shoulder** (a corner, a slanted face): the face
-  is taken as square to the probe; a second probe along the way would give
-  its slant.
+- **A corner**, the two side probes on two faces: the line through them
+  is neither face.
+- **An elbow in a wall** with its wrist clear: only the wrist is checked.
 - **A hand pushing off a wall** in a turn, or touching it only briefly as
   it passes, rather than resting there.
 

@@ -1,19 +1,19 @@
 ---
 title: Walking is kept out of walls
-description: "The walker had no collision. Ground higher than a step pushes the body (0.2 m circle) back out, sliding (keep_off_walls); a wall ahead is gone round by the least clear turn and back to its line, or stopped at in a dead end (way_round); tops found through a 1 m grid. Read before changing how the walker moves its root."
+description: "The walker had no collision. Ground higher than a step pushes the body (0.2 m circle, and each shoulder 0.08 m) back out, sliding (keep_off_walls); a wall ahead is gone round by the least clear turn and back to its line, or stopped at (way_round); a 1 m grid. Read before changing how the walker moves its root."
 type: decision
 status: current
 tags:
   - locomotion
   - correctness
-updated: 2026-10-09
-verified: 2026-10-09
+updated: 2026-10-10
+verified: 2026-10-10
 code:
   - src/character/anim/walker.rs
   - src/character/anim/parkour/geometry.rs
   - src/character/anim/ground.rs
 sources:
-  - "tests walker::tests::{walking_is_kept_out_of_walls, walking_goes_round_a_wall}, parkour::geometry::tests::the_grid_finds_what_every_ledge_finds"
+  - "tests walker::tests::{walking_is_kept_out_of_walls, walking_goes_round_a_wall, the_shoulders_are_kept_out_of_walls}, parkour::geometry::tests::the_grid_finds_what_every_ledge_finds"
   - "anim_bench --gait walk --characters 100 --walls N [--walls-away]"
   - "live: character_gallery --block 0,-8,0,3.0,2.0,12 --side-ledge 0,-10.5,180,3.0,2.0 --start-height 3.0 --anim-speed-schedule 1:3.0; --block 0,-1,180,2.25,2.0,1.0 --hang-at 1 --climb-up-at 18"
 aliases:
@@ -22,6 +22,8 @@ aliases:
   - back_to_line
   - LedgeGround grid
   - BODY_RADIUS
+  - SHOULDER_RADIUS
+  - keep_shoulders_off
   - walking round a wall
   - wall collision
   - walking into a wall
@@ -54,6 +56,15 @@ wall, by how far in the wall starts along it (bisected). There are 32
 probes, every other one tried first: clear of those 16, the rest are not
 looked at (a corner can come 0.4 cm in between them). It slides along
 walls and round corners, and stops only square on.
+
+**Its shoulders are kept 0.08 m off a wall too** (`SHOULDER_RADIUS`,
+`keep_shoulders_off`, after the body's push). The shoulders stand about as
+far either side as the circle reaches. Side-on at the circle's 0.2 m,
+turning to face the wall, the outer one swept 2 cm into it, and its arm
+hung 8 cm in. Each is a small circle of probes: every fourth first, the
+rest only if one of those is in a wall. It pushes the root straight out of
+the nearest face by what it lacks. The body is in effect wider across the
+shoulders than front to back.
 
 **With a wall ahead within its stopping distance it goes round it**
 (`way_round`, in `drive_walkers`). The stopping distance is 0.2 m, plus
@@ -124,9 +135,17 @@ ledges. Looking at every ledge, the wall checks cost grew with the level:
 - A step up of 0.3 m or less is walked onto as before.
 - **Headless, overhead**: a bar 2.3 m up across the way is walked straight
   under; one 1.5 m up is gone round.
+- **Headless, shoulders**: kept 0.2 m off a wall, turned from facing it to
+  side-on a sixteenth of a quarter at a time, the nearer shoulder never
+  under 0.08 m from the face, pushed straight out by no more than it
+  needs; facing it, not pushed (`the_shoulders_are_kept_out_of_walls`).
+  Live, walking up to a hold wall 0.6 m ahead (the approach loops along
+  it): no hand comes nearer the face than 1.6 cm, where one went 11 cm in.
 - **Cost** (`anim_bench --gait walk --characters 100 --walls N`, on top of
   the walk's 24 µs a character a frame): flat in the level's size through
-  the grid.
+  the grid. With the shoulders and the hands kept out too (2026-10-10):
+  1.4 µs on open floor, 8.2 µs held at a wall (1 block) and 8.9 µs (10).
+  The probes on open floor were 2 µs until they tried a coarse ring first.
 
 | Blocks (ledges) | Open floor (`--walls-away`) | Held at a wall | Without the grid, held |
 |---|---|---|---|
@@ -144,3 +163,4 @@ ledges. Looking at every ledge, the wall checks cost grew with the level:
 
 - [A fall facing a wall is held off it](./a-fall-facing-a-wall-is-held-off-it.md) — contrast: the same walls kept off by a fall, with a planned room for its landing.
 - [A drop is fallen ballistically and landed to the measured time and depth](./a-drop-is-fallen-ballistically-and-landed-to-the-measured-time-and-depth.md) — context: the ground snap that turns walking off a top into a fall, the other end of the same root move.
+- [A hand rests on a wall beside the body](./a-hand-rests-on-a-wall-beside-the-body.md) — same-trap (2026-10-10): the arms the body's circle does not keep out; any hand in a wall is swung out of it after the springs.

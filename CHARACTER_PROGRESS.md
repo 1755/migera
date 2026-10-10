@@ -41,6 +41,56 @@ purely because fixed overhead is not amortized.
 
 ## Log
 
+### Overhangs to 52°, wide gaps, and hands kept out of walls
+
+The limits left by step 15, and a walk-up fault found by it. Notes: [an
+overhang is climbed as the upright climb turned with its
+face](docs/knowledge/character-animation/parkour/an-overhang-is-climbed-as-the-upright-climb-turned-with-its-face.md),
+[a hand rests on a wall beside the
+body](docs/knowledge/character-animation/parkour/a-hand-rests-on-a-wall-beside-the-body.md),
+[walking is kept out of
+walls](docs/knowledge/character-animation/parkour/walking-is-kept-out-of-walls.md).
+
+- **Overhangs.**
+  - At the crease the braced hips are moved out until the head, chest and
+    shoulders are as far off the face as on a flat one.
+  - On a steep face a dyno is caught in from plumb, on the hang's circle,
+    and swings out from there. Its drive keeps the body's tilt and lets go
+    no farther than the feet reach.
+  - The elbow limit on overhangs is 0.97 (it was 0.95), and an arm already
+    past it may stay.
+  - Slower hand moves near the pole and body turns at most 0.8 rad/s.
+  - The swing's turn eases in, and a forearm pointing into the face hooks
+    its fingers up the face.
+- **Headless** (`steep_overhangs_and_wide_gaps_are_climbed`): 26°, 40° and
+  52° over gaps of 0.3-0.6 m all top out.
+  - held feet within 0.7 mm, nothing over 4.1 mm into a face;
+  - outside dynos no step over 4.0 cm;
+  - a held wrist bent at most 0.70 rad sideways at 52°;
+  - before, a 0.6 m gap stuck, 40° pulled a foot 15 cm off and 52° put
+    the head 3.7 cm in.
+  - Sabotaging the crease clearance or the release fails the test. The 26°
+    swing still measures a rod's period within 2 %.
+- **Hands kept out of walls.**
+  - The wall-hand finds a slanting face's own normal.
+  - Any hand in a wall is swung out of it after the springs
+    (`keep_hands_off`, `AnimFootIk::hands_off_walls`).
+  - The walker keeps each shoulder 0.08 m off a wall
+    (`keep_shoulders_off`).
+  - Walking up to a hold wall 0.6 m ahead, the approach loops along the
+    face and turns to it. A hand went 11 cm into it; it now comes no
+    nearer than 1.6 cm.
+  - New tests: `a_hand_rests_on_a_wall_met_slanting` (fails taken square),
+    `a_hand_is_kept_out_of_a_wall`, `the_shoulders_are_kept_out_of_walls`.
+- **Live**: 52° over a 0.6 m gap climbed onto its top, nothing on the wall
+  into the face (BRP), seen from the left and back, and with the mesh.
+- **Bench**:
+  - walking with the shoulders and hands kept out costs 1.4 µs on open
+    floor (was 0.7) and 8.2 µs held at a wall (was 7.3);
+  - `--gait overhang` 0.138 ms, `free-climb` 0.110 ms.
+- **Not fixed here**: the hand jumps 10-11 cm in the frame the free climb
+  starts from the walker's pose.
+
 ### Parkour, step 15 (second part): overhangs, and hand over hand under a roof
 
 The last step of the plan. A wall may overhang (`HoldWall::leaning`), and
