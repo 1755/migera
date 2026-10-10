@@ -64,7 +64,7 @@ impl Scenario {
                 CameraFrame {
                     clock: CameraClock { real_dt: dt, virtual_dt: dt * self.time_scale },
                     input: (self.input)(t - 0.5 * dt),
-                    target: TargetSample { position, grounded, facing_yaw: None, rebase: false },
+                    target: TargetSample { position, grounded, ..Default::default() },
                     requests,
                     goals: Vec::new(),
                 }

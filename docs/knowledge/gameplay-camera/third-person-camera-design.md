@@ -107,16 +107,27 @@ All components derive `Reflect`, so BRP can inspect them.
 
 **Camera entity** (`Camera3d`; every query is `With<Camera3d>`, because the shadow view
 carries a bare `Camera`):
-- `ThirdPersonCamera { target, profile }` requires the rest, so the hello-world is
+- `ThirdPersonCamera { target, config }` requires the rest, so the hello-world is
   `commands.spawn((Camera3d::default(), ThirdPersonCamera::follow(player)))`.
-- `CameraInput { look_delta, look_rate, zoom, recenter, lock_on, switch, shoulder_swap,
-  assist }`: the only input contract.
+- `CameraInput { look_delta, look_stick, zoom, recenter, lock_on, switch, shoulder_swap,
+  move_held }` is the only input contract.
+  - The camera consumes the one-shot parts each frame.
+  - `move_held` belongs to the game's movement controller.
+  - `CameraDeviceInput` opts a camera into mouse, keyboard and gamepad mapping. Without
+    it, a test, replay or AI drives the camera.
 - `CameraInputSettings`, a component so each split-screen player has their own:
   per-device sensitivity and curve, invert, deadzone, acceleration, shake scale.
-- Per-stage state and outputs: `CameraClock`, `CameraStack`, `CameraAnchor`,
-  `CameraOrbit`, `CameraDesiredPose`, `CameraResolvedPose`.
-- `CameraView`, the public output: eye, rotation, fov, `view_yaw`, `control_yaw`,
-  flat forward/right, desired/actual distance, `target_fade`, `cut_this_frame`.
+- `CameraModeRequests` and `CameraGoals`: this frame's mode switches and orbit goals,
+  cleared once used.
+- Per-stage state and outputs:
+  - `CameraClock`;
+  - `CameraRigState`, which wraps the pure `CameraRig` (anchor, orbit, stack);
+  - `CameraDesiredPose`;
+  - `CameraResolvedPose`, from P2.
+- `CameraView`, the public output: eye, rotation, fov, pivot, `view_yaw`, `pitch`,
+  `control_yaw` with its latch, `cut_this_frame`, and `control_forward`/`control_right`.
+  P2 and P5 add distances and `target_fade`.
+- `CameraRecorder` records every consumed frame as a `CameraTrace`.
 
 **Control yaw latch.** A player controller maps the stick against `control_yaw`, not
 `view_yaw`. `control_yaw` holds its value across a cut, or a lock-on swing, for as long
@@ -144,12 +155,19 @@ because `follow_the_fallen_body` copies only x/z into `locomotion.position`.
 1. `CameraSet::Input` runs in `Update`.
 2. In `PostUpdate`, a named set `CameraTargetSources` contains every system that last
    moves a target: `RagdollSet::ReadBack` today, and any physics-interpolation set later.
-3. The chain `Anchor → Orbit → Rig → Collide → Effects → Write` runs after
+3. The chain `Target → Rig → Collide → Effects → Write` runs after
    `CameraTargetSources` and before `TransformSystems::Propagate`.
+   - `Target` gathers clocks and runs target bridges.
+   - `Rig` runs stack, anchor, orbit and rig as one system over the pure `CameraRig`.
+     Finer sets would only be worth adding when a consumer needs to step between them.
 
 The chain reads the target's `Transform`, which is final for the frame. `GlobalTransform`
-is still last frame's at that point. A test pins the order: moving the chain before
-`ReadBack` must produce a one-frame lag.
+is still last frame's at that point.
+
+A test pins the order: `the_camera_follows_a_ragdoll_read_back_in_the_same_frame`. Its
+sabotage must order the camera chain *itself* before `ReadBack`. Moving only
+`CameraTargetSources` leaves the two unordered, and the scheduler happened to run the
+read-back first, so the test still passed.
 
 ## Collision
 
@@ -256,18 +274,10 @@ the research notes.
 
 ## Status
 
-The phased roadmap, test gates and measured results live in `CAMERA_PROGRESS.md`.
-
-**Built in P0 (2026-10-10):**
-- the pure stages: `anchor`, `orbit`, `rig`, `stack`;
-- `pipeline` chaining them over plain data;
-- `trace` and `harness`.
-
-The math moved to `src/math`, leaving a re-export at `character::anim::math`.
-
-**Not built yet:** ECS components and systems, input mapping, collision, profiles, lock-on,
-effects and debug tools. In the pure stages the per-stage component names above are still
-plain structs: `PivotState`, `OrbitState`, `CameraStack`, `DesiredPose`.
+What is built, phase by phase, with test gates and measurements, is in
+`CAMERA_PROGRESS.md`.
+- **Built (P0, P1):** the pipeline, the ECS plugin, input and `examples/camera_playground.rs`.
+- **Not built:** collision, profiles, lock-on, effects and library debug tools.
 
 ## Related
 

@@ -53,6 +53,88 @@ stick moving and a mode switch every 2 s.
 
 ## Log
 
+### 2026-10-10 — P1: plugin, input, walker bridge, playground
+
+**What was built.**
+- **`src/camera/plugin.rs`: `ThirdPersonCameraPlugin`.**
+  - `CameraSet::Input` runs in `Update`.
+  - In `PostUpdate`, `CameraSet::{Target, Rig, Collide, Effects, Write}` are chained after
+    `CameraTargetSources`, which is ordered after physics writeback and
+    `RagdollSet::ReadBack`. The chain runs before transform propagation.
+  - Every component is registered for reflection.
+- **`components.rs`.**
+  - `ThirdPersonCamera` requires the rest: hello-world is
+    `(Camera3d, ThirdPersonCamera::follow(e))`.
+  - The other components: `CameraTarget`, `CameraTargetState`, `CameraModeRequests`,
+    `CameraGoals`, `CameraRigState`, `CameraDesiredPose`, `CameraView`, `CameraRecorder`.
+  - The pure `update_latch` holds `control_yaw` across a cut while a direction is held;
+    after 2 s it eases to the view.
+- **`device.rs`.** `CameraDeviceInput` maps mouse, keys and gamepad:
+  - mouse look always, while a button is held, or while the cursor is grabbed;
+  - scroll and D-pad zoom;
+  - R, middle mouse or R3 recentres; Tab or L3 swaps the shoulder.
+  - It skips itself without Bevy's input plugin.
+- **`bridge.rs`.** Fills `CameraTargetState` (grounded, facing) from `WalkerState`. The
+  position comes from the root `Transform`.
+- **Pipeline additions.**
+  - Shoulder swap: a sprung side.
+  - A per-target pivot offset on `TargetSample`.
+  - `CameraInput::consume` and `move_held`.
+- **`examples/camera_playground.rs`.**
+  - A walker on a field with a wall, pillars, a roofed corridor, a low tunnel and crates.
+    All have static colliders, ready for P2.
+  - WASD/stick moves relative to `CameraView::control_yaw`. Run, jump, combat toggle,
+    recentre, shoulder swap, and a teleport to make a cut.
+  - Scripts `orbit|walk|tour`; `--debug-view` (top-down inset; the rig drawn on its own
+    gizmo layer).
+  - `--record` (F9 or on exit) and `--replay PATH`, which prints metrics plus the target's
+    vs the eye's peak acceleration.
+
+**Gates, all passing (44 camera tests; full lib 1371):**
+- `the_camera_follows_a_ragdoll_read_back_in_the_same_frame`: a target moved in
+  `RagdollSet::ReadBack` is where the camera's pivot is, the same frame.
+- `camera_input_turns_the_camera_with_no_devices_and_is_consumed`.
+- `a_third_person_camera_without_camera3d_is_left_alone`: the bare shadow-view `Camera`.
+- `a_cut_while_moving_latches_the_control_yaw_in_the_world`, plus 4 pure latch tests.
+- `two_cameras_take_separate_inputs`.
+- `switching_target_hands_over_without_a_cut`.
+
+**Sabotage checks.**
+- Camera chain ordered before `ReadBack`: it reads the target a frame late (pivot x 0 vs
+  target x 10).
+  - The first sabotage attempt, moving only `CameraTargetSources`, still passed. The chain
+    and the read-back were left unordered, and the scheduler happened to run the read-back
+    first.
+- Latch disabled: both latch tests fail.
+
+**Visual check** (Xvfb `:97`, lavapipe, `--step-seconds 0.0166667`; claim stated first
+each time):
+
+| Shot | Claim | Result |
+|---|---|---|
+| `walk`, frame 150 | Character seen from behind walking away (−Z), a little left of centre (right shoulder), view from above, level horizon | yes |
+| `walk`, frame 330, after a right camera swing | Character turned with the camera, seen from behind again; view rotated | yes (yaw −116°, crates ahead) |
+| `orbit`, frame 200 | Standing character in profile, centred, level | yes |
+| `tour` + `--debug-view`, frame 500 | "mode combat", boom ≈ 2.5 m, closer, clean main view, rig in the inset | yes (boom 2.53 m) |
+
+Found and fixed along the way, all in the example:
+- The HUD rendered in the inset; it now has `UiTargetCamera`.
+- `°` and `·` were missing from the font.
+- The eye marker and forward arrow, drawn from the gameplay camera itself, smeared across
+  the view. They moved to a gizmo layer only the inset renders.
+
+**Measured.**
+- `tour` replay: 530 frames, max roll 1.5e-8.
+- The walker's root peaks at 79 m/s² of acceleration from the gait.
+- The eye peaks at 61 m/s² at frame 169, which is the scripted stick look being released.
+  That is player input on a 3.2 m boom, not following.
+- `camera_bench` is unchanged: 0.21 µs per camera at 64, 0.20 µs at 1000.
+
+**Known limits (for P2+).**
+- The character walks through the geometry (flat ground, no character collision), and
+  the camera goes through walls: collision is P2.
+- There is no `.camera.ron` profile yet; the config is inline.
+
 ### 2026-10-10 — P0: pure pipeline, trace replay, scenario harness
 
 **What was built.**

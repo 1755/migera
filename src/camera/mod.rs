@@ -27,17 +27,27 @@
 //! The roadmap and test gates: `CAMERA_PROGRESS.md`.
 
 pub mod anchor;
+pub mod bridge;
 pub mod clock;
+pub mod components;
+pub mod device;
 pub mod harness;
 pub mod input;
 pub mod orbit;
 pub mod pipeline;
+pub mod plugin;
 pub mod rig;
 pub mod stack;
 pub mod trace;
 
 pub use anchor::{AnchorParams, PivotState};
 pub use clock::CameraClock;
+pub use components::{
+    CameraDesiredPose, CameraGoals, CameraModeRequests, CameraRecorder, CameraRigState,
+    CameraTarget, CameraTargetState, CameraView, ThirdPersonCamera,
+};
+pub use device::{CameraDeviceInput, MouseLook};
+pub use plugin::{CameraSet, CameraTargetSources, ThirdPersonCameraPlugin};
 pub use input::{CameraInput, CameraInputSettings};
 pub use orbit::{OrbitGoal, OrbitParams, OrbitState};
 pub use pipeline::{CameraConfig, CameraFrame, CameraOutput, CameraRig, TargetSample};

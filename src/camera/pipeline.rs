@@ -28,6 +28,10 @@ pub struct TargetSample {
     /// The target changed (an anchor hand-off) this frame.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rebase: bool,
+    /// This target's own pivot offset (eye height), overriding the
+    /// config's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot_offset: Option<Vec3>,
 }
 
 /// One frame of everything the pipeline consumes: the unit a trace records.
@@ -50,7 +54,7 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 }
 
 /// Everything a designer tunes, minus per-player input settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 pub struct CameraConfig {
     pub modes: BTreeMap<ModeId, ModeParams>,
     pub base_mode: ModeId,
@@ -86,7 +90,7 @@ impl CameraConfig {
 }
 
 /// The output of one pipeline frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Reflect)]
 pub struct CameraOutput {
     pub pose: DesiredPose,
     pub yaw: f32,
@@ -96,7 +100,7 @@ pub struct CameraOutput {
 }
 
 /// One camera's whole state.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Reflect)]
 pub struct CameraRig {
     pub pivot: PivotState,
     pub orbit: OrbitState,
@@ -136,7 +140,7 @@ impl CameraRig {
         let target = frame.target;
         let anchor = self.pivot.step(
             &AnchorInput {
-                goal: target.position + config.pivot_offset,
+                goal: target.position + target.pivot_offset.unwrap_or(config.pivot_offset),
                 grounded: target.grounded,
                 rebase: target.rebase,
             },
@@ -172,7 +176,8 @@ impl CameraRig {
         );
 
         let (yaw, pitch) = (self.orbit.yaw(), self.orbit.pitch());
-        let shape = self.stack.rig_shape(pitch);
+        let mut shape = self.stack.rig_shape(pitch);
+        shape.shoulder *= self.orbit.shoulder_side;
         let pose = desired_pose(anchor.pivot, yaw, pitch, &shape, self.orbit.zoom);
         CameraOutput { pose, yaw, pitch, cut: anchor.cut }
     }

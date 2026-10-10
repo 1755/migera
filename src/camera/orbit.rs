@@ -53,6 +53,8 @@ pub struct OrbitParams {
     /// Zoom change per zoom step (multiplier on the mode's distance).
     pub zoom_step: f32,
     pub zoom_halflife: f32,
+    /// Half-life of a shoulder swap, seconds.
+    pub shoulder_halflife: f32,
 }
 
 impl Default for OrbitParams {
@@ -70,6 +72,7 @@ impl Default for OrbitParams {
             zoom_max: 1.6,
             zoom_step: 0.1,
             zoom_halflife: 0.08,
+            shoulder_halflife: 0.1,
         }
     }
 }
@@ -110,6 +113,10 @@ pub struct OrbitState {
     pub idle: f32,
     pub zoom: f32,
     pub zoom_target: f32,
+    /// Which shoulder the camera sits over: +1 right, −1 left, sprung
+    /// between them when swapped.
+    pub shoulder_side: f32,
+    pub shoulder_side_target: f32,
     /// The recentre button's swing is in progress.
     pub recentering: bool,
     pub yaw_goal_active: bool,
@@ -127,6 +134,8 @@ impl OrbitState {
             idle: 0.0,
             zoom: 1.0,
             zoom_target: 1.0,
+            shoulder_side: 1.0,
+            shoulder_side_target: 1.0,
             recentering: false,
             yaw_goal_active: false,
             pitch_goal_active: false,
@@ -281,6 +290,13 @@ impl OrbitState {
         self.zoom_target = (self.zoom_target - input.zoom * params.zoom_step)
             .clamp(params.zoom_min, params.zoom_max);
         self.zoom = damp(self.zoom, self.zoom_target, params.zoom_halflife, dt);
+
+        // Shoulder side.
+        if input.shoulder_swap {
+            self.shoulder_side_target = -self.shoulder_side_target;
+        }
+        self.shoulder_side =
+            damp(self.shoulder_side, self.shoulder_side_target, params.shoulder_halflife, dt);
     }
 
     /// Moves the stick rate toward `target` (exponential approach) and

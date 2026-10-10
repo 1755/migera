@@ -29,6 +29,24 @@ pub struct CameraInput {
     pub switch: Vec2,
     /// Swap the shoulder side, pressed this frame.
     pub shoulder_swap: bool,
+    /// The player is holding a movement direction. Written by the game's
+    /// movement controller, not by the device mapping (which leaves it
+    /// alone): it decides whether a cut latches `CameraView::control_yaw`.
+    #[serde(default)]
+    pub move_held: bool,
+}
+
+impl CameraInput {
+    /// Clears the one-shot parts (presses and per-frame deltas) once the
+    /// camera has used them. Held parts (sticks, `move_held`) persist until
+    /// their writer changes them.
+    pub fn consume(&mut self) {
+        self.look_delta = Vec2::ZERO;
+        self.zoom = 0.0;
+        self.recenter = false;
+        self.lock_on = false;
+        self.shoulder_swap = false;
+    }
 }
 
 impl CameraInput {

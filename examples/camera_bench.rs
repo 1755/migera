@@ -35,7 +35,7 @@ fn main() {
         let frames_in: Vec<CameraFrame> = (0..cameras)
             .map(|i| {
                 let phase = t * 0.8 + i as f32;
-                let mode = if (t / 2.0) as usize % 2 == 0 { "explore" } else { "combat" };
+                let mode = if ((t / 2.0) as usize).is_multiple_of(2) { "explore" } else { "combat" };
                 CameraFrame {
                     clock: CameraClock::both(dt),
                     input: CameraInput {
@@ -45,8 +45,7 @@ fn main() {
                     target: TargetSample {
                         position: Vec3::new(phase.cos() * 6.0, 0.0, phase.sin() * 6.0),
                         grounded: true,
-                        facing_yaw: None,
-                        rebase: false,
+                        ..Default::default()
                     },
                     requests: if f % 120 == 0 {
                         vec![ModeRequest { id: ModeId::new(mode), blend: 0.4 }]
